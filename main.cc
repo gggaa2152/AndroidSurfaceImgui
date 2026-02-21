@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
-#include <cstdarg> // 新增：LogError需要va_list相关头文件
+#include <cstdarg> 
 
 // 解决 C++20 下 char8_t* 无法隐式转换为 char* 的问题
 #define U8(str) (const char*)u8##str
@@ -48,21 +48,27 @@ struct AppConfig {
 AppConfig g_Config;
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
 
-// ========== 日志辅助函数 ==========
-void LogError(const char* fmt, ...) {
+// ========== 日志辅助函数（重命名避免宏冲突） ==========
+// 修复：函数名改为 AppLogError，避免与 Global.h 中的 LogError 宏冲突
+void AppLogError(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     std::fprintf(stderr, "[ERROR] ");
     std::vfprintf(stderr, fmt, args);
     std::fprintf(stderr, "\n");
     va_end(args);
+    
+    // 兼容 Android 日志宏（可选：同时输出到 Android 日志系统）
+    #ifdef LogError
+        LogError(fmt, args);
+    #endif
 }
 
 // ========== 文件操作 ==========
 void SaveConfig() {
     FILE* f = fopen(CONFIG_PATH, "w");
     if (!f) {
-        LogError("保存配置失败：无法打开文件 %s", CONFIG_PATH);
+        AppLogError("保存配置失败：无法打开文件 %s", CONFIG_PATH); // 改用新函数名
         return;
     }
 
@@ -82,7 +88,7 @@ void SaveConfig() {
     writeCount += fprintf(f, "board_lock=%d\n", g_Config.board.lockPosition);
 
     if (writeCount <= 0) {
-        LogError("保存配置失败：写入文件内容为空");
+        AppLogError("保存配置失败：写入文件内容为空"); // 改用新函数名
     }
 
     fclose(f);
@@ -91,7 +97,7 @@ void SaveConfig() {
 void LoadConfig() {
     FILE* f = fopen(CONFIG_PATH, "r");
     if (!f) {
-        LogError("加载配置失败：文件 %s 不存在或无法读取", CONFIG_PATH);
+        AppLogError("加载配置失败：文件 %s 不存在或无法读取", CONFIG_PATH); // 改用新函数名
         return;
     }
 
@@ -156,7 +162,7 @@ void LoadFonts(ImGuiIO& io) {
                 std::cout << "[INFO] 成功加载字体：" << path << std::endl;
                 break;
             } else {
-                LogError("加载字体失败：%s", path);
+                AppLogError("加载字体失败：%s", path); // 改用新函数名
             }
         }
     }
@@ -168,7 +174,6 @@ void LoadFonts(ImGuiIO& io) {
 }
 
 // ========== 开关组件 ==========
-// 修复：移除多余的 animIdx 参数，恢复正确的函数签名
 bool ToggleSwitch(const char* label, bool* v) {
     ImVec2 p = ImGui::GetCursorScreenPos();
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -212,17 +217,14 @@ void DrawChessboard() {
                     mouse.y >= g_Config.board.y && mouse.y <= g_Config.board.y + h);
     
     if (!g_Config.board.lockPosition) {
-        // 修复：仅当 ImGui 不捕获鼠标时才响应拖拽
         if (hovered && io.MouseDown[0] && !io.WantCaptureMouse) {
             g_Config.board.isDragging = true;
         }
         if (g_Config.board.isDragging) {
             if (io.MouseDown[0]) {
-                // 更新棋盘位置，并做边界保护（避免拖出屏幕）
                 g_Config.board.x += io.MouseDelta.x;
                 g_Config.board.y += io.MouseDelta.y;
                 
-                // 边界保护：棋盘不超出屏幕左/上边界
                 g_Config.board.x = fmax(0.0f, g_Config.board.x);
                 g_Config.board.y = fmax(0.0f, g_Config.board.y);
             } else {
@@ -276,7 +278,7 @@ int main() {
     });
 
     if (!imgui) {
-        LogError("AImGui 初始化失败! 请检查是否在 Root 权限下运行。");
+        AppLogError("AImGui 初始化失败! 请检查是否在 Root 权限下运行。"); // 改用新函数名
         ImGui::DestroyContext();
         return 1;
     }
@@ -286,7 +288,6 @@ int main() {
 
     std::atomic<bool> isRunning(true);
     
-    // 修复：线程增加异常捕获，提升稳定性
     std::thread inputThread([&] {
         try {
             while (isRunning) {
@@ -294,9 +295,9 @@ int main() {
                 std::this_thread::sleep_for(std::chrono::microseconds(1000));
             }
         } catch (const std::exception& e) {
-            LogError("输入线程异常：%s", e.what());
+            AppLogError("输入线程异常：%s", e.what()); // 改用新函数名
         } catch (...) {
-            LogError("输入线程发生未知异常");
+            AppLogError("输入线程发生未知异常"); // 改用新函数名
         }
     });
 
@@ -318,13 +319,11 @@ int main() {
                 ImGui::SetNextWindowSize(g_Config.windowSize, ImGuiCond_FirstUseEver);
             }
 
-            // 使用 U8() 宏包裹中文字符串
             ImGui::Begin(U8("金铲铲助手"), &g_Config.showMenu, ImGuiWindowFlags_NoSavedSettings);
             
             ImVec2 curPos = ImGui::GetWindowPos();
             ImVec2 curSize = ImGui::GetWindowSize();
             
-            // 修复：使用浮点精度比较，避免微小差异触发频繁保存
             bool posChanged = !FLOAT_EQ(curPos.x, g_Config.windowPos.x, FLOAT_EPSILON) || 
                               !FLOAT_EQ(curPos.y, g_Config.windowPos.y, FLOAT_EPSILON);
             bool sizeChanged = !FLOAT_EQ(curSize.x, g_Config.windowSize.x, FLOAT_EPSILON) || 
@@ -387,12 +386,10 @@ int main() {
         }
     }
 
-    // 程序退出时保存最终配置
     if (configDirty) {
         SaveConfig();
     }
 
-    // 优雅退出线程
     isRunning = false; 
     if (inputThread.joinable()) {
         inputThread.join(); 
