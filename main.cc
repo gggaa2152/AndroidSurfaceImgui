@@ -361,15 +361,13 @@ int main()
 
     LoadConfig();
 
-    // ========== 输入线程（独立，保证拖动流畅） ==========
+    // ========== 输入线程 ==========
     std::thread inputThread([&] {
-        // 尝试设置较高优先级（需要root）
         struct sched_param param;
         param.sched_priority = 99;
         pthread_setschedparam(pthread_self(), SCHED_RR, &param);
         while (state) {
             imgui.ProcessInputEvent();
-            // 短时间让出CPU，避免忙等
             std::this_thread::sleep_for(std::chrono::microseconds(500));
         }
     });
@@ -379,12 +377,12 @@ int main()
     g_fpsTimer = std::chrono::high_resolution_clock::now();
     auto lastSaveTime = std::chrono::high_resolution_clock::now();
 
-    printf("[2] Entering main loop (120fps, 独立输入线程)\n");
+    printf("[2] Entering main loop (120fps)\n");
 
     while (state) {
         auto frameStart = std::chrono::high_resolution_clock::now();
 
-        // 记录当前开关状态的前值，用于检测变化
+        // 记录当前开关状态
         bool prevPredict = g_featurePredict;
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
@@ -399,18 +397,18 @@ int main()
 
         // 帧率计算
         g_frameCount++;
-        auto now = std::chrono::high_resolution_clock::now();
-        float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float elapsedMs = std::chrono::duration<float, std::milli>(currentTime - g_fpsTimer).count();
         if (elapsedMs >= 1000.0f) {
             g_currentFPS = g_frameCount * 1000.0f / elapsedMs;
             g_frameCount = 0;
-            g_fpsTimer = now;
+            g_fpsTimer = currentTime;
         }
 
         if (showDemoWindow) ImGui::ShowDemoWindow(&showDemoWindow);
 
         // 主窗口
-        ImVec2 currentPos, currentSize; // 将在窗口内赋值
+        ImVec2 currentPos, currentSize;
         {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * g_globalScale);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f * g_globalScale);
@@ -428,7 +426,6 @@ int main()
 
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
 
-            // 获取当前窗口位置和大小
             currentPos = ImGui::GetWindowPos();
             currentSize = ImGui::GetWindowSize();
             bool posChanged = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y);
@@ -493,14 +490,15 @@ int main()
             if (sleepUs > 0) usleep(sleepUs);
         }
 
-        // 定期保存配置（2秒间隔）
-        auto now = std::chrono::high_resolution_clock::now();
-        float timeSinceLastSave = std::chrono::duration<float>(now - lastSaveTime).count();
+        // 保存配置
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float timeSinceLastSave = std::chrono::duration<float>(currentTime - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
-        bool windowMoved = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y) || (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
+        bool windowMoved = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y) || 
+                           (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
         if ((switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
             SaveConfig();
-            lastSaveTime = now;
+            lastSaveTime = currentTime;
         }
     }
 
