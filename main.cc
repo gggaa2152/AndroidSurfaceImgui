@@ -130,7 +130,7 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载最清晰的中文字体 ==========
+// ========== 加载最清晰的中文字体（安全版） ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
@@ -145,7 +145,7 @@ void LoadChineseFont() {
     ImFont* font = nullptr;
     ImFontConfig config;
     
-    // 【最清晰设置】
+    // 最清晰设置
     config.OversampleH = 4;        // 最大过采样
     config.OversampleV = 4;        // 最大过采样
     config.PixelSnapH = false;      // 不强制像素对齐
@@ -168,12 +168,10 @@ void LoadChineseFont() {
         io.Fonts->AddFontDefault();
     }
     
-    // 构建字体纹理
+    // 只构建，不销毁纹理（让 ImGui 自己处理）
     io.Fonts->Build();
     
-    // 强制重建纹理确保清晰
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
-    ImGui_ImplOpenGL3_CreateFontsTexture();
+    printf("[+] Font loaded successfully\n");
 }
 
 // ========== 配置文件路径 ==========
@@ -400,8 +398,6 @@ int main()
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
 
-    LoadChineseFont();
-
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
@@ -414,6 +410,9 @@ int main()
         printf("[-] ImGui initialization failed\n");
         return 0;
     }
+
+    // 【关键】在 AImGui 初始化完成后加载字体
+    LoadChineseFont();
 
     LoadConfig();
 
