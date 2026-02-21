@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <cstdio>
 #include <cmath>
+#include <string>
+#include <map>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -26,6 +28,11 @@ float g_globalScale = 1.0f;
 float g_targetScale = 1.0f;
 const float MIN_SCALE = 0.5f;
 const float MAX_SCALE = 3.0f;
+
+// ========== 窗口位置和大小 ==========
+ImVec2 g_windowPos = ImVec2(100, 100);
+ImVec2 g_windowSize = ImVec2(400, 300);
+bool g_windowPosInitialized = false;
 
 // ========== 配置文件路径 ==========
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
@@ -84,14 +91,20 @@ void SaveConfig() {
     FILE* f = fopen(CONFIG_PATH, "w");
     if (f) {
         fprintf(f, "# JCC Assistant Config\n");
+        fprintf(f, "version=1.0\n");
         fprintf(f, "scale=%.2f\n", g_globalScale);
         fprintf(f, "predict=%d\n", g_featurePredict ? 1 : 0);
         fprintf(f, "esp=%d\n", g_featureESP ? 1 : 0);
         fprintf(f, "instantQuit=%d\n", g_featureInstantQuit ? 1 : 0);
         fprintf(f, "autoBuy=%d\n", autoBuy ? 1 : 0);
         fprintf(f, "autoRefresh=%d\n", autoRefresh ? 1 : 0);
+        fprintf(f, "windowPosX=%.0f\n", g_windowPos.x);
+        fprintf(f, "windowPosY=%.0f\n", g_windowPos.y);
+        fprintf(f, "windowWidth=%.0f\n", g_windowSize.x);
+        fprintf(f, "windowHeight=%.0f\n", g_windowSize.y);
         fclose(f);
-        printf("[+] Config saved\n");
+        printf("[+] Config saved (pos: %.0f,%.0f size: %.0f,%.0f scale: %.2f)\n", 
+               g_windowPos.x, g_windowPos.y, g_windowSize.x, g_windowSize.y, g_globalScale);
     }
 }
 
@@ -131,13 +144,28 @@ void LoadConfig() {
                 autoRefresh = (ival != 0);
                 g_toggleAnimTarget[4] = autoRefresh ? 1 : 0;
             }
+            else if (sscanf(line, "windowPosX=%f", &fval) == 1) {
+                g_windowPos.x = fval;
+            }
+            else if (sscanf(line, "windowPosY=%f", &fval) == 1) {
+                g_windowPos.y = fval;
+            }
+            else if (sscanf(line, "windowWidth=%f", &fval) == 1) {
+                g_windowSize.x = fval;
+            }
+            else if (sscanf(line, "windowHeight=%f", &fval) == 1) {
+                g_windowSize.y = fval;
+            }
         }
         fclose(f);
         
         ImGui::GetIO().FontGlobalScale = g_globalScale;
-        printf("[+] Config loaded\n");
+        g_windowPosInitialized = true;
+        printf("[+] Config loaded (pos: %.0f,%.0f size: %.0f,%.0f scale: %.2f)\n", 
+               g_windowPos.x, g_windowPos.y, g_windowSize.x, g_windowSize.y, g_globalScale);
     } else {
         // 首次运行，创建默认配置
+        printf("[-] No config file, using defaults\n");
         SaveConfig();
     }
 }
@@ -238,7 +266,7 @@ void ScaleWindow(ImGuiSizeCallbackData* data) {
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
     g_targetScale = scaleDelta;
-    g_globalScale = scaleDelta; // 直接更新，让滑块同步
+    g_globalScale = scaleDelta;
     
     // 立即应用缩放
     ImGui::GetIO().FontGlobalScale = g_globalScale;
@@ -287,6 +315,9 @@ int main()
     
     printf("[2] Entering main loop\n");
     
+    // 记录上次保存时间，避免频繁写入
+    auto lastSaveTime = std::chrono::high_resolution_clock::now();
+    
     while (state)
     {
         auto frameStart = std::chrono::high_resolution_clock::now();
@@ -319,8 +350,7 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
-            // 【修改】移除窗口大小限制，让用户可以自由调整
-            // 但仍然保留回调函数，使右下角三角控制全局缩放
+            // 设置窗口大小回调，使右下角三角控制全局缩放
             ImGui::SetNextWindowSizeConstraints(
                 ImVec2(0, 0),                          // 无最小限制
                 ImVec2(FLT_MAX, FLT_MAX),              // 无最大限制
@@ -328,9 +358,28 @@ int main()
                 nullptr
             );
             
+            // 设置窗口初始位置（从配置加载）
+            if (g_windowPosInitialized) {
+                ImGui::SetNextWindowPos(g_windowPos, ImGuiCond_FirstUseEver);
+                ImGui::SetNextWindowSize(g_windowSize, ImGuiCond_FirstUseEver);
+            }
+            
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
             
-            // 【修复】直接使用g_targetScale更新，不用平滑过渡，让滑块立即响应
+            // 获取当前窗口位置和大小（用于保存）
+            ImVec2 currentPos = ImGui::GetWindowPos();
+            ImVec2 currentSize = ImGui::GetWindowSize();
+            
+            // 如果位置或大小发生变化，更新保存的变量
+            bool posChanged = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y);
+            bool sizeChanged = (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
+            
+            if (posChanged || sizeChanged) {
+                g_windowPos = currentPos;
+                g_windowSize = currentSize;
+            }
+            
+            // 直接使用g_targetScale更新
             if (g_targetScale != g_globalScale) {
                 g_globalScale = g_targetScale;
                 ImGui::GetIO().FontGlobalScale = g_globalScale;
@@ -347,17 +396,12 @@ int main()
             
             ImGui::Separator();
             
-            // 【修复】滑块控制 - 现在可以正常工作了
+            // 滑块控制
             float prevScale = g_globalScale;
             if (ImGui::SliderFloat("全局缩放", &g_targetScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
                 // 滑块改变目标缩放
                 g_globalScale = g_targetScale;
                 ImGui::GetIO().FontGlobalScale = g_globalScale;
-            }
-            
-            // 缩放变化时保存配置
-            if (fabs(prevScale - g_globalScale) > 0.01f) {
-                SaveConfig();
             }
             
             ImGui::Separator();
@@ -404,18 +448,27 @@ int main()
             ImGui::Text("自动购买: %s", autoBuy ? "开启" : "关闭");
             ImGui::Text("自动刷新: %s", autoRefresh ? "开启" : "关闭");
             
-            // 开关状态变化时保存配置
-            if (prevPredict != g_featurePredict || 
-                prevESP != g_featureESP || 
-                prevInstantQuit != g_featureInstantQuit ||
-                prevAutoBuy != autoBuy ||
-                prevAutoRefresh != autoRefresh) {
-                SaveConfig();
-            }
-            
             ImGui::End();
             ImGui::PopStyleVar(3);
             ImGui::PopStyleColor(4);
+            
+            // 检查是否需要保存配置（每5秒保存一次，避免频繁写入）
+            auto currentTime = std::chrono::high_resolution_clock::now();
+            float timeSinceLastSave = std::chrono::duration<float>(currentTime - lastSaveTime).count();
+            
+            bool scaleChanged = (fabs(prevScale - g_globalScale) > 0.01f);
+            bool switchesChanged = (prevPredict != g_featurePredict || 
+                                   prevESP != g_featureESP || 
+                                   prevInstantQuit != g_featureInstantQuit ||
+                                   prevAutoBuy != autoBuy ||
+                                   prevAutoRefresh != autoRefresh);
+            bool windowMoved = posChanged || sizeChanged;
+            
+            // 如果有任何变化，且距离上次保存超过2秒，就保存
+            if ((scaleChanged || switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
+                SaveConfig();
+                lastSaveTime = currentTime;
+            }
         }
 
         if (showAnotherWindow)
