@@ -40,7 +40,7 @@ const float MAX_SCALE = 3.0f;
 
 // ========== 窗口位置和大小 ==========
 ImVec2 g_windowPos = ImVec2(100, 150);   // 平板默认位置
-ImVec2 g_windowSize = ImVec2(480, 600);  // 平板默认大小（更大）
+ImVec2 g_windowSize = ImVec2(480, 600);  // 平板默认大小
 bool g_windowPosInitialized = false;
 
 // ========== 配置文件路径 ==========
@@ -68,7 +68,6 @@ void LoadChineseFont() {
     ImFont* font = nullptr;
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        // 平板用更大的字体
         font = io.Fonts->AddFontFromFileTTF(path, 22.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
@@ -360,7 +359,7 @@ void DrawChessboard() {
 // ========== 自定义窗口缩放回调 ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     float newWidth = data->DesiredSize.x;
-    float scaleDelta = newWidth / 480.0f;  // 基准宽度改为480（平板）
+    float scaleDelta = newWidth / 480.0f;
     if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
@@ -377,26 +376,27 @@ int main()
     
     ImGuiIO& io = ImGui::GetIO();
     
-    // 禁止穿透点击
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    // ===== 关键修改：禁止穿透点击 =====
+    // 移除 FLAG_NOT_FOCUSABLE，让窗口捕获所有点击
+    // 这个标志原本允许点击穿透到下层
     
     ImGuiStyle& style = ImGui::GetStyle();
     
-    // ===== 平板专用触摸区域 =====
-    style.GrabMinSize = 44.0f;           // 缩放柄更大
-    style.FramePadding = ImVec2(14, 10); // 更大内边距
+    // 平板触摸区域设置
+    style.GrabMinSize = 44.0f;
+    style.FramePadding = ImVec2(14, 10);
     style.WindowPadding = ImVec2(16, 16);
-    style.ItemSpacing = ImVec2(14, 10);  // 更大项目间距
-    style.TouchExtraPadding = ImVec2(6, 6); // 触摸额外区域更大
+    style.ItemSpacing = ImVec2(14, 10);
+    style.TouchExtraPadding = ImVec2(6, 6);
     
     style.WindowBorderSize = 0.0f;
     style.FrameBorderSize = 0.0f;
-    style.WindowRounding = 16.0f;        // 更大圆角
+    style.WindowRounding = 16.0f;
     style.FrameRounding = 8.0f;
     
     LoadChineseFont();
     
+    // ===== 重要：AImGui 初始化选项 =====
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
@@ -413,6 +413,7 @@ int main()
 
     LoadConfig();
 
+    // 输入线程
     std::thread processInputEventThread(
         [&]
         {
@@ -462,11 +463,10 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
-            // 设置窗口大小回调
             ImGui::SetNextWindowSizeConstraints(
-                ImVec2(320, 400),                      // 平板最小尺寸
-                ImVec2(FLT_MAX, FLT_MAX),              // 无最大限制
-                ScaleWindow,                            // 回调函数
+                ImVec2(320, 400),
+                ImVec2(FLT_MAX, FLT_MAX),
+                ScaleWindow,
                 nullptr
             );
             
