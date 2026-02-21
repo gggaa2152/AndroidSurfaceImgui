@@ -3,30 +3,20 @@
 #include "imgui_internal.h"
 
 // 系统头文件
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <sstream>
 #include <thread>
 #include <iostream>
 #include <chrono>
+#include <unistd.h>
 #include <cstdio>
 #include <cmath>
 #include <string>
-#include <map>
-#include <vector>
-#include <cstring>
-#include <atomic>
 
 // ========== 金铲铲助手数据 ==========
-std::atomic<int> gold{100};
-std::atomic<int> level{8};
-std::atomic<int> hp{85};
-std::atomic<bool> autoBuy{true};
-std::atomic<bool> autoRefresh{true};
+int gold = 100;
+int level = 8;
+int hp = 85;
+bool autoBuy = true;
+bool autoRefresh = true;
 
 // ========== 功能开关 ==========
 bool g_featurePredict = false;     // 预测
@@ -51,149 +41,17 @@ ImVec2 g_windowPos = ImVec2(50, 100);
 ImVec2 g_windowSize = ImVec2(280, 400);
 bool g_windowPosInitialized = false;
 
-// ========== 共享内存结构 ==========
-#pragma pack(push, 1)
-struct SharedGameData {
-    int32_t gold;
-    int32_t level;
-    int32_t hp;
-    int32_t autoBuy;
-    int32_t autoRefresh;
-    int32_t timestamp;
-    int32_t version;
-    char scriptName[64];
-};
-#pragma pack(pop)
+// ========== 配置文件路径 ==========
+const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
 
-// ========== 共享内存变量 ==========
-int g_shm_fd = -1;
-SharedGameData* g_sharedData = nullptr;
-std::atomic<bool> g_shmValid{false};
-std::thread* g_shmThread = nullptr;
-bool g_running = true;
+// ========== 帧率计算 ==========
+float g_currentFPS = 0.0f;
+int g_frameCount = 0;
+auto g_fpsTimer = std::chrono::high_resolution_clock::now();
 
-// ========== 独立线程读取共享内存 ==========
-void ShmReaderThread() {
-    printf("[+] Shared memory reader thread started\n");
-    
-    int lastTs = 0;
-    int errorCount = 0;
-    const int MAX_ERRORS = 5;
-    
-    while (g_running) {
-        if (!g_shmValid || !g_sharedData) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
-        
-        // 使用 try-catch 风格的错误处理
-        int ts = 0;
-        int new_gold = 0;
-        int new_level = 0;
-        int new_hp = 0;
-        int new_autoBuy = 0;
-        int new_autoRefresh = 0;
-        
-        // 安全读取（使用 volatile 防止优化）
-        volatile SharedGameData* volatile_data = g_sharedData;
-        
-        // 读取时间戳
-        ts = volatile_data->timestamp;
-        
-        // 如果时间戳变化，读取所有数据
-        if (ts != lastTs && ts > 0) {
-            new_gold = volatile_data->gold;
-            new_level = volatile_data->level;
-            new_hp = volatile_data->hp;
-            new_autoBuy = volatile_data->autoBuy;
-            new_autoRefresh = volatile_data->autoRefresh;
-            
-            // 更新原子变量
-            gold.store(new_gold);
-            level.store(new_level);
-            hp.store(new_hp);
-            autoBuy.store(new_autoBuy != 0);
-            autoRefresh.store(new_autoRefresh != 0);
-            
-            lastTs = ts;
-            errorCount = 0;  // 重置错误计数
-            
-            printf("[UPDATE] gold=%d, level=%d, hp=%d, ts=%d\n", 
-                   new_gold, new_level, new_hp, ts);
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // 约60Hz读取
-    }
-}
-
-// ========== 初始化共享内存 ==========
-bool InitSharedMemory() {
-    printf("[+] Initializing shared memory...\n");
-    
-    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR);
-    if (g_shm_fd < 0) {
-        printf("[-] Shared memory file not found\n");
-        return false;
-    }
-    
-    // 检查文件大小
-    struct stat st;
-    if (fstat(g_shm_fd, &st) == 0) {
-        if (st.st_size < (off_t)sizeof(SharedGameData)) {
-            printf("[-] File too small\n");
-            close(g_shm_fd);
-            return false;
-        }
-    }
-    
-    g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
-                                         PROT_READ,
-                                         MAP_SHARED, g_shm_fd, 0);
-    
-    if (g_sharedData == MAP_FAILED) {
-        printf("[-] Failed to map: %s\n", strerror(errno));
-        close(g_shm_fd);
-        g_sharedData = nullptr;
-        return false;
-    }
-    
-    g_shmValid = true;
-    
-    // 读取初始值
-    gold.store(g_sharedData->gold);
-    level.store(g_sharedData->level);
-    hp.store(g_sharedData->hp);
-    autoBuy.store(g_sharedData->autoBuy != 0);
-    autoRefresh.store(g_sharedData->autoRefresh != 0);
-    
-    printf("[+] Shared memory initialized: gold=%d, level=%d, hp=%d\n", 
-           gold.load(), level.load(), hp.load());
-    
-    // 启动读取线程
-    g_shmThread = new std::thread(ShmReaderThread);
-    
-    return true;
-}
-
-// ========== 清理共享内存 ==========
-void CleanupSharedMemory() {
-    g_running = false;
-    if (g_shmThread && g_shmThread->joinable()) {
-        g_shmThread->join();
-        delete g_shmThread;
-        g_shmThread = nullptr;
-    }
-    
-    g_shmValid = false;
-    if (g_sharedData) {
-        munmap(g_sharedData, sizeof(SharedGameData));
-        g_sharedData = nullptr;
-    }
-    if (g_shm_fd >= 0) {
-        close(g_shm_fd);
-        g_shm_fd = -1;
-    }
-}
+// ========== 动画变量 ==========
+float g_toggleAnimProgress[10] = {0};
+int g_toggleAnimTarget[10] = {0};
 
 // ========== 加载中文字体 ==========
 void LoadChineseFont() {
@@ -223,18 +81,6 @@ void LoadChineseFont() {
     
     io.Fonts->Build();
 }
-
-// ========== 配置文件路径 ==========
-const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
-
-// ========== 帧率计算 ==========
-float g_currentFPS = 0.0f;
-int g_frameCount = 0;
-auto g_fpsTimer = std::chrono::high_resolution_clock::now();
-
-// ========== 动画变量 ==========
-float g_toggleAnimProgress[10] = {0};
-int g_toggleAnimTarget[10] = {0};
 
 // ========== 保存配置 ==========
 void SaveConfig() {
@@ -433,9 +279,6 @@ void ScaleWindow(ImGuiSizeCallbackData* data) {
 int main()
 {
     printf("[1] Starting JCC Assistant...\n");
-    
-    // 初始化共享内存（使用独立线程）
-    InitSharedMemory();
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -537,19 +380,6 @@ int main()
 
             ImGui::Separator();
 
-            // 显示共享内存状态
-            if (g_shmValid && g_sharedData) {
-                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
-                // 显示脚本名
-                char scriptName[65] = {0};
-                memcpy(scriptName, (void*)&g_sharedData->scriptName, 64);
-                ImGui::Text("脚本: %s", scriptName);
-                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
-            } else {
-                ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
-            }
-
-            ImGui::Separator();
             ImGui::Text("FPS: %.0f", g_currentFPS);
             ImGui::Text("缩放: %.1fx", g_globalScale);
             ImGui::Separator();
@@ -561,9 +391,9 @@ int main()
 
             ImGui::Separator();
             ImGui::Text("游戏数据");
-            ImGui::Text("金币: %d", gold.load());
-            ImGui::Text("等级: %d", level.load());
-            ImGui::Text("血量: %d", hp.load());
+            ImGui::Text("金币: %d", gold);
+            ImGui::Text("等级: %d", level);
+            ImGui::Text("血量: %d", hp);
 
             if (g_featureESP) {
                 ImGui::Separator();
@@ -602,7 +432,6 @@ int main()
         }
     }
 
-    CleanupSharedMemory();
     SaveConfig();
     if (inputThread.joinable()) inputThread.join();
     printf("[3] JCC Assistant exited\n");
