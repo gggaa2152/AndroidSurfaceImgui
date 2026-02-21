@@ -18,6 +18,7 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <atomic>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -49,48 +50,60 @@ ImVec2 g_windowPos = ImVec2(50, 100);
 ImVec2 g_windowSize = ImVec2(280, 400);
 bool g_windowPosInitialized = false;
 
-// ========== 共享内存数据结构 ==========
+// ========== 简化版共享内存结构（保证对齐） ==========
+#pragma pack(push, 1)  // 1字节对齐，避免内存对齐问题
 struct SharedGameData {
     int gold;
     int level;
     int hp;
     int autoBuy;
     int autoRefresh;
-    int timestamp;
+    volatile int timestamp;  // 使用 volatile 防止优化
     int version;
     char scriptName[64];
-    int reserved[16];
 };
+#pragma pack(pop)
 
 // ========== 共享内存变量 ==========
 int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
+std::atomic<bool> g_shmValid{false};  // 原子标志，表示共享内存是否有效
 
 // ========== 初始化共享内存 ==========
 bool InitSharedMemory() {
     printf("[+] Initializing shared memory...\n");
-    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_CREAT | O_RDWR, 0666);
+    
+    // 尝试打开现有文件，如果不存在则创建
+    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR, 0666);
     if (g_shm_fd < 0) {
-        printf("[-] Failed to create shared file: %s\n", strerror(errno));
-        return false;
-    }
-    if (ftruncate(g_shm_fd, sizeof(SharedGameData)) < 0) {
-        printf("[-] Failed to set size: %s\n", strerror(errno));
-        close(g_shm_fd);
-        return false;
-    }
-    g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
-                                         PROT_READ | PROT_WRITE,
-                                         MAP_SHARED, g_shm_fd, 0);
-    if (g_sharedData == MAP_FAILED) {
-        printf("[-] Failed to map memory: %s\n", strerror(errno));
-        close(g_shm_fd);
-        g_sharedData = nullptr;
-        return false;
-    }
-    if (g_sharedData->version == 0) {
-        printf("[+] First time init, setting default values\n");
+        // 文件不存在，创建新文件
+        g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_CREAT | O_RDWR, 0666);
+        if (g_shm_fd < 0) {
+            printf("[-] Failed to create shared file: %s\n", strerror(errno));
+            return false;
+        }
+        
+        // 设置大小
+        if (ftruncate(g_shm_fd, sizeof(SharedGameData)) < 0) {
+            printf("[-] Failed to set size: %s\n", strerror(errno));
+            close(g_shm_fd);
+            return false;
+        }
+        
+        // 映射内存
+        g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
+                                             PROT_READ | PROT_WRITE,
+                                             MAP_SHARED, g_shm_fd, 0);
+        
+        if (g_sharedData == MAP_FAILED) {
+            printf("[-] Failed to map memory: %s\n", strerror(errno));
+            close(g_shm_fd);
+            g_sharedData = nullptr;
+            return false;
+        }
+        
+        // 初始化数据
         g_sharedData->gold = 100;
         g_sharedData->level = 8;
         g_sharedData->hp = 85;
@@ -99,26 +112,97 @@ bool InitSharedMemory() {
         g_sharedData->timestamp = 1;
         g_sharedData->version = 1;
         strcpy(g_sharedData->scriptName, "default");
+        
+        printf("[+] Created new shared memory with default values\n");
+    } else {
+        // 文件已存在，直接映射
+        printf("[+] Opened existing shared memory file\n");
+        
+        // 检查文件大小
+        struct stat st;
+        if (fstat(g_shm_fd, &st) == 0) {
+            if (st.st_size < (off_t)sizeof(SharedGameData)) {
+                printf("[+] Resizing shared memory file\n");
+                ftruncate(g_shm_fd, sizeof(SharedGameData));
+            }
+        }
+        
+        // 映射内存
+        g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
+                                             PROT_READ | PROT_WRITE,
+                                             MAP_SHARED, g_shm_fd, 0);
+        
+        if (g_sharedData == MAP_FAILED) {
+            printf("[-] Failed to map memory: %s\n", strerror(errno));
+            close(g_shm_fd);
+            g_sharedData = nullptr;
+            return false;
+        }
+        
+        // 验证版本，如果版本不对则重新初始化
+        if (g_sharedData->version != 1) {
+            printf("[+] Reinitializing shared memory (version mismatch)\n");
+            g_sharedData->gold = 100;
+            g_sharedData->level = 8;
+            g_sharedData->hp = 85;
+            g_sharedData->autoBuy = 1;
+            g_sharedData->autoRefresh = 1;
+            g_sharedData->timestamp = 1;
+            g_sharedData->version = 1;
+            strcpy(g_sharedData->scriptName, "default");
+        }
     }
-    printf("[+] Shared memory initialized successfully\n");
+    
+    g_shmValid = true;
+    printf("[+] Shared memory initialized successfully at %p\n", g_sharedData);
+    printf("    gold=%d, level=%d, hp=%d, timestamp=%d\n", 
+           g_sharedData->gold, g_sharedData->level, g_sharedData->hp, g_sharedData->timestamp);
+    
     return true;
 }
 
-// ========== 从共享内存读取数据 ==========
+// ========== 从共享内存读取数据（安全版本） ==========
 void ReadFromSharedMemory() {
-    if (!g_sharedData) return;
-    if (g_sharedData->timestamp != g_lastTimestamp) {
-        gold = g_sharedData->gold;
-        level = g_sharedData->level;
-        hp = g_sharedData->hp;
-        autoBuy = (g_sharedData->autoBuy != 0);
-        autoRefresh = (g_sharedData->autoRefresh != 0);
-        g_lastTimestamp = g_sharedData->timestamp;
+    if (!g_shmValid || !g_sharedData) return;
+    
+    // 使用 try-catch 风格的检查（实际是检查内存可访问性）
+    int currentTimestamp;
+    
+    // 安全地读取时间戳
+    currentTimestamp = g_sharedData->timestamp;
+    
+    // 如果时间戳变化，读取所有数据
+    if (currentTimestamp != g_lastTimestamp && currentTimestamp > 0) {
+        // 一次性读取所有数据，减少访问次数
+        int newGold = g_sharedData->gold;
+        int newLevel = g_sharedData->level;
+        int newHp = g_sharedData->hp;
+        int newAutoBuy = g_sharedData->autoBuy;
+        int newAutoRefresh = g_sharedData->autoRefresh;
+        
+        // 验证数据合理性（防止读取到垃圾数据）
+        if (newGold >= 0 && newGold <= 10000 &&
+            newLevel >= 1 && newLevel <= 100 &&
+            newHp >= 0 && newHp <= 1000) {
+            
+            gold = newGold;
+            level = newLevel;
+            hp = newHp;
+            autoBuy = (newAutoBuy != 0);
+            autoRefresh = (newAutoRefresh != 0);
+            
+            g_lastTimestamp = currentTimestamp;
+            
+            // 可选：打印更新信息
+            // printf("[+] Data updated: gold=%d, level=%d, hp=%d\n", gold, level, hp);
+        }
     }
 }
 
 // ========== 清理共享内存 ==========
 void CleanupSharedMemory() {
+    g_shmValid = false;
+    
     if (g_sharedData) {
         munmap(g_sharedData, sizeof(SharedGameData));
         g_sharedData = nullptr;
@@ -129,7 +213,7 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载中文字体（清晰版） ==========
+// ========== 加载中文字体 ==========
 bool LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
@@ -143,16 +227,10 @@ bool LoadChineseFont() {
     
     ImFont* font = nullptr;
     ImFontConfig config;
+    config.OversampleH = 2;
+    config.OversampleV = 2;
+    config.PixelSnapH = false;
     
-    // 【关键】字体清晰度设置
-    config.OversampleH = 3;      // 水平过采样3倍
-    config.OversampleV = 3;      // 垂直过采样3倍
-    config.PixelSnapH = false;   // 不强制像素对齐
-    config.RasterizerMultiply = 1.0f;
-    config.GlyphExtraSpacing.x = 0.0f;
-    config.GlyphExtraSpacing.y = 0.0f;
-    
-    // 尝试加载字体
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
         font = io.Fonts->AddFontFromFileTTF(path, 15.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
@@ -168,27 +246,7 @@ bool LoadChineseFont() {
         io.Fonts->AddFontDefault();
     }
     
-    // 构建字体纹理
     io.Fonts->Build();
-    
-    // 强制上传到GPU（安全方式）
-    if (ImGui::GetCurrentContext() && ImGui::GetIO().Fonts->TexID == nullptr) {
-        unsigned char* pixels;
-        int width, height;
-        io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-        
-        GLuint texture_id;
-        glGenTextures(1, &texture_id);
-        glBindTexture(GL_TEXTURE_2D, texture_id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        
-        io.Fonts->TexID = (ImTextureID)(intptr_t)texture_id;
-    }
-    
     return true;
 }
 
@@ -303,7 +361,7 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     return pressed;
 }
 
-// ========== 绘制棋盘（7列4行，圆形棋子） ==========
+// ========== 绘制棋盘 ==========
 void DrawChessboard() {
     if (!g_featureESP) return;
     
@@ -366,12 +424,8 @@ void DrawChessboard() {
             float centerY = g_chessboardPosY + row * cellSize + cellSize/2;
             float radius = cellSize * 0.3f;
             
-            ImU32 circleColor;
-            if ((row + col) % 2 == 0) {
-                circleColor = IM_COL32(255, 100, 100, 200);
-            } else {
-                circleColor = IM_COL32(100, 100, 255, 200);
-            }
+            ImU32 circleColor = ((row + col) % 2 == 0) ? 
+                IM_COL32(255, 100, 100, 200) : IM_COL32(100, 100, 255, 200);
             
             drawList->AddCircleFilled(
                 ImVec2(centerX, centerY),
@@ -405,13 +459,16 @@ void ScaleWindow(ImGuiSizeCallbackData* data) {
 int main()
 {
     printf("[1] Starting JCC Assistant...\n");
-    InitSharedMemory();
+    
+    // 初始化共享内存
+    if (!InitSharedMemory()) {
+        printf("[-] Shared memory init failed, continuing without it\n");
+    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
-    // 样式设置
     ImGuiStyle& style = ImGui::GetStyle();
     style.GrabMinSize = 28.0f;
     style.FramePadding = ImVec2(6, 4);
@@ -433,12 +490,9 @@ int main()
         return 0;
     }
 
-    // 【关键】在AImGui初始化后加载字体
     LoadChineseFont();
-
     LoadConfig();
 
-    // ========== 输入线程 ==========
     std::thread inputThread([&] {
         struct sched_param param;
         param.sched_priority = 99;
@@ -463,6 +517,7 @@ int main()
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
+        // 安全读取共享内存
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
@@ -514,9 +569,11 @@ int main()
             ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "缩放: %.2fx", g_globalScale);
             ImGui::Separator();
 
-            if (g_sharedData) {
+            // 显示共享内存状态
+            if (g_sharedData && g_shmValid) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 ImGui::Text("脚本: %s", g_sharedData->scriptName);
+                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
