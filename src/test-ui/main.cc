@@ -1,6 +1,6 @@
 #include "Global.h"
 #include "AImGui.h"
-#include "imgui_internal.h"  // 必须添加这个头文件！
+#include "imgui_internal.h"
 
 #include <thread>
 #include <iostream>
@@ -34,15 +34,18 @@ float g_currentFPS = 0.0f;
 int g_frameCount = 0;
 auto g_fpsTimer = std::chrono::high_resolution_clock::now();
 
+// ========== 动画变量 ==========
+float g_toggleAnimProgress[10] = {0};
+int g_toggleAnimTarget[10] = {0};
+
 // ========== 加载中文字体 ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
-    // 一加/OPPO 系统字体
     const char* fontPaths[] = {
-        "/system/fonts/SysSans-Hans-Regular.ttf",  // 一加/OPPO
-        "/system/fonts/NotoSansCJK-Regular.ttc",   // Google
-        "/system/fonts/DroidSansFallback.ttf",      // 备用
+        "/system/fonts/SysSans-Hans-Regular.ttf",
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/DroidSansFallback.ttf",
     };
     
     ImFont* font = nullptr;
@@ -108,32 +111,34 @@ void LoadConfig() {
             }
             else if (sscanf(line, "predict=%d", &ival) == 1) {
                 g_featurePredict = (ival != 0);
+                g_toggleAnimTarget[0] = g_featurePredict ? 1 : 0;
             }
             else if (sscanf(line, "esp=%d", &ival) == 1) {
                 g_featureESP = (ival != 0);
+                g_toggleAnimTarget[1] = g_featureESP ? 1 : 0;
             }
             else if (sscanf(line, "instantQuit=%d", &ival) == 1) {
                 g_featureInstantQuit = (ival != 0);
+                g_toggleAnimTarget[2] = g_featureInstantQuit ? 1 : 0;
             }
             else if (sscanf(line, "autoBuy=%d", &ival) == 1) {
                 autoBuy = (ival != 0);
+                g_toggleAnimTarget[3] = autoBuy ? 1 : 0;
             }
             else if (sscanf(line, "autoRefresh=%d", &ival) == 1) {
                 autoRefresh = (ival != 0);
+                g_toggleAnimTarget[4] = autoRefresh ? 1 : 0;
             }
         }
         fclose(f);
         
-        // 应用加载的缩放
         ImGui::GetIO().FontGlobalScale = g_globalScale;
         printf("[+] Config loaded\n");
-    } else {
-        printf("[-] No config file, using defaults\n");
     }
 }
 
-// ========== 自定义滑动开关（修复版） ==========
-bool ToggleSwitch(const char* label, bool* v) {
+// ========== 精美滑动开关（带动画） ==========
+bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
         return false;
@@ -154,32 +159,66 @@ bool ToggleSwitch(const char* label, bool* v) {
     if (!ImGui::ItemAdd(total_bb, id))
         return false;
     
-    // 背景
-    float t = *v ? 1.0f : 0.0f;
+    // 更新动画进度
+    float target = (*v ? 1.0f : 0.0f);
+    g_toggleAnimTarget[animIdx] = target;
     
-    // 【修复】移除对 g.LastActiveIdTimer 的依赖，简化动画
-    ImU32 col_bg = *v ? ImGui::GetColorU32(ImVec4(0.26f, 0.98f, 0.26f, 0.94f)) : ImGui::GetColorU32(ImVec4(0.76f, 0.76f, 0.76f, 0.94f));
+    float& progress = g_toggleAnimProgress[animIdx];
+    float speed = 0.15f;
+    progress += (target - progress) * speed;
+    if (fabs(progress - target) < 0.01f) progress = target;
+    
+    // 背景色
+    ImVec4 bgColorOn(0.2f, 0.8f, 0.3f, 0.9f);
+    ImVec4 bgColorOff(0.3f, 0.3f, 0.3f, 0.9f);
+    
+    ImVec4 currentBgColor(
+        bgColorOff.x + (bgColorOn.x - bgColorOff.x) * progress,
+        bgColorOff.y + (bgColorOn.y - bgColorOff.y) * progress,
+        bgColorOff.z + (bgColorOn.z - bgColorOff.z) * progress,
+        bgColorOff.w + (bgColorOn.w - bgColorOff.w) * progress
+    );
     
     ImRect frame_bb(pos, ImVec2(pos.x + width, pos.y + height));
-    window->DrawList->AddRectFilled(frame_bb.Min, frame_bb.Max, col_bg, height * 0.5f);
     
-    // 滑块（根据状态计算位置）
-    float shift = t * (width - 2 * radius - 4);
+    window->DrawList->AddRectFilled(
+        frame_bb.Min, frame_bb.Max,
+        ImGui::GetColorU32(currentBgColor),
+        height * 0.5f
+    );
+    
+    float shift = progress * (width - 2 * radius - 4);
+    ImVec2 thumbCenter(
+        pos.x + radius + shift + (radius/2),
+        pos.y + height/2
+    );
+    
     window->DrawList->AddCircleFilled(
-        ImVec2(pos.x + radius + shift + (radius/2), pos.y + height/2), 
-        radius-2, 
-        IM_COL32(255, 255, 255, 255), 
+        thumbCenter,
+        radius - 1,
+        IM_COL32(255, 255, 255, 255),
         32
     );
     
+    window->DrawList->AddCircle(
+        thumbCenter,
+        radius - 3,
+        IM_COL32(200, 200, 200, 100),
+        32,
+        1.0f
+    );
+    
     if (label_size.x > 0.0f) {
-        ImGui::RenderText(ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, pos.y + (height - label_size.y) * 0.5f), label);
+        ImGui::RenderText(
+            ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, pos.y + (height - label_size.y) * 0.5f),
+            label
+        );
     }
     
-    // 点击处理
     bool pressed = ImGui::ButtonBehavior(total_bb, id, NULL, NULL, ImGuiButtonFlags_PressedOnClick);
     if (pressed) {
         *v = !*v;
+        g_toggleAnimTarget[animIdx] = *v ? 1 : 0;
     }
     
     return pressed;
@@ -189,14 +228,16 @@ int main()
 {
     printf("[1] Starting JCC Assistant...\n");
     
-    // 先创建 ImGui 上下文
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     
-    // 加载中文字体
     LoadChineseFont();
     
-    android::AImGui imgui(android::AImGui::Options{.renderType = android::AImGui::RenderType::RenderNative, .autoUpdateOrientation = true});
+    android::AImGui imgui(android::AImGui::Options{
+        .renderType = android::AImGui::RenderType::RenderNative,
+        .autoUpdateOrientation = true
+    });
+    
     bool state = true, showDemoWindow = false, showAnotherWindow = false;
     ImVec4 clearColor(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -206,7 +247,6 @@ int main()
         return 0;
     }
 
-    // 加载配置
     LoadConfig();
 
     std::thread processInputEventThread(
@@ -221,7 +261,6 @@ int main()
 
     const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
-    auto frameTimer = std::chrono::high_resolution_clock::now();
     g_fpsTimer = std::chrono::high_resolution_clock::now();
     
     printf("[2] Entering main loop\n");
@@ -230,12 +269,10 @@ int main()
     {
         auto frameStart = std::chrono::high_resolution_clock::now();
         
-        // 读取游戏数据
         ReadGameData();
 
         imgui.BeginFrame();
 
-        // 计算帧率
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -245,26 +282,36 @@ int main()
             g_fpsTimer = now;
         }
 
-        // 1. Show the big demo window
         if (showDemoWindow)
             ImGui::ShowDemoWindow(&showDemoWindow);
 
         // ========== 金铲铲助手主窗口 ==========
         {
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.12f, 0.95f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.2f, 0.3f, 0.8f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.4f, 0.8f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.5f, 0.9f, 0.9f));
+            
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
             
-            // ===== 帧率显示 =====
-            ImGui::TextColored(ImVec4(0,1,1,1), "📊 帧率: %.1f FPS", g_currentFPS);
+            ImGui::Separator();
             
-            // ===== 全局缩放控制 =====
-            ImGui::TextColored(ImVec4(0,1,1,1), "⚙️ 全局缩放");
+            // 信息栏
+            ImGui::Columns(2, "info", false);
+            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "FPS: %.0f", g_currentFPS);
+            ImGui::NextColumn();
+            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "缩放: %.1fx", g_globalScale);
+            ImGui::Columns(1);
             
+            ImGui::Separator();
+            
+            // 全局缩放滑块
             float prevScale = g_globalScale;
-            if (ImGui::SliderFloat("缩放", &g_globalScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
+            if (ImGui::SliderFloat("全局缩放", &g_globalScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
                 ImGui::GetIO().FontGlobalScale = g_globalScale;
             }
-            ImGui::SameLine();
-            ImGui::Text("(%.0f%%)", g_globalScale * 100);
             
             if (prevScale != g_globalScale) {
                 SaveConfig();
@@ -272,8 +319,8 @@ int main()
             
             ImGui::Separator();
             
-            // ===== 功能开关（滑动开关） =====
-            ImGui::TextColored(ImVec4(1,1,0,1), "🔧 功能设置");
+            // 功能设置
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "功能设置");
             
             bool prevPredict = g_featurePredict;
             bool prevESP = g_featureESP;
@@ -281,56 +328,54 @@ int main()
             bool prevAutoBuy = autoBuy;
             bool prevAutoRefresh = autoRefresh;
             
-            // 使用滑动开关（修复版）
-            ToggleSwitch("预测", &g_featurePredict);
+            ToggleSwitch("预测", &g_featurePredict, 0);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("开启后预测敌方下一步行动");
             }
             
-            ToggleSwitch("透视", &g_featureESP);
+            ToggleSwitch("透视", &g_featureESP, 1);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("开启后显示敌方位置");
             }
             
-            ToggleSwitch("秒退", &g_featureInstantQuit);
+            ToggleSwitch("秒退", &g_featureInstantQuit, 2);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("开启后快速退出对局");
             }
             
             ImGui::Separator();
             
-            // ===== 游戏功能 =====
-            ImGui::TextColored(ImVec4(0,1,1,1), "🎮 游戏功能");
+            // 游戏功能
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "游戏功能");
             
-            ToggleSwitch("自动购买", &autoBuy);
-            ToggleSwitch("自动刷新", &autoRefresh);
+            ToggleSwitch("自动购买", &autoBuy, 3);
+            ToggleSwitch("自动刷新", &autoRefresh, 4);
             
-            // ===== 游戏数据 =====
             ImGui::Separator();
-            ImGui::TextColored(ImVec4(1,1,0,1), "💰 金币: %d", gold);
-            ImGui::TextColored(ImVec4(0,1,0,1), "📊 等级: %d", level);
-            ImGui::TextColored(ImVec4(1,0,0,1), "❤️ 血量: %d", hp);
             
-            // 进度条
+            // 游戏数据
+            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.2f, 1.0f), "金币: %d", gold);
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "等级: %d", level);
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "血量: %d", hp);
+            
             float progressWidth = 200.0f * g_globalScale;
             float progressHeight = 20.0f * g_globalScale;
             ImGui::ProgressBar(hp/100.0f, ImVec2(progressWidth, progressHeight), "");
             
-            // 按钮
-            if (ImGui::Button("刷新", ImVec2(100 * g_globalScale, 0))) {
+            ImGui::Separator();
+            
+            if (ImGui::Button("刷新", ImVec2(100 * g_globalScale, 30 * g_globalScale))) {
                 printf("[+] Refresh button clicked\n");
             }
             
-            // ===== 当前功能状态 =====
             ImGui::Separator();
-            ImGui::TextColored(ImVec4(0,1,1,1), "📋 当前状态");
-            ImGui::Text("预测: %s", g_featurePredict ? "✅开启" : "❌关闭");
-            ImGui::Text("透视: %s", g_featureESP ? "✅开启" : "❌关闭");
-            ImGui::Text("秒退: %s", g_featureInstantQuit ? "✅开启" : "❌关闭");
-            ImGui::Text("自动购买: %s", autoBuy ? "✅开启" : "❌关闭");
-            ImGui::Text("自动刷新: %s", autoRefresh ? "✅开启" : "❌关闭");
+            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "当前状态");
+            ImGui::Text("预测: %s", g_featurePredict ? "开启" : "关闭");
+            ImGui::Text("透视: %s", g_featureESP ? "开启" : "关闭");
+            ImGui::Text("秒退: %s", g_featureInstantQuit ? "开启" : "关闭");
+            ImGui::Text("自动购买: %s", autoBuy ? "开启" : "关闭");
+            ImGui::Text("自动刷新: %s", autoRefresh ? "开启" : "关闭");
             
-            // 如果有变化就保存
             if (prevPredict != g_featurePredict || 
                 prevESP != g_featureESP || 
                 prevInstantQuit != g_featureInstantQuit ||
@@ -340,21 +385,21 @@ int main()
             }
             
             ImGui::End();
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(4);
         }
 
-        // 3. Show another simple window
         if (showAnotherWindow)
         {
-            ImGui::Begin("Another Window", &showAnotherWindow);
+            ImGui::Begin("另一个窗口", &showAnotherWindow);
             ImGui::Text("Hello from another window!");
-            if (ImGui::Button("Close Me"))
+            if (ImGui::Button("关闭"))
                 showAnotherWindow = false;
             ImGui::End();
         }
 
         imgui.EndFrame();
         
-        // 帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         
@@ -369,9 +414,7 @@ int main()
     if (processInputEventThread.joinable())
         processInputEventThread.join();
 
-    // 退出前保存配置
     SaveConfig();
-
     printf("[3] JCC Assistant exited\n");
     return 0;
 }
