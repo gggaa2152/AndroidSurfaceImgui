@@ -10,14 +10,23 @@
 #include <string>
 #include <vector>
 #include <atomic>
-#include <cstdarg> 
+#include <cstdarg>
+#include <signal.h> // 新增：信号处理
+#include <android/log.h> // 新增：Android 日志
 
 // 解决 C++20 下 char8_t* 无法隐式转换为 char* 的问题
 #define U8(str) (const char*)u8##str
 
-// 浮点精度比较宏（解决浮点数微小差异问题）
+// 浮点精度比较宏
 #define FLOAT_EQ(a, b, epsilon) (fabs((a) - (b)) < (epsilon))
 #define FLOAT_EPSILON 0.01f
+
+// Android 日志宏（兼容 Global.h）
+#ifndef LOG_TAG
+#define LOG_TAG "JCCAssistant"
+#define AppLogError(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define AppLogInfo(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#endif
 
 // ========== 全局配置 ==========
 struct AppConfig {
@@ -48,31 +57,30 @@ struct AppConfig {
 AppConfig g_Config;
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
 
-// ========== 日志辅助函数（重命名避免宏冲突） ==========
-// 修复：函数名改为 AppLogError，避免与 Global.h 中的 LogError 宏冲突
-void AppLogError(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    std::fprintf(stderr, "[ERROR] ");
-    std::vfprintf(stderr, fmt, args);
-    std::fprintf(stderr, "\n");
-    va_end(args);
-    
-    // 兼容 Android 日志宏（可选：同时输出到 Android 日志系统）
-    #ifdef LogError
-        LogError(fmt, args);
-    #endif
+// ========== 全局原子变量（线程安全） ==========
+std::atomic<bool> g_ImguiReady(false); // 标记 AImGui 是否完全初始化
+std::atomic<bool> g_IsRunning(true);
+
+// ========== 信号处理（优雅退出） ==========
+void SignalHandler(int sig) {
+    AppLogError("捕获信号 %d，开始优雅退出", sig);
+    g_IsRunning = false;
 }
 
-// ========== 文件操作 ==========
+// ========== 文件操作（增加权限检查） ==========
 void SaveConfig() {
-    FILE* f = fopen(CONFIG_PATH, "w");
-    if (!f) {
-        AppLogError("保存配置失败：无法打开文件 %s", CONFIG_PATH); // 改用新函数名
+    // 检查目录可写性
+    if (access("/data/local/tmp", W_OK) != 0) {
+        AppLogError("目录 /data/local/tmp 不可写，无法保存配置");
         return;
     }
 
-    // 写入配置并校验返回值
+    FILE* f = fopen(CONFIG_PATH, "w");
+    if (!f) {
+        AppLogError("保存配置失败：无法打开文件 %s", CONFIG_PATH);
+        return;
+    }
+
     int writeCount = 0;
     writeCount += fprintf(f, "scale=%.2f\n", g_Config.globalScale);
     writeCount += fprintf(f, "predict=%d\n", g_Config.featurePredict);
@@ -88,7 +96,7 @@ void SaveConfig() {
     writeCount += fprintf(f, "board_lock=%d\n", g_Config.board.lockPosition);
 
     if (writeCount <= 0) {
-        AppLogError("保存配置失败：写入文件内容为空"); // 改用新函数名
+        AppLogError("保存配置失败：写入文件内容为空");
     }
 
     fclose(f);
@@ -97,14 +105,13 @@ void SaveConfig() {
 void LoadConfig() {
     FILE* f = fopen(CONFIG_PATH, "r");
     if (!f) {
-        AppLogError("加载配置失败：文件 %s 不存在或无法读取", CONFIG_PATH); // 改用新函数名
+        AppLogInfo("配置文件 %s 不存在，使用默认配置", CONFIG_PATH);
         return;
     }
 
     char line[128];
     while (fgets(line, sizeof(line), f)) {
         float fv; int iv;
-        // 每个解析都增加容错，避免非法值
         if (sscanf(line, "scale=%f", &fv) == 1 && fv >= 0.5f && fv <= 2.0f) {
             g_Config.globalScale = fv;
         } else if (sscanf(line, "predict=%d", &iv) == 1) {
@@ -133,13 +140,12 @@ void LoadConfig() {
     }
     fclose(f);
     
-    // 边界保护
     if(g_Config.globalScale < 0.5f) g_Config.globalScale = 0.5f;
     if(g_Config.globalScale > 2.0f) g_Config.globalScale = 2.0f;
     g_Config.windowInitialized = true;
 }
 
-// ========== 字体加载 ==========
+// ========== 字体加载（增加容错） ==========
 void LoadFonts(ImGuiIO& io) {
     const char* fontPaths[] = {
         "/system/fonts/NotoSansSC-Regular.otf",
@@ -159,18 +165,22 @@ void LoadFonts(ImGuiIO& io) {
         if (access(path, R_OK) == 0) {
             font = io.Fonts->AddFontFromFileTTF(path, 18.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
             if (font) {
-                std::cout << "[INFO] 成功加载字体：" << path << std::endl;
+                AppLogInfo("成功加载字体：%s", path);
                 break;
             } else {
-                AppLogError("加载字体失败：%s", path); // 改用新函数名
+                AppLogError("加载字体失败：%s", path);
             }
         }
     }
     if (!font) {
-        std::cout << "[INFO] 使用 ImGui 默认字体" << std::endl;
+        AppLogInfo("使用 ImGui 默认字体");
         io.Fonts->AddFontDefault();
     }
+    // 关键：字体加载后必须重建纹理
     io.Fonts->Build();
+    if (io.Fonts->TexID == nullptr) {
+        AppLogError("字体纹理创建失败！这会导致渲染崩溃");
+    }
 }
 
 // ========== 开关组件 ==========
@@ -199,12 +209,22 @@ bool ToggleSwitch(const char* label, bool* v) {
     return *v;
 }
 
-// ========== 棋盘组件 ==========
+// ========== 棋盘组件（增加空指针检查） ==========
 void DrawChessboard() {
     if (!g_Config.featureESP) return;
 
-    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
+    // 空指针检查
+    if (io.BackendRendererUserData == nullptr) {
+        AppLogError("ImGui 渲染后端未初始化，跳过棋盘绘制");
+        return;
+    }
+
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    if (drawList == nullptr) {
+        AppLogError("背景绘制列表为空，跳过棋盘绘制");
+        return;
+    }
     
     const int ROWS = 4;
     const int COLS = 7;
@@ -245,7 +265,7 @@ void DrawChessboard() {
             float cy = g_Config.board.y + r * cellSize + cellSize * 0.5f;
             bool isOdd = (r + c) % 2 != 0;
             ImU32 color = isOdd ? IM_COL32(100, 100, 255, 160) : IM_COL32(255, 100, 100, 160);
-            drawList->AddCircleFilled(ImVec2(cx, cy), cellSize * 0.35f, color, 16);
+            draw_list->AddCircleFilled(ImVec2(cx, cy), cellSize * 0.35f, color, 16);
         }
     }
     
@@ -258,13 +278,55 @@ void DrawChessboard() {
     }
 }
 
+// ========== 输入线程（增加就绪检查） ==========
+void InputThreadFunc(android::AImGui* imguiPtr) {
+    AppLogInfo("输入线程启动，等待 AImGui 就绪");
+    // 等待 AImGui 初始化完成
+    while (g_IsRunning && !g_ImguiReady) {
+        std::this_thread::sleep_for(std::chrono::microseconds(500));
+    }
+
+    if (!g_IsRunning || imguiPtr == nullptr) {
+        AppLogError("输入线程退出：AImGui 指针为空或程序已停止");
+        return;
+    }
+
+    AppLogInfo("输入线程开始处理事件");
+    while (g_IsRunning) {
+        try {
+            imguiPtr->ProcessInputEvent();
+        } catch (const std::exception& e) {
+            AppLogError("处理输入事件异常：%s", e.what());
+        } catch (...) {
+            AppLogError("处理输入事件发生未知异常");
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(1000));
+    }
+    AppLogInfo("输入线程正常退出");
+}
+
 // ========== 主程序 ==========
 int main() {
+    // 注册信号处理（避免崩溃）
+    signal(SIGSEGV, SignalHandler);
+    signal(SIGABRT, SignalHandler);
+    signal(SIGINT, SignalHandler);
+
+    AppLogInfo("程序启动，初始化 ImGui 上下文");
+    // 1. 初始化 ImGui 上下文
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    ImGuiContext* ctx = ImGui::CreateContext();
+    if (ctx == nullptr) {
+        AppLogError("ImGui 上下文创建失败！");
+        return 1;
+    }
+    ImGui::SetCurrentContext(ctx); // 关键：设置当前上下文
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // 启用键盘导航
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // 启用手柄导航
     
+    // 2. 设置 ImGui 样式
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 10.0f;
@@ -272,47 +334,60 @@ int main() {
     style.ScrollbarSize = 22.0f;
     style.TouchExtraPadding = ImVec2(5, 5);
 
+    // 3. 初始化 AImGui（关键：增加详细日志）
+    AppLogInfo("初始化 AImGui，使用 Native 渲染");
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
     });
 
     if (!imgui) {
-        AppLogError("AImGui 初始化失败! 请检查是否在 Root 权限下运行。"); // 改用新函数名
-        ImGui::DestroyContext();
+        AppLogError("AImGui 初始化失败! 请检查：1. Root 权限 2. Android 版本 3. SurfaceFlinger 权限");
+        ImGui::DestroyContext(ctx);
         return 1;
     }
+    AppLogInfo("AImGui 初始化成功");
 
+    // 4. 加载字体（必须在 AImGui 初始化后）
     LoadFonts(io);
+
+    // 5. 加载配置
     LoadConfig();
 
-    std::atomic<bool> isRunning(true);
-    
-    std::thread inputThread([&] {
-        try {
-            while (isRunning) {
-                imgui.ProcessInputEvent();
-                std::this_thread::sleep_for(std::chrono::microseconds(1000));
-            }
-        } catch (const std::exception& e) {
-            AppLogError("输入线程异常：%s", e.what()); // 改用新函数名
-        } catch (...) {
-            AppLogError("输入线程发生未知异常"); // 改用新函数名
-        }
-    });
+    // 6. 标记 AImGui 就绪，启动输入线程
+    g_ImguiReady = true;
+    std::thread inputThread(InputThreadFunc, &imgui);
 
-    const int TARGET_FPS = 60; 
+    // 7. 主循环（固定帧率）
+    const int TARGET_FPS = 30; // 降低帧率，减少 Android 资源占用
     const auto frameDuration = std::chrono::microseconds(1000000 / TARGET_FPS);
     auto lastSaveTime = std::chrono::steady_clock::now();
     bool configDirty = false;
 
-    while (isRunning) {
+    AppLogInfo("进入主循环，目标帧率 %d FPS", TARGET_FPS);
+    while (g_IsRunning) {
         auto frameStart = std::chrono::steady_clock::now();
-        imgui.BeginFrame();
+
+        // 检查 AImGui 是否有效
+        if (!imgui) {
+            AppLogError("主循环中 AImGui 失效，退出程序");
+            g_IsRunning = false;
+            break;
+        }
+
+        // 开始 ImGui 帧
+        if (!imgui.BeginFrame()) {
+            AppLogError("BeginFrame 失败，跳过本次帧");
+            std::this_thread::sleep_for(frameDuration);
+            continue;
+        }
+
         io.FontGlobalScale = g_Config.globalScale;
 
+        // 绘制棋盘
         DrawChessboard();
 
+        // 绘制主菜单
         if (g_Config.showMenu) {
             if (g_Config.windowInitialized) {
                 ImGui::SetNextWindowPos(g_Config.windowPos, ImGuiCond_FirstUseEver);
@@ -360,7 +435,7 @@ int main() {
                 
                 ImGui::Spacing();
                 if (ImGui::Button(U8("安全退出"), ImVec2(-1, 40))) {
-                    isRunning = false;
+                    g_IsRunning = false;
                 }
             }
             ImGui::End();
@@ -371,8 +446,10 @@ int main() {
             ImGui::End();
         }
 
+        // 结束帧并渲染
         imgui.EndFrame();
 
+        // 自动保存配置
         auto now = std::chrono::steady_clock::now();
         if (configDirty && (now - lastSaveTime > std::chrono::seconds(5))) {
             SaveConfig();
@@ -380,21 +457,28 @@ int main() {
             lastSaveTime = now;
         }
 
+        // 帧率控制
         auto elapsed = std::chrono::steady_clock::now() - frameStart;
         if (elapsed < frameDuration) {
             std::this_thread::sleep_for(frameDuration - elapsed);
         }
     }
 
+    // 8. 退出清理（关键：确保资源释放）
+    AppLogInfo("程序退出，开始清理资源");
     if (configDirty) {
         SaveConfig();
     }
 
-    isRunning = false; 
+    // 等待输入线程退出
     if (inputThread.joinable()) {
-        inputThread.join(); 
+        inputThread.join();
     }
-    
-    ImGui::DestroyContext(); 
+
+    // 销毁 AImGui 和 ImGui 上下文
+    imgui.Destroy(); // 显式销毁 AImGui
+    ImGui::DestroyContext(ctx);
+
+    AppLogInfo("程序正常退出");
     return 0;
 }
