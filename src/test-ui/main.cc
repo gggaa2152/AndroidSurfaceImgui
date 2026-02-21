@@ -15,6 +15,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+// 【修复】添加必要的头文件
+#include <sys/mman.h>  // shm_open 需要这个
+
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
 int level = 8;
@@ -28,8 +31,8 @@ bool g_featureESP = false;         // 透视
 bool g_featureInstantQuit = false; // 秒退
 
 // ========== 棋盘设置 ==========
-const int CHESSBOARD_ROWS = 8;
-const int CHESSBOARD_COLS = 7;
+const int CHESSBOARD_ROWS = 4;       // 【修改】改为4行
+const int CHESSBOARD_COLS = 7;       // 7列
 float g_chessboardScale = 1.0f;
 float g_chessboardPosX = 200;
 float g_chessboardPosY = 200;
@@ -42,10 +45,10 @@ struct SharedGameData {
     int hp;
     int autoBuy;
     int autoRefresh;
-    int timestamp;           // 时间戳，用于检测更新
-    int version;             // 版本号
-    char scriptName[64];     // 当前使用的脚本名
-    int reserved[16];        // 预留空间
+    int timestamp;
+    int version;
+    char scriptName[64];
+    int reserved[16];
 };
 
 // ========== 共享内存变量 ==========
@@ -96,9 +99,6 @@ bool InitSharedMemory() {
     }
     
     printf("[+] Shared memory initialized successfully\n");
-    printf("    - gold: %d, level: %d, hp: %d\n", 
-           g_sharedData->gold, g_sharedData->level, g_sharedData->hp);
-    
     return true;
 }
 
@@ -106,7 +106,6 @@ bool InitSharedMemory() {
 void ReadFromSharedMemory() {
     if (!g_sharedData) return;
     
-    // 检查是否有更新（通过时间戳）
     if (g_sharedData->timestamp != g_lastTimestamp) {
         gold = g_sharedData->gold;
         level = g_sharedData->level;
@@ -116,22 +115,9 @@ void ReadFromSharedMemory() {
         
         g_lastTimestamp = g_sharedData->timestamp;
         
-        printf("[+] Data updated: gold=%d, level=%d, hp=%d (ts=%d)\n", 
-               gold, level, hp, g_lastTimestamp);
+        printf("[+] Data updated: gold=%d, level=%d, hp=%d\n", 
+               gold, level, hp);
     }
-}
-
-// ========== 写入数据到共享内存（可选，用于测试） ==========
-void WriteToSharedMemory(int newGold, int newLevel, int newHp) {
-    if (!g_sharedData) return;
-    
-    g_sharedData->gold = newGold;
-    g_sharedData->level = newLevel;
-    g_sharedData->hp = newHp;
-    g_sharedData->timestamp++;
-    
-    printf("[+] Wrote to shared memory: gold=%d, level=%d, hp=%d (ts=%d)\n",
-           newGold, newLevel, newHp, g_sharedData->timestamp);
 }
 
 // ========== 清理共享内存 ==========
@@ -144,8 +130,6 @@ void CleanupSharedMemory() {
         close(g_shm_fd);
         g_shm_fd = -1;
     }
-    // 注意：不删除共享内存对象，这样其他程序还可以访问
-    // shm_unlink("/jcc_assistant_data");
 }
 
 // ========== 加载中文字体 ==========
@@ -360,7 +344,7 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     return pressed;
 }
 
-// ========== 绘制棋盘 ==========
+// ========== 绘制棋盘（7列4行，使用正方形） ==========
 void DrawChessboard() {
     if (!g_featureESP) return;
     
@@ -390,13 +374,15 @@ void DrawChessboard() {
         }
     }
     
+    // 绘制棋盘背景（半透明）
     drawList->AddRectFilled(
         ImVec2(g_chessboardPosX, g_chessboardPosY),
         ImVec2(g_chessboardPosX + boardWidth, g_chessboardPosY + boardHeight),
         IM_COL32(30, 30, 30, 100),
-        10.0f
+        4.0f  // 圆角
     );
     
+    // 绘制格子线
     for (int row = 0; row <= CHESSBOARD_ROWS; row++) {
         float y = g_chessboardPosY + row * cellSize;
         drawList->AddLine(
@@ -417,26 +403,38 @@ void DrawChessboard() {
         );
     }
     
+    // 【修改】使用正方形代替圆圈
     for (int row = 0; row < CHESSBOARD_ROWS; row++) {
         for (int col = 0; col < CHESSBOARD_COLS; col++) {
-            float centerX = g_chessboardPosX + col * cellSize + cellSize/2;
-            float centerY = g_chessboardPosY + row * cellSize + cellSize/2;
+            float x = g_chessboardPosX + col * cellSize + cellSize/2;
+            float y = g_chessboardPosY + row * cellSize + cellSize/2;
+            float halfSize = cellSize * 0.25f;  // 正方形大小
             
-            ImU32 circleColor = ((row + col) % 2 == 0) ? 
-                IM_COL32(255, 100, 100, 200) : IM_COL32(100, 255, 100, 200);
+            // 根据位置决定颜色（模仿底部正方形的颜色）
+            ImU32 squareColor;
+            if (row < 2) {
+                // 上半部分用红色系
+                squareColor = IM_COL32(255, 100 + row * 30, 100, 200);
+            } else {
+                // 下半部分用蓝色系
+                squareColor = IM_COL32(100, 100 + (row-2) * 50, 255, 200);
+            }
             
-            drawList->AddCircleFilled(
-                ImVec2(centerX, centerY),
-                cellSize * 0.3f,
-                circleColor,
-                16
+            // 绘制正方形
+            drawList->AddRectFilled(
+                ImVec2(x - halfSize, y - halfSize),
+                ImVec2(x + halfSize, y + halfSize),
+                squareColor,
+                2.0f  // 小圆角
             );
             
-            drawList->AddCircle(
-                ImVec2(centerX, centerY),
-                cellSize * 0.3f,
-                IM_COL32(255, 255, 255, 200),
-                16,
+            // 添加白色边框
+            drawList->AddRect(
+                ImVec2(x - halfSize, y - halfSize),
+                ImVec2(x + halfSize, y + halfSize),
+                IM_COL32(255, 255, 255, 150),
+                2.0f,
+                0,
                 1.0f
             );
         }
@@ -459,14 +457,16 @@ int main()
     printf("[1] Starting JCC Assistant...\n");
     
     // 初始化共享内存
-    if (!InitSharedMemory()) {
-        printf("[-] Shared memory init failed, but continuing...\n");
-    }
+    InitSharedMemory();
     
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     
     ImGuiIO& io = ImGui::GetIO();
+    
+    // 【修改】禁止穿透点击 - 窗口捕获所有点击
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     
     ImGuiStyle& style = ImGui::GetStyle();
     style.GrabMinSize = 24.0f;
@@ -494,40 +494,34 @@ int main()
 
     LoadConfig();
 
-    std::thread processInputEventThread(
-        [&]
-        {
-            while (state)
-            {
-                imgui.ProcessInputEvent();
-                std::this_thread::sleep_for(std::chrono::microseconds(500));
-            }
-        });
+    // 【修改】无后台运行 - 不在后台运行
+    // 输入事件在主循环中处理，不需要独立线程
+    // 注释掉线程代码
 
-    const float TARGET_FPS = 120.0f;
+    const float TARGET_FPS = 60.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
     g_fpsTimer = std::chrono::high_resolution_clock::now();
     
-    printf("[2] Entering main loop\n");
+    printf("[2] Entering main loop (无后台运行)\n");
     
     auto lastSaveTime = std::chrono::high_resolution_clock::now();
-    
-    // 测试：写入一些测试数据
-    if (g_sharedData) {
-        WriteToSharedMemory(150, 9, 95);
-    }
     
     while (state)
     {
         auto frameStart = std::chrono::high_resolution_clock::now();
+        
+        // 直接处理输入事件（无后台）
+        imgui.ProcessInputEvent();
         
         // 从共享内存读取数据
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
 
+        // 绘制棋盘
         DrawChessboard();
 
+        // 计算帧率
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -580,7 +574,6 @@ int main()
             if (g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 ImGui::Text("脚本: %s", g_sharedData->scriptName);
-                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
@@ -644,6 +637,7 @@ int main()
 
         imgui.EndFrame();
         
+        // 帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         
@@ -655,11 +649,8 @@ int main()
         }
     }
 
-    if (processInputEventThread.joinable())
-        processInputEventThread.join();
-
-    SaveConfig();
     CleanupSharedMemory();
+    SaveConfig();
     
     printf("[3] JCC Assistant exited\n");
     return 0;
