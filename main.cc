@@ -2,8 +2,7 @@
 #include "AImGui.h"
 #include "imgui_internal.h"
 
-// 添加必要的系统头文件
-#define _GNU_SOURCE
+// 系统头文件
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -11,7 +10,6 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sstream>
-
 #include <thread>
 #include <iostream>
 #include <chrono>
@@ -59,11 +57,10 @@ int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
 
-// ========== 初始化共享内存 ==========
+// ========== 初始化共享内存（Android兼容版） ==========
 bool InitSharedMemory() {
     printf("[+] Initializing shared memory...\n");
     
-#ifdef __ANDROID__
     // Android 上使用文件模拟共享内存
     g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_CREAT | O_RDWR, 0666);
     if (g_shm_fd < 0) {
@@ -77,20 +74,6 @@ bool InitSharedMemory() {
         close(g_shm_fd);
         return false;
     }
-#else
-    // Linux 上使用 shm_open
-    g_shm_fd = shm_open("/jcc_assistant_data", O_CREAT | O_RDWR, 0666);
-    if (g_shm_fd < 0) {
-        printf("[-] Failed to create shared memory: %s\n", strerror(errno));
-        return false;
-    }
-    
-    if (ftruncate(g_shm_fd, sizeof(SharedGameData)) < 0) {
-        printf("[-] Failed to set size: %s\n", strerror(errno));
-        close(g_shm_fd);
-        return false;
-    }
-#endif
     
     // 映射到内存
     g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
@@ -118,6 +101,8 @@ bool InitSharedMemory() {
     }
     
     printf("[+] Shared memory initialized successfully\n");
+    printf("    Current values: gold=%d, level=%d, hp=%d\n", 
+           g_sharedData->gold, g_sharedData->level, g_sharedData->hp);
     return true;
 }
 
@@ -139,6 +124,19 @@ void ReadFromSharedMemory() {
     }
 }
 
+// ========== 写入共享内存（用于测试） ==========
+void WriteToSharedMemory(int newGold, int newLevel, int newHp) {
+    if (!g_sharedData) return;
+    
+    g_sharedData->gold = newGold;
+    g_sharedData->level = newLevel;
+    g_sharedData->hp = newHp;
+    g_sharedData->timestamp++;
+    
+    printf("[+] Wrote to shared memory: gold=%d, level=%d, hp=%d (ts=%d)\n",
+           newGold, newLevel, newHp, g_sharedData->timestamp);
+}
+
 // ========== 清理共享内存 ==========
 void CleanupSharedMemory() {
     if (g_sharedData) {
@@ -149,6 +147,7 @@ void CleanupSharedMemory() {
         close(g_shm_fd);
         g_shm_fd = -1;
     }
+    // 不删除文件，以便其他程序访问
 }
 
 // ========== 加载中文字体 ==========
@@ -220,6 +219,7 @@ void SaveConfig() {
         fprintf(f, "chessboardPosX=%.0f\n", g_chessboardPosX);
         fprintf(f, "chessboardPosY=%.0f\n", g_chessboardPosY);
         fclose(f);
+        printf("[+] Config saved\n");
     }
 }
 
@@ -273,7 +273,9 @@ void LoadConfig() {
         
         ImGui::GetIO().FontGlobalScale = g_globalScale;
         g_windowPosInitialized = true;
+        printf("[+] Config loaded (scale=%.2f)\n", g_globalScale);
     } else {
+        printf("[-] No config file, creating default\n");
         SaveConfig();
     }
 }
@@ -584,6 +586,7 @@ int main()
             if (g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 ImGui::Text("脚本: %s", g_sharedData->scriptName);
+                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
@@ -602,8 +605,19 @@ int main()
             bool prevInstantQuit = g_featureInstantQuit;
             
             ToggleSwitch("预测", &g_featurePredict, 0);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("开启后预测敌方下一步行动");
+            }
+            
             ToggleSwitch("透视", &g_featureESP, 1);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("开启后显示棋盘");
+            }
+            
             ToggleSwitch("秒退", &g_featureInstantQuit, 2);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("开启后快速退出对局");
+            }
             
             ImGui::Separator();
             
@@ -616,6 +630,7 @@ int main()
                 ImGui::Separator();
                 ImGui::Text("棋盘设置");
                 ImGui::SliderFloat("缩放", &g_chessboardScale, 0.5f, 2.0f, "%.1f");
+                ImGui::Text("拖动棋盘可移动位置");
             }
             
             ImGui::End();
