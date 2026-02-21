@@ -4,6 +4,7 @@
 
 #include <thread>
 #include <cstdio>
+#include <string>
 
 // ========== 数据 ==========
 int gold = 100, level = 8, hp = 85;
@@ -12,12 +13,46 @@ float g_scale = 1.0f, g_boardScale = 1.0f;
 ImVec2 g_winPos(50,100), g_winSize(280,400);
 bool g_posInit = false;
 
-// ========== 字体 ==========
-void LoadFont() {
+// ========== 字体（修复问号） ==========
+void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
-    const char* paths[] = {"/system/fonts/SysSans-Hans-Regular.ttf"};
-    ImFontConfig cfg; cfg.OversampleH = cfg.OversampleV = 2;
-    for (auto p : paths) if (io.Fonts->AddFontFromFileTTF(p, 16, &cfg, io.Fonts->GetGlyphRangesChineseFull())) break;
+    
+    // 中文字体路径列表
+    const char* fontPaths[] = {
+        "/system/fonts/SysSans-Hans-Regular.ttf",   // 一加/OPPO
+        "/system/fonts/NotoSansCJK-Regular.ttc",    // Google
+        "/system/fonts/DroidSansFallback.ttf",      // 备用
+    };
+    
+    ImFontConfig config;
+    config.OversampleH = 2;
+    config.OversampleV = 2;
+    config.PixelSnapH = false;
+    config.MergeMode = false;  // 不合并，直接使用
+    
+    ImFont* font = nullptr;
+    for (const char* path : fontPaths) {
+        font = io.Fonts->AddFontFromFileTTF(path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+        if (font) {
+            printf("[+] Loaded font: %s\n", path);
+            io.FontDefault = font;
+            break;
+        }
+    }
+    
+    // 如果都没找到，用默认字体但强制包含中文范围
+    if (!font) {
+        printf("[-] No Chinese font, using fallback\n");
+        ImFontConfig fallbackConfig;
+        fallbackConfig.MergeMode = true;
+        io.Fonts->AddFontDefault(&fallbackConfig);
+        
+        // 尝试加载备用字体合并
+        for (const char* path : fontPaths) {
+            io.Fonts->AddFontFromFileTTF(path, 16.0f, &fallbackConfig, io.Fonts->GetGlyphRangesChineseFull());
+        }
+    }
+    
     io.Fonts->Build();
 }
 
@@ -70,19 +105,52 @@ void Scale(ImGuiSizeCallbackData* d) {
     ImGui::GetIO().FontGlobalScale = g_scale;
 }
 
+// ========== 保存配置 ==========
+void SaveConfig() {
+    FILE* f = fopen("/data/local/tmp/jcc_config.txt", "w");
+    if (f) {
+        fprintf(f, "%.2f %d %d %d %.2f\n", 
+                g_scale, g_predict, g_esp, g_instant, g_boardScale);
+        fclose(f);
+    }
+}
+
+// ========== 加载配置 ==========
+void LoadConfig() {
+    FILE* f = fopen("/data/local/tmp/jcc_config.txt", "r");
+    if (f) {
+        fscanf(f, "%f %d %d %d %f", &g_scale, &g_predict, &g_esp, &g_instant, &g_boardScale);
+        fclose(f);
+        ImGui::GetIO().FontGlobalScale = g_scale;
+    }
+}
+
 // ========== 主函数 ==========
 int main() {
-    printf("[1] Starting...\n");
+    printf("[1] Starting JCC Assistant...\n");
     
-    IMGUI_CHECKVERSION(); ImGui::CreateContext();
+    IMGUI_CHECKVERSION(); 
+    ImGui::CreateContext();
+    
+    // 先加载字体（关键！要在 ImGui 初始化后立即加载）
+    LoadChineseFont();
+    
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
+    if (!imgui) { printf("[-] Init failed\n"); return 0; }
     
-    LoadFont();
+    LoadConfig();
     bool running = 1;
     
-    std::thread input([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
+    std::thread input([&] { 
+        while(running) { 
+            imgui.ProcessInputEvent(); 
+            std::this_thread::yield(); 
+        } 
+    });
     
     auto lastSave = std::chrono::high_resolution_clock::now();
+    printf("[2] Entering main loop\n");
+    
     while (running) {
         auto start = std::chrono::high_resolution_clock::now();
         
@@ -94,32 +162,54 @@ int main() {
             if (g_posInit) ImGui::SetNextWindowPos(g_winPos, ImGuiCond_FirstUseEver);
             
             ImGui::Begin("金铲铲助手", &running);
-            g_winPos = ImGui::GetWindowPos(); g_winSize = ImGui::GetWindowSize(); g_posInit=1;
+            
+            // 获取窗口位置
+            ImVec2 curPos = ImGui::GetWindowPos();
+            ImVec2 curSize = ImGui::GetWindowSize();
+            if (curPos.x != g_winPos.x || curPos.y != g_winPos.y) g_winPos = curPos;
+            if (curSize.x != g_winSize.x || curSize.y != g_winSize.y) g_winSize = curSize;
+            g_posInit = true;
             
             ImGui::Text("缩放: %.1fx", g_scale);
+            ImGui::Separator();
+            
+            ImGui::Text("功能设置");
             Toggle("预测", &g_predict);
             Toggle("透视", &g_esp);
             Toggle("秒退", &g_instant);
-            ImGui::Text("金币:%d 等级:%d 血量:%d", gold, level, hp);
-            if (g_esp) ImGui::SliderFloat("棋盘", &g_boardScale, 0.3, 3);
+            
+            ImGui::Separator();
+            ImGui::Text("游戏数据");
+            ImGui::Text("金币: %d", gold);
+            ImGui::Text("等级: %d", level);
+            ImGui::Text("血量: %d", hp);
+            
+            if (g_esp) {
+                ImGui::Separator();
+                ImGui::Text("棋盘设置");
+                ImGui::SliderFloat("棋盘缩放", &g_boardScale, 0.3f, 3.0f, "%.1f");
+            }
             
             ImGui::End();
         }
         
         imgui.EndFrame();
         
-        int sleep = 8333 - std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::high_resolution_clock::now() - start).count();
+        // 120fps 控制
+        auto end = std::chrono::high_resolution_clock::now();
+        int sleep = 8333 - std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
         if (sleep > 0) usleep(sleep);
         
+        // 每2秒保存配置
         auto now = std::chrono::high_resolution_clock::now();
         if (std::chrono::duration<float>(now - lastSave).count() > 2) {
-            FILE* f = fopen("/data/local/tmp/config.txt", "w");
-            if (f) { fprintf(f, "%f %d %d %d", g_scale, g_predict, g_esp, g_instant); fclose(f); }
+            SaveConfig();
             lastSave = now;
         }
     }
     
+    SaveConfig();
     input.join();
+    printf("[3] Exited\n");
     return 0;
 }
