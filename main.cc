@@ -64,12 +64,10 @@ bool Toggle(const char* label, bool* v, int idx) {
     ImRect bb(pos, ImVec2(pos.x+wd + ImGui::CalcTextSize(label).x, pos.y+h));
     ImGui::ItemSize(bb); if (!ImGui::ItemAdd(bb, 0)) return 0;
     
-    // 动画更新
     float target = *v ? 1.0f : 0.0f;
     g_anim[idx] += (target - g_anim[idx]) * 0.25f;
     if (fabs(g_anim[idx] - target) < 0.01f) g_anim[idx] = target;
     
-    // 背景颜色渐变
     ImU32 bgColor = ImGui::GetColorU32(ImVec4(
         0.2f + g_anim[idx]*0.6f,
         0.2f + g_anim[idx]*0.6f,
@@ -87,7 +85,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（无限缩放） ==========
+// ========== 棋盘 ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -112,9 +110,9 @@ void DrawBoard() {
     }
 }
 
-// ========== 缩放回调 ==========
-void Scale(ImGuiSizeCallbackData* d) { 
-    g_scale = d->DesiredSize.x / 280; 
+// ========== 缩放回调（增大触摸区域）==========
+void Scale(ImGuiSizeCallbackData* data) { 
+    g_scale = data->DesiredSize.x / 280; 
     ImGui::GetIO().FontGlobalScale = g_scale;
 }
 
@@ -147,6 +145,10 @@ int main() {
     
     IMGUI_CHECKVERSION(); 
     ImGui::CreateContext();
+    
+    // 【修改】增大右下角三角的触摸区域
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.GrabMinSize = 32.0f;  // 从默认 12 或 24 增大到 32
     
     LoadChineseFont();
     
