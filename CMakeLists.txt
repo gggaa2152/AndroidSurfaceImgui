@@ -12,9 +12,8 @@ add_link_options(-s)
 
 find_library(liblog log NO_CACHE)
 
-# 【修改】添加当前目录到包含路径
 include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}        # 添加根目录
+    ${CMAKE_CURRENT_SOURCE_DIR}
     modules
     includes
     third_party
@@ -60,38 +59,35 @@ endif()
 
 # Build test-ui programs
 if(ANDROID_SURFACE_IMGUI_BUILD_TESTING)
-    # 【修改】main.cc 现在在根目录
     add_executable(test-ui 
-        ${CMAKE_CURRENT_SOURCE_DIR}/main.cc           # 从根目录取 main.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/main.cc
         ${AIMGUI_COMMON_SOURCES} 
         ${AIMGUI_IMGUI_SOURCES} 
         ${AIMGUI_IMGUI_BACKENDS_SOURCES}
     )
     
-    # 【添加】链接 rt 库（包含 shm_open）
+    # 【修改】移除 rt 库，Android 不需要它
     target_link_libraries(test-ui 
         ${liblog} 
         EGL 
         GLESv3 
         android 
         libzstd_static
-        rt          # 添加实时库，包含 shm_open
+        # rt 已移除
     )
     
     set_target_properties(test-ui PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "tests/${ANDROID_ABI}"
     )
     
-    # canvas-ui 保持不变
     add_executable(canvas-ui src/test-ui/canvas.cc ${AIMGUI_COMMON_SOURCES} ${AIMGUI_IMGUI_SOURCES} ${AIMGUI_IMGUI_BACKENDS_SOURCES})
-    target_link_libraries(canvas-ui ${liblog} EGL GLESv3 android libzstd_static rt)
+    target_link_libraries(canvas-ui ${liblog} EGL GLESv3 android libzstd_static)
     set_target_properties(canvas-ui PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "tests/${ANDROID_ABI}"
     )
     
-    # render-ui 保持不变
     add_executable(render-ui src/test-ui/render.cc ${AIMGUI_COMMON_SOURCES} ${AIMGUI_IMGUI_SOURCES} ${AIMGUI_IMGUI_BACKENDS_SOURCES})
-    target_link_libraries(render-ui ${liblog} EGL GLESv3 android libzstd_static rt)
+    target_link_libraries(render-ui ${liblog} EGL GLESv3 android libzstd_static)
     set_target_properties(render-ui PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "tests/${ANDROID_ABI}"
     )
