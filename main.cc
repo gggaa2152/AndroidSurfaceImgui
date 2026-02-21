@@ -1,6 +1,6 @@
 #include "Global.h"
 #include "AImGui.h"
-#include "imgui_internal.h"
+// ⚠️ 删除了对 imgui_internal.h 的引用，杜绝内部指针偏移导致的 0x50 崩溃
 
 // 系统头文件
 #include <unistd.h>
@@ -10,6 +10,11 @@
 #include <thread>
 #include <vector>
 #include <string>
+#include <android/log.h> // 引入原生安卓日志
+
+// 定义便捷的日志宏
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "JKChess", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "JKChess", __VA_ARGS__)
 
 // ========== 业务数据 (com.tencent.jkchess) ==========
 int gold = 100;
@@ -31,10 +36,10 @@ float g_chessboardPosY = 200.0f;
 // ========== 动画变量 ==========
 float g_toggleAnimProgress[10] = {0.0f};
 
-// ========== 1. 字体加载逻辑 (安全增强版) ==========
+// ========== 1. 字体加载逻辑 ==========
 void LoadChineseFont() {
+    LOGI("[*] Loading Chinese Fonts...");
     ImGuiIO& io = ImGui::GetIO();
-    // 常见的 Android 字体路径
     const char* fontPaths[] = {
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/DroidSansFallback.ttf",
@@ -48,51 +53,57 @@ void LoadChineseFont() {
 
     bool fontLoaded = false;
     for (const char* path : fontPaths) {
-        if (access(path, R_OK) == 0) { // 检查文件是否可读
+        if (access(path, R_OK) == 0) { 
             if (io.Fonts->AddFontFromFileTTF(path, 18.0f, &config, io.Fonts->GetGlyphRangesChineseFull())) {
                 fontLoaded = true;
+                LOGI("[+] Successfully loaded font: %s", path);
                 break;
             }
         }
     }
     
     if (!fontLoaded) {
-        printf("[!] Warning: Chinese font not found, using default.\n");
+        LOGE("[-] Warning: Chinese font not found, using default.");
     }
 }
 
-// ========== 2. 精美滑动开关 (修正了 Context 引用) ==========
+// ========== 2. 精美滑动开关 (纯 Public API，杜绝 internal 偏移崩溃) ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    if (window->SkipItems) return false;
+    float height = ImGui::GetFrameHeight() * 0.8f;
+    float width = height * 2.0f;
+    ImVec2 pos = ImGui::GetCursorScreenPos();
 
-    const ImGuiID id = window->GetID(label);
-    const float height = ImGui::GetFrameHeight() * 0.8f;
-    const float width = height * 2.0f;
-    const ImVec2 pos = window->DC.CursorPos;
-    
-    const ImRect total_bb(pos, ImVec2(pos.x + width + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(label).x, pos.y + height));
-    ImGui::ItemSize(total_bb);
-    if (!ImGui::ItemAdd(total_bb, id)) return false;
-
-    bool pressed = ImGui::ButtonBehavior(total_bb, id, NULL, NULL, ImGuiButtonFlags_PressedOnClick);
+    // 核心修改：使用 InvisibleButton 替代复杂的内部 ButtonBehavior 调用
+    ImGui::InvisibleButton(label, ImVec2(width, height));
+    bool pressed = ImGui::IsItemClicked();
     if (pressed) *v = !*v;
 
-    // 平滑插值动画
+    // 动画插值
     float target = *v ? 1.0f : 0.0f;
     g_toggleAnimProgress[animIdx] += (target - g_toggleAnimProgress[animIdx]) * 0.2f;
+    float p = g_toggleAnimProgress[animIdx];
 
-    // 绘制背景
-    ImU32 col_bg = ImGui::GetColorU32(ImLerp(ImVec4(0.2f, 0.2f, 0.2f, 1.0f), ImVec4(0.25f, 0.75f, 0.35f, 1.0f), g_toggleAnimProgress[animIdx]));
-    window->DrawList->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), col_bg, height * 0.5f);
+    // 计算背景颜色 (完全手写避免依赖 ImLerp 宏)
+    ImVec4 color(
+        0.3f + (0.25f - 0.3f) * p, 
+        0.3f + (0.75f - 0.3f) * p, 
+        0.3f + (0.35f - 0.3f) * p, 
+        1.0f
+    );
+
+    // 绘制滑块背景和圆点
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), ImGui::GetColorU32(color), height * 0.5f);
     
-    // 绘制滑块
     float radius = height * 0.4f;
-    float offset = radius + 2.0f + g_toggleAnimProgress[animIdx] * (width - radius * 2.0f - 4.0f);
-    window->DrawList->AddCircleFilled(ImVec2(pos.x + offset, pos.y + height * 0.5f), radius, IM_COL32_WHITE);
+    float offset = radius + 2.0f + p * (width - radius * 2.0f - 4.0f);
+    drawList->AddCircleFilled(ImVec2(pos.x + offset, pos.y + height * 0.5f), radius, IM_COL32_WHITE);
     
-    // 绘制标签文字
-    ImGui::RenderText(ImVec2(pos.x + width + ImGui::GetStyle().ItemInnerSpacing.x, pos.y), label);
+    // 绘制文本 (同一行并对齐)
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("%s", label);
+
     return pressed;
 }
 
@@ -115,18 +126,21 @@ void DrawChessboardOverlay() {
 
 // ========== 4. 主程序入口 ==========
 int main(int argc, char** argv) {
-    printf("[*] JKChess Assistant Starting...\n");
-
-    // AImGui 实例配置 (必须最先执行)
+    LOGI("=====================================");
+    LOGI("[*] JKChess Assistant Starting...");
+    
+    // AImGui 实例配置
+    LOGI("[*] Initializing AImGui...");
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
     });
 
     if (!imgui) {
-        printf("[!] Error: Failed to initialize AImGui!\n");
+        LOGE("[!] Error: Failed to initialize AImGui!");
         return -1;
     }
+    LOGI("[+] AImGui Initialized Successfully!");
 
     // 初始化 UI 样式
     ImGui::StyleColorsDark();
@@ -141,13 +155,15 @@ int main(int argc, char** argv) {
     bool running = true;
 
     // 输入处理线程
+    LOGI("[*] Starting Input Thread...");
     std::thread inputThread([&] {
         while (running) {
-            imgui.ProcessInputEvent(); // 底层 poll 等待事件
+            imgui.ProcessInputEvent(); // 监听触摸事件
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
     });
 
+    LOGI("[*] Entering Main Render Loop...");
     // 主渲染循环
     while (running) {
         imgui.BeginFrame();
@@ -194,11 +210,12 @@ int main(int argc, char** argv) {
     }
 
     // 退出清理
+    LOGI("[*] Shutting down...");
     running = false;
     if (inputThread.joinable()) {
         inputThread.join();
     }
 
-    printf("[*] JKChess Assistant Exited.\n");
+    LOGI("[*] JKChess Assistant Exited.");
     return 0;
 }
