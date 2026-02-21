@@ -26,7 +26,6 @@ float g_globalScale = 1.0f;
 float g_targetScale = 1.0f;
 const float MIN_SCALE = 0.5f;
 const float MAX_SCALE = 3.0f;
-float g_scaleAnimProgress = 1.0f;
 
 // ========== 配置文件路径 ==========
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
@@ -137,6 +136,9 @@ void LoadConfig() {
         
         ImGui::GetIO().FontGlobalScale = g_globalScale;
         printf("[+] Config loaded\n");
+    } else {
+        // 首次运行，创建默认配置
+        SaveConfig();
     }
 }
 
@@ -225,7 +227,7 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     return pressed;
 }
 
-// ========== 自定义窗口缩放回调 ==========
+// ========== 自定义窗口缩放回调（右下角三角控制全局缩放） ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     // 当用户拖动右下角三角时，更新全局缩放
     float newWidth = data->DesiredSize.x;
@@ -236,6 +238,10 @@ void ScaleWindow(ImGuiSizeCallbackData* data) {
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
     g_targetScale = scaleDelta;
+    g_globalScale = scaleDelta; // 直接更新，让滑块同步
+    
+    // 立即应用缩放
+    ImGui::GetIO().FontGlobalScale = g_globalScale;
 }
 
 int main()
@@ -261,6 +267,7 @@ int main()
         return 0;
     }
 
+    // 加载配置
     LoadConfig();
     g_targetScale = g_globalScale;
 
@@ -284,10 +291,12 @@ int main()
     {
         auto frameStart = std::chrono::high_resolution_clock::now();
         
+        // 读取游戏数据
         ReadGameData();
 
         imgui.BeginFrame();
 
+        // 计算帧率
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -310,25 +319,22 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
-            // 设置窗口大小回调，使右下角三角控制全局缩放
+            // 【修改】移除窗口大小限制，让用户可以自由调整
+            // 但仍然保留回调函数，使右下角三角控制全局缩放
             ImGui::SetNextWindowSizeConstraints(
-                ImVec2(200, 150),                     // 最小尺寸
-                ImVec2(1200, 900),                     // 最大尺寸
-                ScaleWindow,                           // 回调函数
-                (void*)&g_targetScale                  // 用户数据
+                ImVec2(0, 0),                          // 无最小限制
+                ImVec2(FLT_MAX, FLT_MAX),              // 无最大限制
+                ScaleWindow,                            // 回调函数
+                nullptr
             );
             
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
             
-            // 平滑更新全局缩放
-            float scaleSpeed = 0.1f;
-            g_globalScale += (g_targetScale - g_globalScale) * scaleSpeed;
-            if (fabs(g_globalScale - g_targetScale) < 0.01f) {
+            // 【修复】直接使用g_targetScale更新，不用平滑过渡，让滑块立即响应
+            if (g_targetScale != g_globalScale) {
                 g_globalScale = g_targetScale;
+                ImGui::GetIO().FontGlobalScale = g_globalScale;
             }
-            
-            // 应用全局缩放
-            ImGui::GetIO().FontGlobalScale = g_globalScale;
             
             ImGui::Separator();
             
@@ -341,12 +347,15 @@ int main()
             
             ImGui::Separator();
             
-            // 滑块控制（与三角同步）
+            // 【修复】滑块控制 - 现在可以正常工作了
             float prevScale = g_globalScale;
             if (ImGui::SliderFloat("全局缩放", &g_targetScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
-                // 滑块也会更新目标缩放
+                // 滑块改变目标缩放
+                g_globalScale = g_targetScale;
+                ImGui::GetIO().FontGlobalScale = g_globalScale;
             }
             
+            // 缩放变化时保存配置
             if (fabs(prevScale - g_globalScale) > 0.01f) {
                 SaveConfig();
             }
@@ -387,7 +396,7 @@ int main()
             
             ImGui::Separator();
             
-            // 当前状态显示（去掉了刷新按钮）
+            // 当前状态显示
             ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "当前状态");
             ImGui::Text("预测: %s", g_featurePredict ? "开启" : "关闭");
             ImGui::Text("透视: %s", g_featureESP ? "开启" : "关闭");
@@ -395,6 +404,7 @@ int main()
             ImGui::Text("自动购买: %s", autoBuy ? "开启" : "关闭");
             ImGui::Text("自动刷新: %s", autoRefresh ? "开启" : "关闭");
             
+            // 开关状态变化时保存配置
             if (prevPredict != g_featurePredict || 
                 prevESP != g_featureESP || 
                 prevInstantQuit != g_featureInstantQuit ||
@@ -419,6 +429,7 @@ int main()
 
         imgui.EndFrame();
         
+        // 帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         
@@ -433,6 +444,7 @@ int main()
     if (processInputEventThread.joinable())
         processInputEventThread.join();
 
+    // 退出前保存配置
     SaveConfig();
     printf("[3] JCC Assistant exited\n");
     return 0;
