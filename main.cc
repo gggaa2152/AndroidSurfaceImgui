@@ -49,7 +49,7 @@ ImVec2 g_windowPos = ImVec2(50, 100);
 ImVec2 g_windowSize = ImVec2(280, 400);
 bool g_windowPosInitialized = false;
 
-// ========== 共享内存结构（只保留这个修改） ==========
+// ========== 共享内存结构（对齐修复） ==========
 #pragma pack(push, 1)
 struct SharedGameData {
     int gold;
@@ -68,7 +68,7 @@ int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
 
-// ========== 初始化共享内存（完全恢复原始） ==========
+// ========== 初始化共享内存 ==========
 bool InitSharedMemory() {
     printf("[+] Initializing shared memory...\n");
     g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_CREAT | O_RDWR, 0666);
@@ -105,7 +105,7 @@ bool InitSharedMemory() {
     return true;
 }
 
-// ========== 从共享内存读取数据（完全恢复原始） ==========
+// ========== 从共享内存读取数据 ==========
 void ReadFromSharedMemory() {
     if (!g_sharedData) return;
     if (g_sharedData->timestamp != g_lastTimestamp) {
@@ -118,7 +118,7 @@ void ReadFromSharedMemory() {
     }
 }
 
-// ========== 清理共享内存（完全恢复原始） ==========
+// ========== 清理共享内存 ==========
 void CleanupSharedMemory() {
     if (g_sharedData) {
         munmap(g_sharedData, sizeof(SharedGameData));
@@ -130,54 +130,65 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载中文字体（完全恢复原始） ==========
+// ========== 加载最清晰的中文字体 ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
+    
+    printf("[+] Loading Chinese font with max quality...\n");
+    
     const char* fontPaths[] = {
         "/system/fonts/SysSans-Hans-Regular.ttf",
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/DroidSansFallback.ttf",
     };
+    
     ImFont* font = nullptr;
+    ImFontConfig config;
+    
+    // 【最清晰设置】
+    config.OversampleH = 4;        // 最大过采样
+    config.OversampleV = 4;        // 最大过采样
+    config.PixelSnapH = false;      // 不强制像素对齐
+    config.RasterizerMultiply = 1.0f;
+    config.GlyphExtraSpacing.x = 0.0f;
+    config.GlyphExtraSpacing.y = 0.0f;
+    
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        font = io.Fonts->AddFontFromFileTTF(path, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        font = io.Fonts->AddFontFromFileTTF(path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
             io.FontDefault = font;
             break;
         }
     }
+    
     if (!font) {
         printf("[-] No Chinese font found, using default\n");
         io.Fonts->AddFontDefault();
     }
+    
+    // 构建字体纹理
     io.Fonts->Build();
+    
+    // 强制重建纹理确保清晰
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    ImGui_ImplOpenGL3_CreateFontsTexture();
 }
 
-// ========== 全局缩放控制（完全恢复原始） ==========
-// float g_globalScale = 1.0f;
-// const float MIN_SCALE = 0.5f;
-// const float MAX_SCALE = 2.0f;
-
-// ========== 窗口位置和大小（完全恢复原始） ==========
-// ImVec2 g_windowPos = ImVec2(50, 100);
-// ImVec2 g_windowSize = ImVec2(280, 400);
-// bool g_windowPosInitialized = false;
-
-// ========== 配置文件路径（完全恢复原始） ==========
+// ========== 配置文件路径 ==========
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
 
-// ========== 帧率计算（完全恢复原始） ==========
+// ========== 帧率计算 ==========
 float g_currentFPS = 0.0f;
 int g_frameCount = 0;
 auto g_fpsTimer = std::chrono::high_resolution_clock::now();
 
-// ========== 动画变量（完全恢复原始） ==========
+// ========== 动画变量 ==========
 float g_toggleAnimProgress[10] = {0};
 int g_toggleAnimTarget[10] = {0};
 
-// ========== 保存配置（完全恢复原始） ==========
+// ========== 保存配置 ==========
 void SaveConfig() {
     FILE* f = fopen(CONFIG_PATH, "w");
     if (f) {
@@ -198,7 +209,7 @@ void SaveConfig() {
     }
 }
 
-// ========== 加载配置（完全恢复原始） ==========
+// ========== 加载配置 ==========
 void LoadConfig() {
     FILE* f = fopen(CONFIG_PATH, "r");
     if (f) {
@@ -230,7 +241,7 @@ void LoadConfig() {
     }
 }
 
-// ========== 精美滑动开关（完全恢复原始） ==========
+// ========== 精美滑动开关 ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return false;
@@ -276,7 +287,7 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     return pressed;
 }
 
-// ========== 绘制棋盘（完全恢复原始） ==========
+// ========== 绘制棋盘 ==========
 void DrawChessboard() {
     if (!g_featureESP) return;
     
@@ -360,7 +371,7 @@ void DrawChessboard() {
     }
 }
 
-// ========== 自定义窗口缩放回调（完全恢复原始） ==========
+// ========== 自定义窗口缩放回调 ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     float newWidth = data->DesiredSize.x;
     float scaleDelta = newWidth / 280.0f;
@@ -380,7 +391,7 @@ int main()
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
-    // 样式设置（完全恢复原始）
+    // 样式设置
     ImGuiStyle& style = ImGui::GetStyle();
     style.GrabMinSize = 24.0f;
     style.FramePadding = ImVec2(6, 4);
@@ -406,7 +417,7 @@ int main()
 
     LoadConfig();
 
-    // ========== 输入线程（完全恢复原始） ==========
+    // ========== 输入线程 ==========
     std::thread inputThread([&] {
         struct sched_param param;
         param.sched_priority = 99;
@@ -417,7 +428,7 @@ int main()
         }
     });
 
-    // 【完全恢复原始】帧率控制
+    // 120fps
     const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
     g_fpsTimer = std::chrono::high_resolution_clock::now();
@@ -428,20 +439,16 @@ int main()
     while (state) {
         auto frameStart = std::chrono::high_resolution_clock::now();
 
-        // 记录当前开关状态
         bool prevPredict = g_featurePredict;
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
-        // 读取共享内存数据
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
 
-        // 绘制棋盘
         DrawChessboard();
 
-        // 帧率计算
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -483,7 +490,6 @@ int main()
 
             ImGui::Separator();
 
-            // 显示共享内存状态
             if (g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 ImGui::Text("脚本: %s", g_sharedData->scriptName);
@@ -527,7 +533,6 @@ int main()
 
         imgui.EndFrame();
 
-        // 帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         if (frameTime < TARGET_FRAME_TIME_MS) {
@@ -535,7 +540,6 @@ int main()
             if (sleepUs > 0) usleep(sleepUs);
         }
 
-        // 保存配置
         auto saveTime = std::chrono::high_resolution_clock::now();
         float timeSinceLastSave = std::chrono::duration<float>(saveTime - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
