@@ -19,6 +19,7 @@
 #include <map>
 #include <vector>
 #include <atomic>
+#include <cstring>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -67,49 +68,15 @@ int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
 bool g_shmValid = false;
-std::atomic<bool> g_shmError{false};
 
 // ========== 安全读取共享内存 ==========
 template<typename T>
 T safe_read(volatile T* ptr, const T& default_val = T()) {
-    if (!g_shmValid || !ptr || g_shmError) return default_val;
+    if (!g_shmValid || !ptr) return default_val;
     
-    // 使用 sigsetjmp 来捕获段错误
-    static sigjmp_buf env;
-    static volatile bool in_critical = false;
-    
-    if (in_critical) {
-        // 如果已经在关键区又出错，直接返回默认值
-        g_shmError = true;
-        return default_val;
-    }
-    
-    struct sigaction old_act, act;
-    act.sa_sigaction = [](int, siginfo_t*, void*) {
-        siglongjmp(env, 1);
-    };
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = SA_SIGINFO;
-    
-    sigaction(SIGSEGV, &act, &old_act);
-    sigaction(SIGBUS, &act, nullptr);
-    
-    T val = default_val;
-    in_critical = true;
-    
-    if (sigsetjmp(env, 1) == 0) {
-        // 正常读取
-        memcpy(&val, (void*)ptr, sizeof(T));
-    } else {
-        // 发生段错误
-        printf("[ERROR] Bus error/Segfault when reading shared memory at %p\n", ptr);
-        g_shmValid = false;
-        g_shmError = true;
-        val = default_val;
-    }
-    
-    in_critical = false;
-    sigaction(SIGSEGV, &old_act, nullptr);
+    T val;
+    // 使用 memcpy 安全读取
+    memcpy(&val, (void*)ptr, sizeof(T));
     return val;
 }
 
@@ -131,7 +98,8 @@ bool InitSharedMemory() {
         return false;
     }
     
-    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR, 0666);
+    // 以读写方式打开
+    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR);
     if (g_shm_fd < 0) {
         printf("[-] Failed to open: %s\n", strerror(errno));
         return false;
@@ -150,14 +118,13 @@ bool InitSharedMemory() {
     }
     
     g_shmValid = true;
-    g_shmError = false;
     
     // 测试读取
     printf("[+] Testing read...\n");
-    int test_gold = safe_read(&g_sharedData->gold, -1);
-    int test_level = safe_read(&g_sharedData->level, -1);
-    int test_hp = safe_read(&g_sharedData->hp, -1);
-    int test_ts = safe_read(&g_sharedData->timestamp, -1);
+    int test_gold = g_sharedData->gold;
+    int test_level = g_sharedData->level;
+    int test_hp = g_sharedData->hp;
+    int test_ts = g_sharedData->timestamp;
     
     printf("[+] Read test: gold=%d, level=%d, hp=%d, ts=%d\n", 
            test_gold, test_level, test_hp, test_ts);
@@ -166,8 +133,8 @@ bool InitSharedMemory() {
         gold = test_gold;
         level = test_level;
         hp = test_hp;
-        autoBuy = (safe_read(&g_sharedData->autoBuy, 1) != 0);
-        autoRefresh = (safe_read(&g_sharedData->autoRefresh, 1) != 0);
+        autoBuy = (g_sharedData->autoBuy != 0);
+        autoRefresh = (g_sharedData->autoRefresh != 0);
         g_lastTimestamp = test_ts;
         
         printf("[+] Initial values loaded: gold=%d, level=%d, hp=%d\n", gold, level, hp);
@@ -180,38 +147,35 @@ bool InitSharedMemory() {
 
 // ========== 从共享内存读取数据 ==========
 void ReadFromSharedMemory() {
-    if (!g_shmValid || !g_sharedData || g_shmError) {
+    if (!g_shmValid || !g_sharedData) {
         static int count = 0;
         if (++count % 120 == 0) {
-            printf("[DEBUG] SHM not valid: valid=%d, ptr=%p, error=%d\n", 
-                   g_shmValid, g_sharedData, (int)g_shmError);
+            printf("[DEBUG] SHM not valid: valid=%d, ptr=%p\n", 
+                   g_shmValid, g_sharedData);
         }
         return;
     }
     
-    int ts = safe_read(&g_sharedData->timestamp, -1);
+    int ts = g_sharedData->timestamp;
     if (ts < 0) return;
     
     static int last_print = 0;
     if (++last_print % 60 == 0) {  // 每秒打印一次
-        int cur_gold = safe_read(&g_sharedData->gold, -1);
-        int cur_level = safe_read(&g_sharedData->level, -1);
-        int cur_hp = safe_read(&g_sharedData->hp, -1);
         printf("[DEBUG] SHM status: ts=%d, gold=%d, level=%d, hp=%d\n", 
-               ts, cur_gold, cur_level, cur_hp);
+               ts, g_sharedData->gold, g_sharedData->level, g_sharedData->hp);
     }
     
     if (ts != g_lastTimestamp && ts > 0) {
-        int new_gold = safe_read(&g_sharedData->gold, gold);
-        int new_level = safe_read(&g_sharedData->level, level);
-        int new_hp = safe_read(&g_sharedData->hp, hp);
+        int new_gold = g_sharedData->gold;
+        int new_level = g_sharedData->level;
+        int new_hp = g_sharedData->hp;
         
         if (new_gold != gold || new_level != level || new_hp != hp) {
             gold = new_gold;
             level = new_level;
             hp = new_hp;
-            autoBuy = (safe_read(&g_sharedData->autoBuy, autoBuy ? 1 : 0) != 0);
-            autoRefresh = (safe_read(&g_sharedData->autoRefresh, autoRefresh ? 1 : 0) != 0);
+            autoBuy = (g_sharedData->autoBuy != 0);
+            autoRefresh = (g_sharedData->autoRefresh != 0);
             
             g_lastTimestamp = ts;
             
@@ -588,13 +552,13 @@ int main()
             ImGui::Separator();
 
             // 显示共享内存状态
-            if (g_shmValid && g_sharedData && !g_shmError) {
+            if (g_shmValid && g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 // 显示脚本名
                 char scriptName[65] = {0};
                 memcpy(scriptName, (void*)&g_sharedData->scriptName, 64);
                 ImGui::Text("脚本: %s", scriptName);
-                ImGui::Text("时间戳: %d", safe_read(&g_sharedData->timestamp, 0));
+                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
