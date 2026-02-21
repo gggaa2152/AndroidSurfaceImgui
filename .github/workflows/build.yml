@@ -1,11 +1,9 @@
-name: Build AndroidSurfaceImgui arm64-v8a
+name: Build test-ui arm64-v8a
 
 on:
   push:
     branches: [ "master", "main" ]
-  pull_request:
-    branches: [ "master", "main" ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -15,29 +13,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'  # 重要：下载子模块
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+          submodules: 'recursive'
 
       - name: Setup NDK
         run: |
-          sdkmanager --install "ndk;27.0.12077973"
-          sdkmanager --install "cmake;3.22.1"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
+          wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q android-ndk-r27c-linux.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build cmake
+      - name: Install ninja
+        run: sudo apt-get install -y ninja-build
 
-      - name: Configure CMake (arm64-v8a only)
+      - name: Configure CMake
         run: |
           mkdir -p build
           cd build
@@ -52,28 +39,8 @@ jobs:
           cd build
           cmake --build . --config Release
 
-      - name: List build artifacts
-        run: |
-          echo "=== Libraries ==="
-          find libs -name "*.so" -o -name "*.a" | xargs ls -la
-          echo "=== Test executables ==="
-          find tests -type f -executable | xargs ls -la
-
-      - name: Upload libraries
+      - name: Upload test-ui
         uses: actions/upload-artifact@v4
         with:
-          name: libs-arm64-v8a
-          path: |
-            libs/arm64-v8a/*.so
-            libs/arm64-v8a/*.a
-          if-no-files-found: warn
-
-      - name: Upload test executables
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-ui-arm64-v8a
-          path: |
-            tests/arm64-v8a/test-ui
-            tests/arm64-v8a/canvas-ui
-            tests/arm64-v8a/render-ui
-          if-no-files-found: warn
+          name: test-ui-arm64
+          path: tests/arm64-v8a/test-ui
