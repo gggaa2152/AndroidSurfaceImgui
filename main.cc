@@ -11,8 +11,8 @@
 #include <vector>
 #include <atomic>
 #include <cstdarg>
-#include <signal.h> // 新增：信号处理
-#include <android/log.h> // 新增：Android 日志
+#include <signal.h>
+#include <android/log.h>
 
 // 解决 C++20 下 char8_t* 无法隐式转换为 char* 的问题
 #define U8(str) (const char*)u8##str
@@ -58,7 +58,7 @@ AppConfig g_Config;
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
 
 // ========== 全局原子变量（线程安全） ==========
-std::atomic<bool> g_ImguiReady(false); // 标记 AImGui 是否完全初始化
+std::atomic<bool> g_ImguiReady(false);
 std::atomic<bool> g_IsRunning(true);
 
 // ========== 信号处理（优雅退出） ==========
@@ -69,7 +69,6 @@ void SignalHandler(int sig) {
 
 // ========== 文件操作（增加权限检查） ==========
 void SaveConfig() {
-    // 检查目录可写性
     if (access("/data/local/tmp", W_OK) != 0) {
         AppLogError("目录 /data/local/tmp 不可写，无法保存配置");
         return;
@@ -176,7 +175,6 @@ void LoadFonts(ImGuiIO& io) {
         AppLogInfo("使用 ImGui 默认字体");
         io.Fonts->AddFontDefault();
     }
-    // 关键：字体加载后必须重建纹理
     io.Fonts->Build();
     if (io.Fonts->TexID == nullptr) {
         AppLogError("字体纹理创建失败！这会导致渲染崩溃");
@@ -214,7 +212,6 @@ void DrawChessboard() {
     if (!g_Config.featureESP) return;
 
     ImGuiIO& io = ImGui::GetIO();
-    // 空指针检查
     if (io.BackendRendererUserData == nullptr) {
         AppLogError("ImGui 渲染后端未初始化，跳过棋盘绘制");
         return;
@@ -265,7 +262,8 @@ void DrawChessboard() {
             float cy = g_Config.board.y + r * cellSize + cellSize * 0.5f;
             bool isOdd = (r + c) % 2 != 0;
             ImU32 color = isOdd ? IM_COL32(100, 100, 255, 160) : IM_COL32(255, 100, 100, 160);
-            draw_list->AddCircleFilled(ImVec2(cx, cy), cellSize * 0.35f, color, 16);
+            // 修复：变量名从 draw_list 改为 drawList
+            drawList->AddCircleFilled(ImVec2(cx, cy), cellSize * 0.35f, color, 16);
         }
     }
     
@@ -281,7 +279,6 @@ void DrawChessboard() {
 // ========== 输入线程（增加就绪检查） ==========
 void InputThreadFunc(android::AImGui* imguiPtr) {
     AppLogInfo("输入线程启动，等待 AImGui 就绪");
-    // 等待 AImGui 初始化完成
     while (g_IsRunning && !g_ImguiReady) {
         std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
@@ -307,26 +304,23 @@ void InputThreadFunc(android::AImGui* imguiPtr) {
 
 // ========== 主程序 ==========
 int main() {
-    // 注册信号处理（避免崩溃）
     signal(SIGSEGV, SignalHandler);
     signal(SIGABRT, SignalHandler);
     signal(SIGINT, SignalHandler);
 
     AppLogInfo("程序启动，初始化 ImGui 上下文");
-    // 1. 初始化 ImGui 上下文
     IMGUI_CHECKVERSION();
     ImGuiContext* ctx = ImGui::CreateContext();
     if (ctx == nullptr) {
         AppLogError("ImGui 上下文创建失败！");
         return 1;
     }
-    ImGui::SetCurrentContext(ctx); // 关键：设置当前上下文
+    ImGui::SetCurrentContext(ctx);
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // 启用键盘导航
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // 启用手柄导航
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     
-    // 2. 设置 ImGui 样式
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 10.0f;
@@ -334,7 +328,6 @@ int main() {
     style.ScrollbarSize = 22.0f;
     style.TouchExtraPadding = ImVec2(5, 5);
 
-    // 3. 初始化 AImGui（关键：增加详细日志）
     AppLogInfo("初始化 AImGui，使用 Native 渲染");
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
@@ -348,18 +341,13 @@ int main() {
     }
     AppLogInfo("AImGui 初始化成功");
 
-    // 4. 加载字体（必须在 AImGui 初始化后）
     LoadFonts(io);
-
-    // 5. 加载配置
     LoadConfig();
 
-    // 6. 标记 AImGui 就绪，启动输入线程
     g_ImguiReady = true;
     std::thread inputThread(InputThreadFunc, &imgui);
 
-    // 7. 主循环（固定帧率）
-    const int TARGET_FPS = 30; // 降低帧率，减少 Android 资源占用
+    const int TARGET_FPS = 30;
     const auto frameDuration = std::chrono::microseconds(1000000 / TARGET_FPS);
     auto lastSaveTime = std::chrono::steady_clock::now();
     bool configDirty = false;
@@ -368,26 +356,19 @@ int main() {
     while (g_IsRunning) {
         auto frameStart = std::chrono::steady_clock::now();
 
-        // 检查 AImGui 是否有效
         if (!imgui) {
             AppLogError("主循环中 AImGui 失效，退出程序");
             g_IsRunning = false;
             break;
         }
 
-        // 开始 ImGui 帧
-        if (!imgui.BeginFrame()) {
-            AppLogError("BeginFrame 失败，跳过本次帧");
-            std::this_thread::sleep_for(frameDuration);
-            continue;
-        }
+        // 修复：BeginFrame 无返回值，移除 ! 判断
+        imgui.BeginFrame();
 
         io.FontGlobalScale = g_Config.globalScale;
 
-        // 绘制棋盘
         DrawChessboard();
 
-        // 绘制主菜单
         if (g_Config.showMenu) {
             if (g_Config.windowInitialized) {
                 ImGui::SetNextWindowPos(g_Config.windowPos, ImGuiCond_FirstUseEver);
@@ -446,10 +427,8 @@ int main() {
             ImGui::End();
         }
 
-        // 结束帧并渲染
         imgui.EndFrame();
 
-        // 自动保存配置
         auto now = std::chrono::steady_clock::now();
         if (configDirty && (now - lastSaveTime > std::chrono::seconds(5))) {
             SaveConfig();
@@ -457,26 +436,22 @@ int main() {
             lastSaveTime = now;
         }
 
-        // 帧率控制
         auto elapsed = std::chrono::steady_clock::now() - frameStart;
         if (elapsed < frameDuration) {
             std::this_thread::sleep_for(frameDuration - elapsed);
         }
     }
 
-    // 8. 退出清理（关键：确保资源释放）
     AppLogInfo("程序退出，开始清理资源");
     if (configDirty) {
         SaveConfig();
     }
 
-    // 等待输入线程退出
     if (inputThread.joinable()) {
         inputThread.join();
     }
 
-    // 销毁 AImGui 和 ImGui 上下文
-    imgui.Destroy(); // 显式销毁 AImGui
+    // 修复：移除不存在的 Destroy() 调用
     ImGui::DestroyContext(ctx);
 
     AppLogInfo("程序正常退出");
