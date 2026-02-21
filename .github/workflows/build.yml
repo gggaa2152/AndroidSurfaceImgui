@@ -1,4 +1,4 @@
-name: Build test-ui
+name: Fast Build
 
 on:
   push:
@@ -13,13 +13,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: recursive
 
       - name: Setup NDK
         run: |
           wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
           unzip -q android-ndk-r27c-linux.zip
-          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
+          echo "NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
+
+      # ===== 【关键】缓存 AImGui 编译产物 =====
+      - name: Cache AImGui
+        uses: actions/cache@v3
+        id: cache-aimgui
+        with:
+          path: |
+            libs/arm64-v8a/libAImGui.a
+            build/CMakeFiles/AImGui.dir
+            build/CMakeFiles/test-ui.dir
+          key: ${{ runner.os }}-aimgui-${{ hashFiles('src/common/**', 'third_party/imgui/**', 'main.cc') }}
+          restore-keys: |
+            ${{ runner.os }}-aimgui-
 
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -29,16 +42,15 @@ jobs:
           mkdir -p build
           cd build
           cmake -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
-                -DANDROID_PLATFORM=android-23 \
+                -DCMAKE_TOOLCHAIN_FILE=${NDK}/build/cmake/android.toolchain.cmake \
                 -DANDROID_ABI=arm64-v8a \
-                -DANDROID_SURFACE_IMGUI_BUILD_TESTING=ON \
-                -S .. -B . -G Ninja
+                -DANDROID_PLATFORM=android-23 \
+                -G Ninja ..
 
       - name: Build test-ui
         run: |
           cd build
-          cmake --build . --target test-ui --config Release
+          ninja -j $(nproc)
 
       - name: Upload test-ui
         uses: actions/upload-artifact@v4
