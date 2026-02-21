@@ -18,13 +18,14 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <atomic>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
 int level = 8;
 int hp = 85;
-bool autoBuy = true;      // 这些变量在脚本中也有
-bool autoRefresh = true;   // 这些变量在脚本中也有
+bool autoBuy = true;
+bool autoRefresh = true;
 
 // ========== 功能开关 ==========
 bool g_featurePredict = false;     // 预测
@@ -66,13 +67,49 @@ int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
 bool g_shmValid = false;
+std::atomic<bool> g_shmError{false};
 
 // ========== 安全读取共享内存 ==========
 template<typename T>
 T safe_read(volatile T* ptr, const T& default_val = T()) {
-    if (!g_shmValid || !ptr) return default_val;
-    T val;
-    memcpy(&val, (void*)ptr, sizeof(T));
+    if (!g_shmValid || !ptr || g_shmError) return default_val;
+    
+    // 使用 sigsetjmp 来捕获段错误
+    static sigjmp_buf env;
+    static volatile bool in_critical = false;
+    
+    if (in_critical) {
+        // 如果已经在关键区又出错，直接返回默认值
+        g_shmError = true;
+        return default_val;
+    }
+    
+    struct sigaction old_act, act;
+    act.sa_sigaction = [](int, siginfo_t*, void*) {
+        siglongjmp(env, 1);
+    };
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = SA_SIGINFO;
+    
+    sigaction(SIGSEGV, &act, &old_act);
+    sigaction(SIGBUS, &act, nullptr);
+    
+    T val = default_val;
+    in_critical = true;
+    
+    if (sigsetjmp(env, 1) == 0) {
+        // 正常读取
+        memcpy(&val, (void*)ptr, sizeof(T));
+    } else {
+        // 发生段错误
+        printf("[ERROR] Bus error/Segfault when reading shared memory at %p\n", ptr);
+        g_shmValid = false;
+        g_shmError = true;
+        val = default_val;
+    }
+    
+    in_critical = false;
+    sigaction(SIGSEGV, &old_act, nullptr);
     return val;
 }
 
@@ -80,20 +117,24 @@ T safe_read(volatile T* ptr, const T& default_val = T()) {
 bool InitSharedMemory() {
     printf("[+] Initializing shared memory...\n");
     
-    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR, 0666);
-    if (g_shm_fd < 0) {
-        printf("[-] Shared memory file not found, continuing without it\n");
+    // 先检查文件是否存在
+    struct stat st;
+    if (stat("/data/local/tmp/jcc_shared_mem", &st) != 0) {
+        printf("[-] Shared memory file not found\n");
         return false;
     }
     
-    // 检查文件大小
-    struct stat st;
-    if (fstat(g_shm_fd, &st) == 0) {
-        if (st.st_size < (off_t)sizeof(SharedGameData)) {
-            printf("[-] Shared memory file too small\n");
-            close(g_shm_fd);
-            return false;
-        }
+    printf("[+] File size: %ld bytes (expected: %lu)\n", st.st_size, sizeof(SharedGameData));
+    
+    if (st.st_size < (off_t)sizeof(SharedGameData)) {
+        printf("[-] File too small\n");
+        return false;
+    }
+    
+    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR, 0666);
+    if (g_shm_fd < 0) {
+        printf("[-] Failed to open: %s\n", strerror(errno));
+        return false;
     }
     
     // 映射内存
@@ -102,48 +143,81 @@ bool InitSharedMemory() {
                                          MAP_SHARED, g_shm_fd, 0);
     
     if (g_sharedData == MAP_FAILED) {
-        printf("[-] Failed to map memory: %s\n", strerror(errno));
+        printf("[-] Failed to map: %s\n", strerror(errno));
         close(g_shm_fd);
         g_sharedData = nullptr;
         return false;
     }
     
     g_shmValid = true;
+    g_shmError = false;
     
-    // 立即读取一次初始值
-    if (g_shmValid && g_sharedData) {
-        gold = safe_read(&g_sharedData->gold, 100);
-        level = safe_read(&g_sharedData->level, 8);
-        hp = safe_read(&g_sharedData->hp, 85);
+    // 测试读取
+    printf("[+] Testing read...\n");
+    int test_gold = safe_read(&g_sharedData->gold, -1);
+    int test_level = safe_read(&g_sharedData->level, -1);
+    int test_hp = safe_read(&g_sharedData->hp, -1);
+    int test_ts = safe_read(&g_sharedData->timestamp, -1);
+    
+    printf("[+] Read test: gold=%d, level=%d, hp=%d, ts=%d\n", 
+           test_gold, test_level, test_hp, test_ts);
+    
+    if (test_gold >= 0 && test_level >= 0 && test_hp >= 0) {
+        gold = test_gold;
+        level = test_level;
+        hp = test_hp;
         autoBuy = (safe_read(&g_sharedData->autoBuy, 1) != 0);
         autoRefresh = (safe_read(&g_sharedData->autoRefresh, 1) != 0);
-        g_lastTimestamp = safe_read(&g_sharedData->timestamp, 0);
+        g_lastTimestamp = test_ts;
         
-        printf("[+] Initial values: gold=%d, level=%d, hp=%d\n", gold, level, hp);
+        printf("[+] Initial values loaded: gold=%d, level=%d, hp=%d\n", gold, level, hp);
+    } else {
+        printf("[-] Read test failed, using defaults\n");
     }
     
-    printf("[+] Shared memory initialized successfully\n");
     return true;
 }
 
 // ========== 从共享内存读取数据 ==========
 void ReadFromSharedMemory() {
-    if (!g_shmValid || !g_sharedData) return;
+    if (!g_shmValid || !g_sharedData || g_shmError) {
+        static int count = 0;
+        if (++count % 120 == 0) {
+            printf("[DEBUG] SHM not valid: valid=%d, ptr=%p, error=%d\n", 
+                   g_shmValid, g_sharedData, (int)g_shmError);
+        }
+        return;
+    }
     
-    int ts = safe_read(&g_sharedData->timestamp, 0);
+    int ts = safe_read(&g_sharedData->timestamp, -1);
+    if (ts < 0) return;
+    
+    static int last_print = 0;
+    if (++last_print % 60 == 0) {  // 每秒打印一次
+        int cur_gold = safe_read(&g_sharedData->gold, -1);
+        int cur_level = safe_read(&g_sharedData->level, -1);
+        int cur_hp = safe_read(&g_sharedData->hp, -1);
+        printf("[DEBUG] SHM status: ts=%d, gold=%d, level=%d, hp=%d\n", 
+               ts, cur_gold, cur_level, cur_hp);
+    }
     
     if (ts != g_lastTimestamp && ts > 0) {
-        gold = safe_read(&g_sharedData->gold, gold);
-        level = safe_read(&g_sharedData->level, level);
-        hp = safe_read(&g_sharedData->hp, hp);
-        autoBuy = (safe_read(&g_sharedData->autoBuy, autoBuy ? 1 : 0) != 0);
-        autoRefresh = (safe_read(&g_sharedData->autoRefresh, autoRefresh ? 1 : 0) != 0);
+        int new_gold = safe_read(&g_sharedData->gold, gold);
+        int new_level = safe_read(&g_sharedData->level, level);
+        int new_hp = safe_read(&g_sharedData->hp, hp);
         
-        g_lastTimestamp = ts;
-        
-        // 调试输出
-        printf("[+] Data updated: gold=%d, level=%d, hp=%d, ts=%d\n", 
-               gold, level, hp, ts);
+        if (new_gold != gold || new_level != level || new_hp != hp) {
+            gold = new_gold;
+            level = new_level;
+            hp = new_hp;
+            autoBuy = (safe_read(&g_sharedData->autoBuy, autoBuy ? 1 : 0) != 0);
+            autoRefresh = (safe_read(&g_sharedData->autoRefresh, autoRefresh ? 1 : 0) != 0);
+            
+            g_lastTimestamp = ts;
+            
+            printf("\033[32m[UPDATE] gold=%d, level=%d, hp=%d, ts=%d\033[0m\n", 
+                   gold, level, hp, ts);
+        }
     }
 }
 
@@ -423,6 +497,8 @@ int main()
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
 
+    LoadChineseFont();
+
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
@@ -436,7 +512,6 @@ int main()
         return 0;
     }
 
-    LoadChineseFont();
     LoadConfig();
 
     // ========== 输入线程 ==========
@@ -513,12 +588,13 @@ int main()
             ImGui::Separator();
 
             // 显示共享内存状态
-            if (g_shmValid && g_sharedData) {
+            if (g_shmValid && g_sharedData && !g_shmError) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 // 显示脚本名
                 char scriptName[65] = {0};
                 memcpy(scriptName, (void*)&g_sharedData->scriptName, 64);
                 ImGui::Text("脚本: %s", scriptName);
+                ImGui::Text("时间戳: %d", safe_read(&g_sharedData->timestamp, 0));
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
