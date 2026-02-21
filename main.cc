@@ -49,7 +49,7 @@ ImVec2 g_windowPos = ImVec2(50, 100);
 ImVec2 g_windowSize = ImVec2(280, 400);
 bool g_windowPosInitialized = false;
 
-// ========== 简化版共享内存结构（只修改这部分） ==========
+// ========== 共享内存结构 ==========
 #pragma pack(push, 1)
 struct SharedGameData {
     int gold;
@@ -414,16 +414,13 @@ int main()
 {
     printf("[1] Starting JCC Assistant...\n");
     
-    // 初始化共享内存（只修改了这一部分的初始化逻辑）
-    if (!InitSharedMemory()) {
-        printf("[-] Shared memory init failed, continuing without it\n");
-    }
+    InitSharedMemory();
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
-    // 样式设置（完全恢复原始）
+    // 样式设置
     ImGuiStyle& style = ImGui::GetStyle();
     style.GrabMinSize = 28.0f;
     style.FramePadding = ImVec2(6, 4);
@@ -449,24 +446,25 @@ int main()
 
     LoadConfig();
 
-    // ========== 输入线程（完全恢复原始） ==========
+    // ========== 输入线程 ==========
     std::thread inputThread([&] {
         struct sched_param param;
         param.sched_priority = 99;
         pthread_setschedparam(pthread_self(), SCHED_RR, &param);
         while (state) {
             imgui.ProcessInputEvent();
+            // 【恢复原始】500微秒休眠
             std::this_thread::sleep_for(std::chrono::microseconds(500));
         }
     });
 
-    // 【恢复原始帧率】120fps
+    // 【恢复原始】120fps
     const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
     g_fpsTimer = std::chrono::high_resolution_clock::now();
     auto lastSaveTime = std::chrono::high_resolution_clock::now();
 
-    printf("[2] Entering main loop (120fps, 缩放范围: %.1f-%.1f)\n", MIN_SCALE, MAX_SCALE);
+    printf("[2] Entering main loop (120fps)\n");
 
     while (state) {
         auto frameStart = std::chrono::high_resolution_clock::now();
@@ -475,7 +473,6 @@ int main()
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
-        // 读取共享内存
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
@@ -568,6 +565,7 @@ int main()
 
         imgui.EndFrame();
 
+        // 【恢复原始】帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         if (frameTime < TARGET_FRAME_TIME_MS) {
@@ -575,6 +573,7 @@ int main()
             if (sleepUs > 0) usleep(sleepUs);
         }
 
+        // 【恢复原始】配置保存逻辑
         auto saveTime = std::chrono::high_resolution_clock::now();
         float timeSinceLastSave = std::chrono::duration<float>(saveTime - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
