@@ -4,6 +4,7 @@
 #include <thread>
 #include <iostream>
 #include <cstdio>
+#include <filesystem>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -28,6 +29,44 @@ void ReadGameData() {
     }
 }
 
+// ========== 加载中文字体 ==========
+void LoadChineseFont() {
+    ImGuiIO& io = ImGui::GetIO();
+    
+    // 常见的 Android 中文字体路径
+    const char* fontPaths[] = {
+        "/system/fonts/NotoSansCJK-Regular.ttc",     // Google Noto
+        "/system/fonts/DroidSansFallback.ttf",       // Droid Sans
+        "/system/fonts/Roboto-Regular.ttf",           // Roboto（包含中文）
+        "/system/fonts/NotoSerifCJK-Regular.ttc",     // Noto Serif
+        "/system/fonts/SourceHanSansSC-Regular.otf", // Source Han Sans
+    };
+    
+    ImFont* font = nullptr;
+    for (const char* path : fontPaths) {
+        if (std::filesystem::exists(path)) {
+            font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+            if (font) {
+                printf("[+] Loaded font: %s\n", path);
+                break;
+            }
+        }
+    }
+    
+    // 如果都没找到，使用默认字体但强制包含中文
+    if (!font) {
+        printf("[-] No Chinese font found, using default with Chinese glyphs\n");
+        io.Fonts->AddFontDefault();
+        // 添加中文字符范围
+        ImFontConfig config;
+        config.MergeMode = true;
+        io.Fonts->AddFontFromFileTTF("/system/fonts/DroidSansFallback.ttf", 18.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+    }
+    
+    // 重建字体
+    io.Fonts->Build();
+}
+
 int main()
 {
     android::AImGui imgui(android::AImGui::Options{.renderType = android::AImGui::RenderType::RenderNative, .autoUpdateOrientation = true});
@@ -39,6 +78,9 @@ int main()
         LogInfo("[-] ImGui initialization failed");
         return 0;
     }
+
+    // ========== 加载中文字体 ==========
+    LoadChineseFont();
 
     std::thread processInputEventThread(
         [&]
@@ -57,11 +99,11 @@ int main()
 
         imgui.BeginFrame();
 
-        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
+        // 1. Show the big demo window
         if (showDemoWindow)
             ImGui::ShowDemoWindow(&showDemoWindow);
 
-        // ========== 金铲铲助手窗口（替换原来的窗口）==========
+        // ========== 金铲铲助手窗口 ==========
         {
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
             
@@ -117,17 +159,16 @@ int main()
             
             // 按钮
             if (ImGui::Button("刷新")) {
-                // 这里添加刷新功能
                 printf("刷新按钮点击\n");
             }
             
             ImGui::End();
         }
 
-        // 3. Show another simple window.
+        // 3. Show another simple window
         if (showAnotherWindow)
         {
-            ImGui::Begin("Another Window", &showAnotherWindow); // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+            ImGui::Begin("Another Window", &showAnotherWindow);
             ImGui::Text("Hello from another window!");
             if (ImGui::Button("Close Me"))
                 showAnotherWindow = false;
