@@ -129,7 +129,7 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载中文字体（安全版本） ==========
+// ========== 加载中文字体（清晰版） ==========
 bool LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
@@ -143,14 +143,19 @@ bool LoadChineseFont() {
     
     ImFont* font = nullptr;
     ImFontConfig config;
-    config.OversampleH = 1;  // 降低过采样避免崩溃
-    config.OversampleV = 1;
-    config.PixelSnapH = true;
-    config.RasterizerMultiply = 1.0f;
     
+    // 【关键】字体清晰度设置
+    config.OversampleH = 3;      // 水平过采样3倍
+    config.OversampleV = 3;      // 垂直过采样3倍
+    config.PixelSnapH = false;   // 不强制像素对齐
+    config.RasterizerMultiply = 1.0f;
+    config.GlyphExtraSpacing.x = 0.0f;
+    config.GlyphExtraSpacing.y = 0.0f;
+    
+    // 尝试加载字体
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        font = io.Fonts->AddFontFromFileTTF(path, 14.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+        font = io.Fonts->AddFontFromFileTTF(path, 15.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
             io.FontDefault = font;
@@ -163,8 +168,26 @@ bool LoadChineseFont() {
         io.Fonts->AddFontDefault();
     }
     
-    // 只构建，不销毁纹理（让ImGui自己处理）
+    // 构建字体纹理
     io.Fonts->Build();
+    
+    // 强制上传到GPU（安全方式）
+    if (ImGui::GetCurrentContext() && ImGui::GetIO().Fonts->TexID == nullptr) {
+        unsigned char* pixels;
+        int width, height;
+        io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        
+        GLuint texture_id;
+        glGenTextures(1, &texture_id);
+        glBindTexture(GL_TEXTURE_2D, texture_id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        
+        io.Fonts->TexID = (ImTextureID)(intptr_t)texture_id;
+    }
     
     return true;
 }
@@ -397,7 +420,6 @@ int main()
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
 
-    // 【修改】先创建AImGui，再加载字体
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
@@ -411,10 +433,8 @@ int main()
         return 0;
     }
 
-    // 【修改】AImGui初始化后再加载字体
-    if (!LoadChineseFont()) {
-        printf("[-] Font loading failed, but continuing...\n");
-    }
+    // 【关键】在AImGui初始化后加载字体
+    LoadChineseFont();
 
     LoadConfig();
 
