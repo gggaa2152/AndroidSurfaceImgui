@@ -11,6 +11,9 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sstream>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -33,14 +36,26 @@ float g_chessboardPosX = 200;        // 棋盘位置X
 float g_chessboardPosY = 200;        // 棋盘位置Y
 bool g_chessboardDragging = false;   // 是否正在拖动棋盘
 
+// ========== 脚本数据结构 ==========
+struct ScriptData {
+    std::string name;
+    std::string content;
+    bool enabled;
+    int value;
+    float progress;
+};
+std::vector<ScriptData> g_scripts;
+bool g_showScripts = false;
+int g_selectedScript = -1;
+
 // ========== 全局缩放控制 ==========
 float g_globalScale = 1.0f;
 const float MIN_SCALE = 0.5f;
-const float MAX_SCALE = 3.0f;
+const float MAX_SCALE = 2.0f;        // 缩小最大范围
 
 // ========== 窗口位置和大小 ==========
-ImVec2 g_windowPos = ImVec2(100, 150);   // 平板默认位置
-ImVec2 g_windowSize = ImVec2(480, 600);  // 平板默认大小
+ImVec2 g_windowPos = ImVec2(50, 100);   // 默认位置
+ImVec2 g_windowSize = ImVec2(280, 450); // 缩小默认大小
 bool g_windowPosInitialized = false;
 
 // ========== 配置文件路径 ==========
@@ -68,7 +83,7 @@ void LoadChineseFont() {
     ImFont* font = nullptr;
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        font = io.Fonts->AddFontFromFileTTF(path, 22.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        font = io.Fonts->AddFontFromFileTTF(path, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
             io.FontDefault = font;
@@ -182,13 +197,174 @@ void LoadConfig() {
         g_windowPosInitialized = true;
         printf("[+] Config loaded (scale=%.2f)\n", g_globalScale);
     } else {
-        // 首次运行，创建默认配置
         printf("[-] No config file, using defaults\n");
         SaveConfig();
     }
 }
 
-// ========== 精美滑动开关（正常大小） ==========
+// ========== 读取脚本目录 ==========
+void LoadScriptsFromDirectory() {
+    g_scripts.clear();
+    
+    DIR* dir = opendir("/data/local/tmp/scripts/");
+    if (!dir) {
+        mkdir("/data/local/tmp/scripts/", 0777);
+        return;
+    }
+    
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_REG) {
+            std::string filename = entry->d_name;
+            
+            if (filename.size() > 4 && 
+                (filename.substr(filename.size() - 4) == ".txt" || 
+                 filename.substr(filename.size() - 7) == ".script")) {
+                
+                ScriptData script;
+                script.name = filename;
+                script.enabled = false;
+                script.value = 0;
+                script.progress = 0.0f;
+                
+                char path[256];
+                snprintf(path, sizeof(path), "/data/local/tmp/scripts/%s", filename.c_str());
+                
+                FILE* f = fopen(path, "r");
+                if (f) {
+                    char buffer[1024];
+                    size_t bytes = fread(buffer, 1, sizeof(buffer) - 1, f);
+                    if (bytes > 0) {
+                        buffer[bytes] = '\0';
+                        script.content = buffer;
+                    }
+                    fclose(f);
+                }
+                
+                g_scripts.push_back(script);
+            }
+        }
+    }
+    closedir(dir);
+}
+
+// ========== 解析脚本数据 ==========
+void ParseScriptData() {
+    for (auto& script : g_scripts) {
+        if (!script.enabled) continue;
+        
+        // JSON 格式
+        if (script.content.find("{") != std::string::npos) {
+            size_t goldPos = script.content.find("\"gold\"");
+            if (goldPos != std::string::npos) {
+                size_t colon = script.content.find(":", goldPos);
+                size_t comma = script.content.find(",", colon);
+                if (comma == std::string::npos) comma = script.content.find("}", colon);
+                std::string valStr = script.content.substr(colon + 1, comma - colon - 1);
+                gold = atoi(valStr.c_str());
+            }
+            
+            size_t levelPos = script.content.find("\"level\"");
+            if (levelPos != std::string::npos) {
+                size_t colon = script.content.find(":", levelPos);
+                size_t comma = script.content.find(",", colon);
+                if (comma == std::string::npos) comma = script.content.find("}", colon);
+                std::string valStr = script.content.substr(colon + 1, comma - colon - 1);
+                level = atoi(valStr.c_str());
+            }
+            
+            size_t hpPos = script.content.find("\"hp\"");
+            if (hpPos != std::string::npos) {
+                size_t colon = script.content.find(":", hpPos);
+                size_t comma = script.content.find(",", colon);
+                if (comma == std::string::npos) comma = script.content.find("}", colon);
+                std::string valStr = script.content.substr(colon + 1, comma - colon - 1);
+                hp = atoi(valStr.c_str());
+            }
+        }
+        // 键值对格式
+        else {
+            std::istringstream iss(script.content);
+            std::string line;
+            while (std::getline(iss, line)) {
+                if (line.empty()) continue;
+                
+                size_t eqPos = line.find('=');
+                if (eqPos != std::string::npos) {
+                    std::string key = line.substr(0, eqPos);
+                    std::string value = line.substr(eqPos + 1);
+                    
+                    if (key == "gold") gold = atoi(value.c_str());
+                    else if (key == "level") level = atoi(value.c_str());
+                    else if (key == "hp") hp = atoi(value.c_str());
+                    else if (key == "autoBuy") autoBuy = (atoi(value.c_str()) != 0);
+                    else if (key == "autoRefresh") autoRefresh = (atoi(value.c_str()) != 0);
+                }
+            }
+        }
+    }
+}
+
+// ========== 显示脚本管理窗口 ==========
+void ShowScriptsWindow() {
+    if (!g_showScripts) return;
+    
+    ImGui::SetNextWindowSize(ImVec2(300 * g_globalScale, 400 * g_globalScale), ImGuiCond_FirstUseEver);
+    ImGui::Begin("脚本管理器", &g_showScripts, ImGuiWindowFlags_NoSavedSettings);
+    
+    if (ImGui::Button("刷新", ImVec2(-1, 30 * g_globalScale))) {
+        LoadScriptsFromDirectory();
+    }
+    
+    ImGui::Separator();
+    
+    // 脚本列表
+    ImGui::BeginChild("ScriptList", ImVec2(120 * g_globalScale, 0), true);
+    
+    for (size_t i = 0; i < g_scripts.size(); i++) {
+        std::string label = g_scripts[i].name;
+        if (g_scripts[i].enabled) {
+            label = "✓ " + label;
+        }
+        
+        if (ImGui::Selectable(label.c_str(), g_selectedScript == (int)i)) {
+            g_selectedScript = i;
+        }
+    }
+    
+    ImGui::EndChild();
+    
+    ImGui::SameLine();
+    
+    // 脚本详情
+    ImGui::BeginChild("ScriptDetail", ImVec2(0, 0), true);
+    
+    if (g_selectedScript >= 0 && g_selectedScript < (int)g_scripts.size()) {
+        auto& script = g_scripts[g_selectedScript];
+        
+        ImGui::Text("文件: %s", script.name.c_str());
+        ImGui::Separator();
+        
+        ImGui::Checkbox("启用", &script.enabled);
+        
+        ImGui::Separator();
+        ImGui::Text("内容:");
+        ImGui::BeginChild("Content", ImVec2(0, 150 * g_globalScale), true);
+        ImGui::TextWrapped("%s", script.content.c_str());
+        ImGui::EndChild();
+        
+        if (ImGui::Button("应用", ImVec2(-1, 30 * g_globalScale))) {
+            for (auto& s : g_scripts) s.enabled = false;
+            script.enabled = true;
+            ParseScriptData();
+        }
+    }
+    
+    ImGui::EndChild();
+    ImGui::End();
+}
+
+// ========== 精美滑动开关 ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
@@ -359,7 +535,7 @@ void DrawChessboard() {
 // ========== 自定义窗口缩放回调 ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     float newWidth = data->DesiredSize.x;
-    float scaleDelta = newWidth / 480.0f;
+    float scaleDelta = newWidth / 280.0f;
     if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
@@ -369,34 +545,29 @@ void ScaleWindow(ImGuiSizeCallbackData* data) {
 
 int main()
 {
-    printf("[1] Starting JCC Assistant (平板版)...\n");
+    printf("[1] Starting JCC Assistant...\n");
     
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     
     ImGuiIO& io = ImGui::GetIO();
     
-    // ===== 关键修改：禁止穿透点击 =====
-    // 移除 FLAG_NOT_FOCUSABLE，让窗口捕获所有点击
-    // 这个标志原本允许点击穿透到下层
-    
     ImGuiStyle& style = ImGui::GetStyle();
     
-    // 平板触摸区域设置
-    style.GrabMinSize = 44.0f;
-    style.FramePadding = ImVec2(14, 10);
-    style.WindowPadding = ImVec2(16, 16);
-    style.ItemSpacing = ImVec2(14, 10);
-    style.TouchExtraPadding = ImVec2(6, 6);
+    // 缩小整体尺寸
+    style.GrabMinSize = 24.0f;
+    style.FramePadding = ImVec2(6, 4);
+    style.WindowPadding = ImVec2(8, 8);
+    style.ItemSpacing = ImVec2(6, 4);
+    style.TouchExtraPadding = ImVec2(2, 2);
     
     style.WindowBorderSize = 0.0f;
     style.FrameBorderSize = 0.0f;
-    style.WindowRounding = 16.0f;
-    style.FrameRounding = 8.0f;
+    style.WindowRounding = 8.0f;
+    style.FrameRounding = 4.0f;
     
     LoadChineseFont();
     
-    // ===== 重要：AImGui 初始化选项 =====
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
@@ -412,8 +583,8 @@ int main()
     }
 
     LoadConfig();
+    LoadScriptsFromDirectory();
 
-    // 输入线程
     std::thread processInputEventThread(
         [&]
         {
@@ -437,6 +608,7 @@ int main()
         auto frameStart = std::chrono::high_resolution_clock::now();
         
         ReadGameData();
+        ParseScriptData();
 
         imgui.BeginFrame();
 
@@ -455,8 +627,8 @@ int main()
             ImGui::ShowDemoWindow(&showDemoWindow);
 
         {
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16.0f * g_globalScale);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f * g_globalScale);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * g_globalScale);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f * g_globalScale);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.95f));
             ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.15f, 0.2f, 0.6f, 0.9f));
@@ -464,7 +636,7 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
             ImGui::SetNextWindowSizeConstraints(
-                ImVec2(320, 400),
+                ImVec2(200, 300),
                 ImVec2(FLT_MAX, FLT_MAX),
                 ScaleWindow,
                 nullptr
@@ -492,14 +664,22 @@ int main()
             
             // 信息栏
             ImGui::Columns(2, "info", false);
-            ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "FPS: %.0f", g_currentFPS);
+            ImGui::Text("FPS: %.0f", g_currentFPS);
             ImGui::NextColumn();
-            ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "缩放: %.2fx", g_globalScale);
+            ImGui::Text("缩放: %.1fx", g_globalScale);
             ImGui::Columns(1);
             
             ImGui::Separator();
             
-            ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "功能设置");
+            // 脚本管理器按钮
+            if (ImGui::Button("📁 脚本", ImVec2(-1, 30 * g_globalScale))) {
+                g_showScripts = !g_showScripts;
+                if (g_showScripts) LoadScriptsFromDirectory();
+            }
+            
+            ImGui::Separator();
+            
+            ImGui::Text("功能设置");
             
             bool prevPredict = g_featurePredict;
             bool prevESP = g_featureESP;
@@ -508,42 +688,27 @@ int main()
             bool prevAutoRefresh = autoRefresh;
             
             ToggleSwitch("预测", &g_featurePredict, 0);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("开启后预测敌方下一步行动");
-            }
-            
             ToggleSwitch("透视", &g_featureESP, 1);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("开启后显示棋盘");
-            }
-            
             ToggleSwitch("秒退", &g_featureInstantQuit, 2);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("开启后快速退出对局");
-            }
             
             ImGui::Separator();
             
-            ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "游戏功能");
-            
+            ImGui::Text("游戏功能");
             ToggleSwitch("自动购买", &autoBuy, 3);
             ToggleSwitch("自动刷新", &autoRefresh, 4);
             
             if (g_featureESP) {
                 ImGui::Separator();
-                ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "棋盘设置");
-                if (ImGui::SliderFloat("棋盘缩放", &g_chessboardScale, 0.5f, 2.0f, "%.1f")) {}
-                ImGui::Text("拖动棋盘可移动位置");
+                ImGui::Text("棋盘设置");
+                ImGui::SliderFloat("缩放", &g_chessboardScale, 0.5f, 2.0f, "%.1f");
             }
             
             ImGui::Separator();
             
-            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "当前状态");
-            ImGui::Text("预测: %s", g_featurePredict ? "开启" : "关闭");
-            ImGui::Text("透视: %s", g_featureESP ? "开启" : "关闭");
-            ImGui::Text("秒退: %s", g_featureInstantQuit ? "开启" : "关闭");
-            ImGui::Text("自动购买: %s", autoBuy ? "开启" : "关闭");
-            ImGui::Text("自动刷新: %s", autoRefresh ? "开启" : "关闭");
+            ImGui::Text("当前数据");
+            ImGui::Text("金币: %d", gold);
+            ImGui::Text("等级: %d", level);
+            ImGui::Text("血量: %d", hp);
             
             ImGui::End();
             ImGui::PopStyleVar(3);
@@ -564,6 +729,8 @@ int main()
                 lastSaveTime = currentTime;
             }
         }
+
+        ShowScriptsWindow();
 
         if (showAnotherWindow)
         {
