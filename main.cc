@@ -384,6 +384,11 @@ int main()
     while (state) {
         auto frameStart = std::chrono::high_resolution_clock::now();
 
+        // 记录当前开关状态的前值，用于检测变化
+        bool prevPredict = g_featurePredict;
+        bool prevESP = g_featureESP;
+        bool prevInstantQuit = g_featureInstantQuit;
+
         // 读取共享内存数据
         ReadFromSharedMemory();
 
@@ -405,6 +410,7 @@ int main()
         if (showDemoWindow) ImGui::ShowDemoWindow(&showDemoWindow);
 
         // 主窗口
+        ImVec2 currentPos, currentSize; // 将在窗口内赋值
         {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * g_globalScale);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f * g_globalScale);
@@ -422,8 +428,9 @@ int main()
 
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
 
-            ImVec2 currentPos = ImGui::GetWindowPos();
-            ImVec2 currentSize = ImGui::GetWindowSize();
+            // 获取当前窗口位置和大小
+            currentPos = ImGui::GetWindowPos();
+            currentSize = ImGui::GetWindowSize();
             bool posChanged = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y);
             bool sizeChanged = (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
             if (posChanged || sizeChanged) {
@@ -447,9 +454,6 @@ int main()
             ImGui::Separator();
 
             ImGui::Text("功能设置");
-            bool prevPredict = g_featurePredict;
-            bool prevESP = g_featureESP;
-            bool prevInstantQuit = g_featureInstantQuit;
 
             ToggleSwitch("预测", &g_featurePredict, 0);
             ToggleSwitch("透视", &g_featureESP, 1);
@@ -493,7 +497,7 @@ int main()
         auto now = std::chrono::high_resolution_clock::now();
         float timeSinceLastSave = std::chrono::duration<float>(now - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
-        bool windowMoved = posChanged || sizeChanged;
+        bool windowMoved = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y) || (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
         if ((switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
             SaveConfig();
             lastSaveTime = now;
