@@ -160,7 +160,8 @@ void DrawCircleIcon() {
     int activeCount = (g_featurePredict ? 1 : 0) + (g_featureESP ? 1 : 0) + (g_featureInstantQuit ? 1 : 0);
     sprintf(text, "%d", activeCount);
     
-    drawList->AddText(circleCenter - ImVec2(10, 10), IM_COL32(255, 255, 255, 255), text);
+    // 【修复】正确计算文字位置
+    drawList->AddText(ImVec2(circleCenter.x - 10, circleCenter.y - 10), IM_COL32(255, 255, 255, 255), text);
 }
 
 int main()
