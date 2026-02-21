@@ -208,12 +208,18 @@ int main() {
         .autoUpdateOrientation = true
     });
 
-    if (!imgui) return 1;
+    if (!imgui) {
+        std::cerr << "AImGui 初始化失败! 请检查是否在 Root 权限下运行。" << std::endl;
+        ImGui::DestroyContext();
+        return 1;
+    }
 
     LoadFonts(io);
     LoadConfig();
 
     std::atomic<bool> isRunning(true);
+    
+    // 多线程处理输入事件 (如果有随机崩溃，请尝试将此处删掉，把 imgui.ProcessInputEvent() 放到下面的 main loop 里)
     std::thread inputThread([&] {
         while (isRunning) {
             imgui.ProcessInputEvent();
@@ -221,7 +227,7 @@ int main() {
         }
     });
 
-    const int TARGET_FPS = 90;
+    const int TARGET_FPS = 60; // 建议60帧足够，降低手机发热
     const auto frameDuration = std::chrono::microseconds(1000000 / TARGET_FPS);
     auto lastSaveTime = std::chrono::steady_clock::now();
     bool configDirty = false;
@@ -239,7 +245,8 @@ int main() {
                 ImGui::SetNextWindowSize(g_Config.windowSize, ImGuiCond_FirstUseEver);
             }
 
-            ImGui::Begin("金铲铲助手", &g_Config.showMenu, ImGuiWindowFlags_NoSavedSettings);
+            // 添加 u8 前缀防止中文编译乱码
+            ImGui::Begin(u8"金铲铲助手", &g_Config.showMenu, ImGuiWindowFlags_NoSavedSettings);
             
             ImVec2 curPos = ImGui::GetWindowPos();
             ImVec2 curSize = ImGui::GetWindowSize();
@@ -253,25 +260,31 @@ int main() {
             ImGui::Text("FPS: %.1f", io.Framerate);
             ImGui::Separator();
 
-            if (ImGui::CollapsingHeader("功能", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ToggleSwitch(" 预测", &g_Config.featurePredict)) configDirty = true;
-                if (ToggleSwitch(" 透视", &g_Config.featureESP)) configDirty = true;
-                if (ToggleSwitch(" 秒退", &g_Config.featureInstantQuit)) configDirty = true;
+            if (ImGui::CollapsingHeader(u8"功能", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ToggleSwitch(u8" 预测", &g_Config.featurePredict)) configDirty = true;
+                if (ToggleSwitch(u8" 透视", &g_Config.featureESP)) configDirty = true;
+                if (ToggleSwitch(u8" 秒退", &g_Config.featureInstantQuit)) configDirty = true;
             }
 
-            if (ImGui::CollapsingHeader("状态", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::Text("金币: %d", g_Config.gold);
+            if (ImGui::CollapsingHeader(u8"状态", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::Text(u8"金币: %d", g_Config.gold);
                 ImGui::SameLine();
-                ImGui::Text("等级: %d", g_Config.level);
+                ImGui::Text(u8"等级: %d", g_Config.level);
                 char hpBuf[32]; sprintf(hpBuf, "%d", g_Config.hp);
                 ImGui::ProgressBar((float)g_Config.hp / 100.0f, ImVec2(-1, 0), hpBuf);
             }
 
-            if (ImGui::CollapsingHeader("设置")) {
-                if (ImGui::SliderFloat("界面", &g_Config.globalScale, 0.5f, 2.0f, "%.1f")) configDirty = true;
-                if (ImGui::SliderFloat("棋盘", &g_Config.board.scale, 0.5f, 2.0f, "%.1f")) configDirty = true;
-                if (ImGui::Checkbox("锁定棋盘", &g_Config.board.lockPosition)) configDirty = true;
-                if (ImGui::Button("保存配置", ImVec2(-1, 40))) { SaveConfig(); configDirty = false; }
+            if (ImGui::CollapsingHeader(u8"设置")) {
+                if (ImGui::SliderFloat(u8"界面", &g_Config.globalScale, 0.5f, 2.0f, "%.1f")) configDirty = true;
+                if (ImGui::SliderFloat(u8"棋盘", &g_Config.board.scale, 0.5f, 2.0f, "%.1f")) configDirty = true;
+                if (ImGui::Checkbox(u8"锁定棋盘", &g_Config.board.lockPosition)) configDirty = true;
+                if (ImGui::Button(u8"保存配置", ImVec2(-1, 40))) { SaveConfig(); configDirty = false; }
+                
+                ImGui::Spacing();
+                // 增加安全退出按钮，防止直接 Kill 导致进程挂起或资源未释放
+                if (ImGui::Button(u8"安全退出", ImVec2(-1, 40))) {
+                    isRunning = false;
+                }
             }
             ImGui::End();
         } else {
@@ -294,7 +307,16 @@ int main() {
         if (elapsed < frameDuration) std::this_thread::sleep_for(frameDuration - elapsed);
     }
 
+    // ========== 修复退出崩溃 (Use-After-Free) 的核心部分 ==========
     if (configDirty) SaveConfig();
-    inputThread.detach();
+
+    isRunning = false; // 确保通知子线程停止
+    
+    // 绝对不能用 inputThread.detach(); 必须等待它结束再销毁上下文
+    if (inputThread.joinable()) {
+        inputThread.join(); 
+    }
+    
+    ImGui::DestroyContext(); // 清理 ImGui 防止内存泄漏和下次启动卡死
     return 0;
 }
