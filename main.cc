@@ -41,8 +41,8 @@ bool g_chessboardDragging = false;
 
 // ========== 全局缩放控制 ==========
 float g_globalScale = 1.0f;
-const float MIN_SCALE = 0.3f;        // 【修改】最小缩放从0.5降到0.3
-const float MAX_SCALE = 5.0f;        // 【修改】最大缩放从2.0升到5.0
+const float MIN_SCALE = 0.3f;        // 最小缩放0.3
+const float MAX_SCALE = 5.0f;        // 最大缩放5.0
 
 // ========== 窗口位置和大小 ==========
 ImVec2 g_windowPos = ImVec2(50, 100);
@@ -324,7 +324,7 @@ void DrawChessboard() {
         );
     }
     
-    // 【修改】绘制圆形棋子（去掉正方形）
+    // 绘制圆形棋子
     for (int row = 0; row < CHESSBOARD_ROWS; row++) {
         for (int col = 0; col < CHESSBOARD_COLS; col++) {
             float centerX = g_chessboardPosX + col * cellSize + cellSize/2;
@@ -362,8 +362,7 @@ void DrawChessboard() {
 // ========== 自定义窗口缩放回调（增大缩放幅度） ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     float newWidth = data->DesiredSize.x;
-    // 【修改】基准宽度从280改为200，这样缩放幅度更大
-    float scaleDelta = newWidth / 200.0f;
+    float scaleDelta = newWidth / 200.0f;  // 基准宽度200，缩放幅度更大
     if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
@@ -453,7 +452,7 @@ int main()
         if (showDemoWindow) ImGui::ShowDemoWindow(&showDemoWindow);
 
         // 主窗口
-        ImVec2 currentPos, currentSize;
+        bool posChanged = false, sizeChanged = false;
         {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * g_globalScale);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f * g_globalScale);
@@ -463,7 +462,7 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
 
-            // 【修改】设置窗口大小回调，增大缩放幅度
+            // 设置窗口大小回调，增大缩放幅度
             ImGui::SetNextWindowSizeConstraints(ImVec2(150, 200), ImVec2(FLT_MAX, FLT_MAX), ScaleWindow, nullptr);
             
             if (g_windowPosInitialized) {
@@ -473,10 +472,10 @@ int main()
 
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
 
-            currentPos = ImGui::GetWindowPos();
-            currentSize = ImGui::GetWindowSize();
-            bool posChanged = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y);
-            bool sizeChanged = (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
+            ImVec2 currentPos = ImGui::GetWindowPos();
+            ImVec2 currentSize = ImGui::GetWindowSize();
+            posChanged = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y);
+            sizeChanged = (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
             if (posChanged || sizeChanged) {
                 g_windowPos = currentPos;
                 g_windowSize = currentSize;
