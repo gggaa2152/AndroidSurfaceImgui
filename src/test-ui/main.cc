@@ -6,6 +6,7 @@
 #include <chrono>
 #include <unistd.h>
 #include <cstdio>
+#include <cmath>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -26,6 +27,41 @@ const float MAX_SCALE = 3.0f;
 
 // ========== 配置文件路径 ==========
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
+
+// ========== 帧率计算 ==========
+float g_currentFPS = 0.0f;
+int g_frameCount = 0;
+auto g_fpsTimer = std::chrono::high_resolution_clock::now();
+
+// ========== 加载中文字体 ==========
+void LoadChineseFont() {
+    ImGuiIO& io = ImGui::GetIO();
+    
+    // 一加/OPPO 系统字体
+    const char* fontPaths[] = {
+        "/system/fonts/SysSans-Hans-Regular.ttf",  // 一加/OPPO
+        "/system/fonts/NotoSansCJK-Regular.ttc",   // Google
+        "/system/fonts/DroidSansFallback.ttf",      // 备用
+    };
+    
+    ImFont* font = nullptr;
+    for (const char* path : fontPaths) {
+        printf("[+] Trying font: %s\n", path);
+        font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        if (font) {
+            printf("[+] Loaded font: %s\n", path);
+            io.FontDefault = font;
+            break;
+        }
+    }
+    
+    if (!font) {
+        printf("[-] No Chinese font found, using default\n");
+        io.Fonts->AddFontDefault();
+    }
+    
+    io.Fonts->Build();
+}
 
 // ========== 读取游戏数据 ==========
 void ReadGameData() {
@@ -50,6 +86,7 @@ void SaveConfig() {
         fprintf(f, "autoBuy=%d\n", autoBuy ? 1 : 0);
         fprintf(f, "autoRefresh=%d\n", autoRefresh ? 1 : 0);
         fclose(f);
+        printf("[+] Config saved\n");
     }
 }
 
@@ -88,18 +125,85 @@ void LoadConfig() {
         
         // 应用加载的缩放
         ImGui::GetIO().FontGlobalScale = g_globalScale;
+        printf("[+] Config loaded\n");
+    } else {
+        printf("[-] No config file, using defaults\n");
     }
+}
+
+// ========== 自定义滑动开关 ==========
+bool ToggleSwitch(const char* label, bool* v) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+    
+    ImGuiContext& g = *GImGui;
+    const ImGuiStyle& style = g.Style;
+    const ImGuiID id = window->GetID(label);
+    const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
+    
+    const float height = ImGui::GetFrameHeight();
+    const float width = height * 1.8f;
+    const float radius = height * 0.45f;
+    
+    ImVec2 pos = window->DC.CursorPos;
+    ImRect total_bb(pos, ImVec2(pos.x + width + (label_size.x > 0.0f ? style.ItemInnerSpacing.x + label_size.x : 0.0f), pos.y + height));
+    
+    ImGui::ItemSize(total_bb, style.FramePadding.y);
+    if (!ImGui::ItemAdd(total_bb, id))
+        return false;
+    
+    // 背景
+    float t = *v ? 1.0f : 0.0f;
+    ImGuiContext& gg = g;
+    float ANIM_SPEED = 0.08f;
+    if (g.LastActiveId == id) {
+        float t_anim = ImSaturate(g.LastActiveIdTimer / ANIM_SPEED);
+        t = *v ? (t_anim) : (1.0f - t_anim);
+    }
+    
+    ImU32 col_bg = *v ? ImGui::GetColorU32(ImVec4(0.26f, 0.98f, 0.26f, 0.94f)) : ImGui::GetColorU32(ImVec4(0.76f, 0.76f, 0.76f, 0.94f));
+    
+    ImRect frame_bb(pos, ImVec2(pos.x + width, pos.y + height));
+    window->DrawList->AddRectFilled(frame_bb.Min, frame_bb.Max, col_bg, height * 0.5f);
+    
+    // 滑块
+    float shift = t * (width - 2 * radius - 2);
+    ImRect thumb_bb(ImVec2(pos.x + radius + shift, pos.y + 2), ImVec2(pos.x + width - radius + shift, pos.y + height - 2));
+    window->DrawList->AddCircleFilled(ImVec2(pos.x + radius + shift + (radius/2), pos.y + height/2), radius-2, IM_COL32(255, 255, 255, 255), 32);
+    
+    if (label_size.x > 0.0f) {
+        ImGui::RenderText(ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, pos.y + (height - label_size.y) * 0.5f), label);
+    }
+    
+    // 点击处理
+    bool pressed = ImGui::ButtonBehavior(total_bb, id, NULL, NULL, ImGuiButtonFlags_PressedOnClick);
+    if (pressed) {
+        *v = !*v;
+        g.LastActiveIdTimer = 0.0f;
+    }
+    
+    return pressed;
 }
 
 int main()
 {
+    printf("[1] Starting JCC Assistant...\n");
+    
+    // 先创建 ImGui 上下文
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    
+    // 加载中文字体
+    LoadChineseFont();
+    
     android::AImGui imgui(android::AImGui::Options{.renderType = android::AImGui::RenderType::RenderNative, .autoUpdateOrientation = true});
     bool state = true, showDemoWindow = false, showAnotherWindow = false;
     ImVec4 clearColor(0.45f, 0.55f, 0.60f, 1.00f);
 
     if (!imgui)
     {
-        LogInfo("[-] ImGui initialization failed");
+        printf("[-] ImGui initialization failed\n");
         return 0;
     }
 
@@ -118,7 +222,10 @@ int main()
 
     const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
-    auto lastFrameTime = std::chrono::high_resolution_clock::now();
+    auto frameTimer = std::chrono::high_resolution_clock::now();
+    g_fpsTimer = std::chrono::high_resolution_clock::now();
+    
+    printf("[2] Entering main loop\n");
     
     while (state)
     {
@@ -129,6 +236,16 @@ int main()
 
         imgui.BeginFrame();
 
+        // 计算帧率
+        g_frameCount++;
+        auto now = std::chrono::high_resolution_clock::now();
+        float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
+        if (elapsedMs >= 1000.0f) {
+            g_currentFPS = g_frameCount * 1000.0f / elapsedMs;
+            g_frameCount = 0;
+            g_fpsTimer = now;
+        }
+
         // 1. Show the big demo window
         if (showDemoWindow)
             ImGui::ShowDemoWindow(&showDemoWindow);
@@ -136,6 +253,9 @@ int main()
         // ========== 金铲铲助手主窗口 ==========
         {
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
+            
+            // ===== 帧率显示 =====
+            ImGui::TextColored(ImVec4(0,1,1,1), "📊 帧率: %.1f FPS", g_currentFPS);
             
             // ===== 全局缩放控制 =====
             ImGui::TextColored(ImVec4(0,1,1,1), "⚙️ 全局缩放");
@@ -153,7 +273,7 @@ int main()
             
             ImGui::Separator();
             
-            // ===== 功能开关 =====
+            // ===== 功能开关（滑动开关） =====
             ImGui::TextColored(ImVec4(1,1,0,1), "🔧 功能设置");
             
             bool prevPredict = g_featurePredict;
@@ -162,20 +282,18 @@ int main()
             bool prevAutoBuy = autoBuy;
             bool prevAutoRefresh = autoRefresh;
             
-            // 1. 预测开关
-            ImGui::Checkbox("1. 预测", &g_featurePredict);
+            // 使用滑动开关
+            ToggleSwitch("预测", &g_featurePredict);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("开启后预测敌方下一步行动");
             }
             
-            // 2. 透视开关
-            ImGui::Checkbox("2. 透视", &g_featureESP);
+            ToggleSwitch("透视", &g_featureESP);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("开启后显示敌方位置");
             }
             
-            // 3. 秒退开关
-            ImGui::Checkbox("3. 秒退", &g_featureInstantQuit);
+            ToggleSwitch("秒退", &g_featureInstantQuit);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("开启后快速退出对局");
             }
@@ -185,8 +303,8 @@ int main()
             // ===== 游戏功能 =====
             ImGui::TextColored(ImVec4(0,1,1,1), "🎮 游戏功能");
             
-            ImGui::Checkbox("自动购买", &autoBuy);
-            ImGui::Checkbox("自动刷新", &autoRefresh);
+            ToggleSwitch("自动购买", &autoBuy);
+            ToggleSwitch("自动刷新", &autoRefresh);
             
             // ===== 游戏数据 =====
             ImGui::Separator();
@@ -201,7 +319,7 @@ int main()
             
             // 按钮
             if (ImGui::Button("刷新", ImVec2(100 * g_globalScale, 0))) {
-                LogInfo("[+] Refresh button clicked");
+                printf("[+] Refresh button clicked\n");
             }
             
             // ===== 当前功能状态 =====
@@ -255,5 +373,6 @@ int main()
     // 退出前保存配置
     SaveConfig();
 
+    printf("[3] JCC Assistant exited\n");
     return 0;
 }
