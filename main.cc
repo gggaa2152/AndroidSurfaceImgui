@@ -19,13 +19,14 @@
 #include <map>
 #include <vector>
 #include <cstring>
+#include <atomic>
 
 // ========== 金铲铲助手数据 ==========
-int gold = 100;
-int level = 8;
-int hp = 85;
-bool autoBuy = true;
-bool autoRefresh = true;
+std::atomic<int> gold{100};
+std::atomic<int> level{8};
+std::atomic<int> hp{85};
+std::atomic<bool> autoBuy{true};
+std::atomic<bool> autoRefresh{true};
 
 // ========== 功能开关 ==========
 bool g_featurePredict = false;     // 预测
@@ -67,8 +68,63 @@ struct SharedGameData {
 // ========== 共享内存变量 ==========
 int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
-int g_lastTimestamp = 0;
-bool g_forceUpdate = true;  // 强制首次更新
+std::atomic<bool> g_shmValid{false};
+std::thread* g_shmThread = nullptr;
+bool g_running = true;
+
+// ========== 独立线程读取共享内存 ==========
+void ShmReaderThread() {
+    printf("[+] Shared memory reader thread started\n");
+    
+    int lastTs = 0;
+    int errorCount = 0;
+    const int MAX_ERRORS = 5;
+    
+    while (g_running) {
+        if (!g_shmValid || !g_sharedData) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        
+        // 使用 try-catch 风格的错误处理
+        int ts = 0;
+        int new_gold = 0;
+        int new_level = 0;
+        int new_hp = 0;
+        int new_autoBuy = 0;
+        int new_autoRefresh = 0;
+        
+        // 安全读取（使用 volatile 防止优化）
+        volatile SharedGameData* volatile_data = g_sharedData;
+        
+        // 读取时间戳
+        ts = volatile_data->timestamp;
+        
+        // 如果时间戳变化，读取所有数据
+        if (ts != lastTs && ts > 0) {
+            new_gold = volatile_data->gold;
+            new_level = volatile_data->level;
+            new_hp = volatile_data->hp;
+            new_autoBuy = volatile_data->autoBuy;
+            new_autoRefresh = volatile_data->autoRefresh;
+            
+            // 更新原子变量
+            gold.store(new_gold);
+            level.store(new_level);
+            hp.store(new_hp);
+            autoBuy.store(new_autoBuy != 0);
+            autoRefresh.store(new_autoRefresh != 0);
+            
+            lastTs = ts;
+            errorCount = 0;  // 重置错误计数
+            
+            printf("[UPDATE] gold=%d, level=%d, hp=%d, ts=%d\n", 
+                   new_gold, new_level, new_hp, ts);
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // 约60Hz读取
+    }
+}
 
 // ========== 初始化共享内存 ==========
 bool InitSharedMemory() {
@@ -91,7 +147,7 @@ bool InitSharedMemory() {
     }
     
     g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
-                                         PROT_READ | PROT_WRITE,
+                                         PROT_READ,
                                          MAP_SHARED, g_shm_fd, 0);
     
     if (g_sharedData == MAP_FAILED) {
@@ -101,46 +157,34 @@ bool InitSharedMemory() {
         return false;
     }
     
-    // 强制读取初始值
-    gold = g_sharedData->gold;
-    level = g_sharedData->level;
-    hp = g_sharedData->hp;
-    autoBuy = (g_sharedData->autoBuy != 0);
-    autoRefresh = (g_sharedData->autoRefresh != 0);
-    g_lastTimestamp = g_sharedData->timestamp;
+    g_shmValid = true;
     
-    printf("[+] Shared memory initialized: gold=%d, level=%d, hp=%d, ts=%d\n", 
-           gold, level, hp, g_lastTimestamp);
+    // 读取初始值
+    gold.store(g_sharedData->gold);
+    level.store(g_sharedData->level);
+    hp.store(g_sharedData->hp);
+    autoBuy.store(g_sharedData->autoBuy != 0);
+    autoRefresh.store(g_sharedData->autoRefresh != 0);
+    
+    printf("[+] Shared memory initialized: gold=%d, level=%d, hp=%d\n", 
+           gold.load(), level.load(), hp.load());
+    
+    // 启动读取线程
+    g_shmThread = new std::thread(ShmReaderThread);
+    
     return true;
-}
-
-// ========== 从共享内存读取数据 ==========
-void ReadFromSharedMemory() {
-    if (!g_sharedData) return;
-    
-    // 每次都读取最新值（不依赖时间戳）
-    int new_gold = g_sharedData->gold;
-    int new_level = g_sharedData->level;
-    int new_hp = g_sharedData->hp;
-    int new_ts = g_sharedData->timestamp;
-    
-    // 如果任何数据变化，都更新
-    if (new_gold != gold || new_level != level || new_hp != hp || new_ts != g_lastTimestamp || g_forceUpdate) {
-        gold = new_gold;
-        level = new_level;
-        hp = new_hp;
-        autoBuy = (g_sharedData->autoBuy != 0);
-        autoRefresh = (g_sharedData->autoRefresh != 0);
-        g_lastTimestamp = new_ts;
-        g_forceUpdate = false;
-        
-        // 调试输出
-        printf("[UPDATE] gold=%d, level=%d, hp=%d, ts=%d\n", gold, level, hp, new_ts);
-    }
 }
 
 // ========== 清理共享内存 ==========
 void CleanupSharedMemory() {
+    g_running = false;
+    if (g_shmThread && g_shmThread->joinable()) {
+        g_shmThread->join();
+        delete g_shmThread;
+        g_shmThread = nullptr;
+    }
+    
+    g_shmValid = false;
     if (g_sharedData) {
         munmap(g_sharedData, sizeof(SharedGameData));
         g_sharedData = nullptr;
@@ -390,7 +434,7 @@ int main()
 {
     printf("[1] Starting JCC Assistant...\n");
     
-    // 初始化共享内存
+    // 初始化共享内存（使用独立线程）
     InitSharedMemory();
 
     IMGUI_CHECKVERSION();
@@ -448,9 +492,6 @@ int main()
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
-        // 每帧都读取共享内存（强制更新）
-        ReadFromSharedMemory();
-
         imgui.BeginFrame();
 
         DrawChessboard();
@@ -497,7 +538,7 @@ int main()
             ImGui::Separator();
 
             // 显示共享内存状态
-            if (g_sharedData) {
+            if (g_shmValid && g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 // 显示脚本名
                 char scriptName[65] = {0};
@@ -520,9 +561,9 @@ int main()
 
             ImGui::Separator();
             ImGui::Text("游戏数据");
-            ImGui::Text("金币: %d", gold);
-            ImGui::Text("等级: %d", level);
-            ImGui::Text("血量: %d", hp);
+            ImGui::Text("金币: %d", gold.load());
+            ImGui::Text("等级: %d", level.load());
+            ImGui::Text("血量: %d", hp.load());
 
             if (g_featureESP) {
                 ImGui::Separator();
