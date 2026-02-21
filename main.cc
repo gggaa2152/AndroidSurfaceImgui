@@ -129,12 +129,11 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载中文字体（修复大小和模糊） ==========
-void LoadChineseFont() {
+// ========== 加载中文字体（安全版本） ==========
+bool LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
-    // 先清空字体
-    io.Fonts->Clear();
+    printf("[+] Loading Chinese font...\n");
     
     const char* fontPaths[] = {
         "/system/fonts/SysSans-Hans-Regular.ttf",
@@ -144,14 +143,13 @@ void LoadChineseFont() {
     
     ImFont* font = nullptr;
     ImFontConfig config;
-    config.OversampleH = 2;  // 水平过采样，提高清晰度
-    config.OversampleV = 2;  // 垂直过采样，提高清晰度
-    config.PixelSnapH = false; // 禁用像素对齐，让字体更平滑
-    config.RasterizerMultiply = 1.0f; // 不乘系数
+    config.OversampleH = 1;  // 降低过采样避免崩溃
+    config.OversampleV = 1;
+    config.PixelSnapH = true;
+    config.RasterizerMultiply = 1.0f;
     
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        // 【修改】字体大小从16px降到14px
         font = io.Fonts->AddFontFromFileTTF(path, 14.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
@@ -165,12 +163,10 @@ void LoadChineseFont() {
         io.Fonts->AddFontDefault();
     }
     
-    // 构建字体纹理
+    // 只构建，不销毁纹理（让ImGui自己处理）
     io.Fonts->Build();
     
-    // 确保纹理上传到GPU
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
-    ImGui_ImplOpenGL3_CreateFontsTexture();
+    return true;
 }
 
 // ========== 配置文件路径 ==========
@@ -314,7 +310,6 @@ void DrawChessboard() {
         }
     }
     
-    // 绘制棋盘背景（半透明）
     drawList->AddRectFilled(
         ImVec2(g_chessboardPosX, g_chessboardPosY),
         ImVec2(g_chessboardPosX + boardWidth, g_chessboardPosY + boardHeight),
@@ -322,7 +317,6 @@ void DrawChessboard() {
         4.0f
     );
     
-    // 绘制格子线
     for (int row = 0; row <= CHESSBOARD_ROWS; row++) {
         float y = g_chessboardPosY + row * cellSize;
         drawList->AddLine(
@@ -343,7 +337,6 @@ void DrawChessboard() {
         );
     }
     
-    // 绘制圆形棋子
     for (int row = 0; row < CHESSBOARD_ROWS; row++) {
         for (int col = 0; col < CHESSBOARD_COLS; col++) {
             float centerX = g_chessboardPosX + col * cellSize + cellSize/2;
@@ -404,9 +397,7 @@ int main()
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
 
-    // 【修改】加载字体（现在在 ImGui_ImplOpenGL3_Init 之前）
-    LoadChineseFont();
-
+    // 【修改】先创建AImGui，再加载字体
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
@@ -418,6 +409,11 @@ int main()
     if (!imgui) {
         printf("[-] ImGui initialization failed\n");
         return 0;
+    }
+
+    // 【修改】AImGui初始化后再加载字体
+    if (!LoadChineseFont()) {
+        printf("[-] Font loading failed, but continuing...\n");
     }
 
     LoadConfig();
