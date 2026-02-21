@@ -1,8 +1,6 @@
 #include "Global.h"
 #include "AImGui.h"
-
 #include <thread>
-#include <iostream>
 #include <cstdio>
 #include <chrono>
 
@@ -14,11 +12,9 @@ bool autoBuy = true;
 bool autoRefresh = true;
 bool autoScaleEnabled = true;
 float manualScale = 1.0f;
-float currentScale = 1.0f;
 ImVec2 baseSize(400, 300);
 bool firstTime = true;
 
-// ========== 读取游戏数据 ==========
 void ReadGameData() {
     FILE* f = fopen("/data/local/tmp/game_data.txt", "r");
     if (f) {
@@ -29,78 +25,83 @@ void ReadGameData() {
     }
 }
 
-int main()
-{
-    // 先初始化 ImGui 上下文
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
-    // 在创建窗口之前加载字体
-    printf("[+] Loading Chinese font...\n");
-    ImFont* font = io.Fonts->AddFontFromFileTTF("/system/fonts/NotoSansCJK-Regular.ttc", 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+    // 一加/OPPO 系统字体
+    const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
+    
+    printf("[+] Loading font: %s\n", fontPath);
+    ImFont* font = io.Fonts->AddFontFromFileTTF(fontPath, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+    
     if (font) {
         printf("[+] Font loaded successfully\n");
+        io.FontDefault = font;
     } else {
-        printf("[-] Font loading failed\n");
+        printf("[-] Font loading failed, using default\n");
+        io.Fonts->AddFontDefault();
     }
     
-    // 构建字体
     io.Fonts->Build();
+}
+
+int main()
+{
+    printf("[1] Starting...\n");
     
-    // 设置默认字体
-    io.FontDefault = font;
+    // 先创建 ImGui 上下文
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
     
-    // 现在创建窗口
+    // 加载字体
+    LoadChineseFont();
+    
+    // 创建窗口
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
         .autoUpdateOrientation = true
     });
-    
-    bool state = true, showDemoWindow = false, showAnotherWindow = false;
-    ImVec4 clearColor(0.45f, 0.55f, 0.60f, 1.00f);
 
     if (!imgui)
     {
         printf("[-] ImGui initialization failed\n");
         return 0;
     }
+    
+    printf("[2] AImGui created\n");
 
-    std::thread processInputEventThread(
-        [&]
-        {
-            while (state)
-            {
-                imgui.ProcessInputEvent();
-                std::this_thread::sleep_for(std::chrono::microseconds(1));
-            }
-        });
+    bool state = true, showDemoWindow = false, showAnotherWindow = false;
+    ImVec4 clearColor(0.45f, 0.55f, 0.60f, 1.00f);
 
+    std::thread inputThread([&] {
+        while (state) {
+            imgui.ProcessInputEvent();
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
+        }
+    });
+
+    printf("[3] Entering main loop\n");
+    
     while (state)
     {
-        // 读取游戏数据
         ReadGameData();
 
         imgui.BeginFrame();
 
-        // 1. Show the big demo window
         if (showDemoWindow)
             ImGui::ShowDemoWindow(&showDemoWindow);
 
-        // ========== 金铲铲助手窗口 ==========
+        // 金铲铲助手窗口
         {
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
             
-            // 获取当前窗口大小用于自动缩放
             ImVec2 currentSize = ImGui::GetWindowSize();
             
-            // 第一次运行时记录基准大小
             if (firstTime) {
                 baseSize = currentSize;
                 firstTime = false;
             }
             
-            // 自动缩放计算
             float scaleX = currentSize.x / baseSize.x;
             float scaleY = currentSize.y / baseSize.y;
             float newScale = (scaleX > scaleY ? scaleX : scaleY);
@@ -110,7 +111,6 @@ int main()
             if (newScale < MIN_SCALE) newScale = MIN_SCALE;
             if (newScale > MAX_SCALE) newScale = MAX_SCALE;
             
-            // 缩放控制
             ImGui::Checkbox("自动缩放", &autoScaleEnabled);
             
             float effectiveScale;
@@ -122,26 +122,20 @@ int main()
                 effectiveScale = manualScale;
             }
             
-            // 应用字体缩放
             ImGui::GetIO().FontGlobalScale = effectiveScale;
-            
             ImGui::Separator();
 
-            // 游戏数据显示
             ImGui::Text("金币: %d", gold);
             ImGui::Text("等级: %d", level);
             ImGui::Text("血量: %d", hp);
             
-            // 进度条
             float progressWidth = 200.0f * effectiveScale;
             float progressHeight = 20.0f * effectiveScale;
             ImGui::ProgressBar(hp/100.0f, ImVec2(progressWidth, progressHeight), "");
             
-            // 功能开关
             ImGui::Checkbox("自动购买", &autoBuy);
             ImGui::Checkbox("自动刷新", &autoRefresh);
             
-            // 按钮
             if (ImGui::Button("刷新")) {
                 printf("刷新按钮点击\n");
             }
@@ -149,7 +143,6 @@ int main()
             ImGui::End();
         }
 
-        // 3. Show another simple window
         if (showAnotherWindow)
         {
             ImGui::Begin("Another Window", &showAnotherWindow);
@@ -163,8 +156,8 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    if (processInputEventThread.joinable())
-        processInputEventThread.join();
+    if (inputThread.joinable())
+        inputThread.join();
 
     return 0;
 }
