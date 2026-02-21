@@ -61,21 +61,18 @@ int g_lastTimestamp = 0;
 bool InitSharedMemory() {
     printf("[+] Initializing shared memory...\n");
     
-    // Android 上使用文件模拟共享内存
     g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_CREAT | O_RDWR, 0666);
     if (g_shm_fd < 0) {
         printf("[-] Failed to create shared file: %s\n", strerror(errno));
         return false;
     }
     
-    // 设置大小
     if (ftruncate(g_shm_fd, sizeof(SharedGameData)) < 0) {
         printf("[-] Failed to set size: %s\n", strerror(errno));
         close(g_shm_fd);
         return false;
     }
     
-    // 映射到内存
     g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
                                          PROT_READ | PROT_WRITE,
                                          MAP_SHARED, g_shm_fd, 0);
@@ -87,7 +84,6 @@ bool InitSharedMemory() {
         return false;
     }
     
-    // 如果是首次创建，初始化数据
     if (g_sharedData->version == 0) {
         printf("[+] First time init, setting default values\n");
         g_sharedData->gold = 100;
@@ -101,8 +97,6 @@ bool InitSharedMemory() {
     }
     
     printf("[+] Shared memory initialized successfully\n");
-    printf("    Current values: gold=%d, level=%d, hp=%d\n", 
-           g_sharedData->gold, g_sharedData->level, g_sharedData->hp);
     return true;
 }
 
@@ -118,23 +112,7 @@ void ReadFromSharedMemory() {
         autoRefresh = (g_sharedData->autoRefresh != 0);
         
         g_lastTimestamp = g_sharedData->timestamp;
-        
-        printf("[+] Data updated: gold=%d, level=%d, hp=%d\n", 
-               gold, level, hp);
     }
-}
-
-// ========== 写入共享内存（用于测试） ==========
-void WriteToSharedMemory(int newGold, int newLevel, int newHp) {
-    if (!g_sharedData) return;
-    
-    g_sharedData->gold = newGold;
-    g_sharedData->level = newLevel;
-    g_sharedData->hp = newHp;
-    g_sharedData->timestamp++;
-    
-    printf("[+] Wrote to shared memory: gold=%d, level=%d, hp=%d (ts=%d)\n",
-           newGold, newLevel, newHp, g_sharedData->timestamp);
 }
 
 // ========== 清理共享内存 ==========
@@ -147,7 +125,6 @@ void CleanupSharedMemory() {
         close(g_shm_fd);
         g_shm_fd = -1;
     }
-    // 不删除文件，以便其他程序访问
 }
 
 // ========== 加载中文字体 ==========
@@ -219,7 +196,6 @@ void SaveConfig() {
         fprintf(f, "chessboardPosX=%.0f\n", g_chessboardPosX);
         fprintf(f, "chessboardPosY=%.0f\n", g_chessboardPosY);
         fclose(f);
-        printf("[+] Config saved\n");
     }
 }
 
@@ -273,9 +249,7 @@ void LoadConfig() {
         
         ImGui::GetIO().FontGlobalScale = g_globalScale;
         g_windowPosInitialized = true;
-        printf("[+] Config loaded (scale=%.2f)\n", g_globalScale);
     } else {
-        printf("[-] No config file, creating default\n");
         SaveConfig();
     }
 }
@@ -480,10 +454,11 @@ int main()
     
     ImGuiIO& io = ImGui::GetIO();
     
-    // 禁止穿透点击
+    // 设置ImGui配置（不影响穿透）
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     
+    // 样式设置（保持原样）
     ImGuiStyle& style = ImGui::GetStyle();
     style.GrabMinSize = 24.0f;
     style.FramePadding = ImVec2(6, 4);
@@ -510,11 +485,12 @@ int main()
 
     LoadConfig();
 
-    const float TARGET_FPS = 60.0f;
+    // 【恢复】帧率设为120
+    const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
     g_fpsTimer = std::chrono::high_resolution_clock::now();
     
-    printf("[2] Entering main loop (无后台运行)\n");
+    printf("[2] Entering main loop (无后台运行, 目标120fps)\n");
     
     auto lastSaveTime = std::chrono::high_resolution_clock::now();
     
@@ -522,7 +498,7 @@ int main()
     {
         auto frameStart = std::chrono::high_resolution_clock::now();
         
-        // 处理输入事件
+        // 处理输入事件（必须每帧调用，以保证响应）
         imgui.ProcessInputEvent();
         
         // 从共享内存读取数据
@@ -586,7 +562,6 @@ int main()
             if (g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 ImGui::Text("脚本: %s", g_sharedData->scriptName);
-                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
@@ -605,19 +580,8 @@ int main()
             bool prevInstantQuit = g_featureInstantQuit;
             
             ToggleSwitch("预测", &g_featurePredict, 0);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("开启后预测敌方下一步行动");
-            }
-            
             ToggleSwitch("透视", &g_featureESP, 1);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("开启后显示棋盘");
-            }
-            
             ToggleSwitch("秒退", &g_featureInstantQuit, 2);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("开启后快速退出对局");
-            }
             
             ImGui::Separator();
             
@@ -630,7 +594,6 @@ int main()
                 ImGui::Separator();
                 ImGui::Text("棋盘设置");
                 ImGui::SliderFloat("缩放", &g_chessboardScale, 0.5f, 2.0f, "%.1f");
-                ImGui::Text("拖动棋盘可移动位置");
             }
             
             ImGui::End();
