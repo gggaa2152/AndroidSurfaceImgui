@@ -68,6 +68,7 @@ struct SharedGameData {
 int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
+bool g_forceUpdate = true;  // 强制首次更新
 
 // ========== 初始化共享内存 ==========
 bool InitSharedMemory() {
@@ -100,7 +101,7 @@ bool InitSharedMemory() {
         return false;
     }
     
-    // 读取初始值
+    // 强制读取初始值
     gold = g_sharedData->gold;
     level = g_sharedData->level;
     hp = g_sharedData->hp;
@@ -108,7 +109,8 @@ bool InitSharedMemory() {
     autoRefresh = (g_sharedData->autoRefresh != 0);
     g_lastTimestamp = g_sharedData->timestamp;
     
-    printf("[+] Shared memory initialized: gold=%d, level=%d, hp=%d\n", gold, level, hp);
+    printf("[+] Shared memory initialized: gold=%d, level=%d, hp=%d, ts=%d\n", 
+           gold, level, hp, g_lastTimestamp);
     return true;
 }
 
@@ -116,14 +118,24 @@ bool InitSharedMemory() {
 void ReadFromSharedMemory() {
     if (!g_sharedData) return;
     
-    int ts = g_sharedData->timestamp;
-    if (ts != g_lastTimestamp && ts > 0) {
-        gold = g_sharedData->gold;
-        level = g_sharedData->level;
-        hp = g_sharedData->hp;
+    // 每次都读取最新值（不依赖时间戳）
+    int new_gold = g_sharedData->gold;
+    int new_level = g_sharedData->level;
+    int new_hp = g_sharedData->hp;
+    int new_ts = g_sharedData->timestamp;
+    
+    // 如果任何数据变化，都更新
+    if (new_gold != gold || new_level != level || new_hp != hp || new_ts != g_lastTimestamp || g_forceUpdate) {
+        gold = new_gold;
+        level = new_level;
+        hp = new_hp;
         autoBuy = (g_sharedData->autoBuy != 0);
         autoRefresh = (g_sharedData->autoRefresh != 0);
-        g_lastTimestamp = ts;
+        g_lastTimestamp = new_ts;
+        g_forceUpdate = false;
+        
+        // 调试输出
+        printf("[UPDATE] gold=%d, level=%d, hp=%d, ts=%d\n", gold, level, hp, new_ts);
     }
 }
 
@@ -385,7 +397,7 @@ int main()
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
-    // 样式设置（完全恢复原始）
+    // 样式设置
     ImGuiStyle& style = ImGui::GetStyle();
     style.GrabMinSize = 24.0f;
     style.FramePadding = ImVec2(6, 4);
@@ -411,7 +423,7 @@ int main()
 
     LoadConfig();
 
-    // ========== 输入线程（完全恢复原始） ==========
+    // ========== 输入线程 ==========
     std::thread inputThread([&] {
         struct sched_param param;
         param.sched_priority = 99;
@@ -422,7 +434,6 @@ int main()
         }
     });
 
-    // 120fps（完全恢复原始）
     const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
     g_fpsTimer = std::chrono::high_resolution_clock::now();
@@ -437,7 +448,7 @@ int main()
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
-        // 读取共享内存
+        // 每帧都读取共享内存（强制更新）
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
