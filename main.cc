@@ -397,12 +397,12 @@ int main()
 
         // 帧率计算
         g_frameCount++;
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float elapsedMs = std::chrono::duration<float, std::milli>(currentTime - g_fpsTimer).count();
+        auto now = std::chrono::high_resolution_clock::now();
+        float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
         if (elapsedMs >= 1000.0f) {
             g_currentFPS = g_frameCount * 1000.0f / elapsedMs;
             g_frameCount = 0;
-            g_fpsTimer = currentTime;
+            g_fpsTimer = now;
         }
 
         if (showDemoWindow) ImGui::ShowDemoWindow(&showDemoWindow);
@@ -490,15 +490,15 @@ int main()
             if (sleepUs > 0) usleep(sleepUs);
         }
 
-        // 保存配置
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float timeSinceLastSave = std::chrono::duration<float>(currentTime - lastSaveTime).count();
+        // 保存配置 - 使用不同的变量名
+        auto saveTime = std::chrono::high_resolution_clock::now();
+        float timeSinceLastSave = std::chrono::duration<float>(saveTime - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
         bool windowMoved = (currentPos.x != g_windowPos.x || currentPos.y != g_windowPos.y) || 
                            (currentSize.x != g_windowSize.x || currentSize.y != g_windowSize.y);
         if ((switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
             SaveConfig();
-            lastSaveTime = currentTime;
+            lastSaveTime = saveTime;
         }
     }
 
