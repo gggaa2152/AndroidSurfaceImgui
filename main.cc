@@ -1,95 +1,66 @@
-#include <cmath>
 #include "imgui.h"
 #include "AImGui.h"
+#include <cmath>
 
-static float g_toggleAnimProgress[32] = {};
-static float g_toggleAnimTarget[32] = {};
+static float g_anim[32] = {};
 
-bool ToggleSwitch(const char* label, bool* v, int animIdx)
+bool ToggleSwitch(const char* label, bool* v, int idx)
 {
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    if (window->SkipItems) return false;
+    float height = ImGui::GetFrameHeight();
+    float width = height * 1.8f;
 
-    ImGuiContext& g = *GImGui;
-    const ImGuiStyle& style = g.Style;
-    const ImGuiID id = window->GetID(label);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(label, ImVec2(width, height));
 
-    const float height = ImGui::GetFrameHeight();
-    const float width = height * 1.8f;
-    const float radius = height * 0.5f;
-
-    ImVec2 pos = window->DC.CursorPos;
-    ImRect bb(pos, ImVec2(pos.x + width, pos.y + height));
-
-    ImGui::ItemSize(bb);
-    if (!ImGui::ItemAdd(bb, id)) return false;
-
-    bool hovered, held;
-    bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-
-    if (pressed)
+    if (ImGui::IsItemClicked())
         *v = !*v;
 
     float target = *v ? 1.0f : 0.0f;
-    float& progress = g_toggleAnimProgress[animIdx];
+    g_anim[idx] += (target - g_anim[idx]) * 0.25f;
 
-    float speed = 0.25f; // 更跟手
-    progress += (target - progress) * speed;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    if (fabs(progress - target) < 0.01f)
-        progress = target;
-
-    ImU32 bg = ImGui::GetColorU32(ImLerp(
-        ImVec4(0.3f,0.3f,0.3f,1.0f),
-        ImVec4(0.2f,0.8f,0.3f,1.0f),
-        progress
-    ));
-
-    window->DrawList->AddRectFilled(
-        bb.Min, bb.Max, bg, height * 0.5f
+    ImU32 bg = ImGui::GetColorU32(
+        ImLerp(ImVec4(0.3f,0.3f,0.3f,1.0f),
+               ImVec4(0.2f,0.8f,0.3f,1.0f),
+               g_anim[idx])
     );
 
-    float circleX = bb.Min.x + radius + progress * (width - height);
+    draw->AddRectFilled(p,
+                        ImVec2(p.x + width, p.y + height),
+                        bg,
+                        height * 0.5f);
 
-    window->DrawList->AddCircleFilled(
-        ImVec2(circleX, bb.Min.y + radius),
-        radius - 2,
-        IM_COL32(255,255,255,255),
-        32
+    float r = height * 0.5f;
+    float cx = p.x + r + g_anim[idx] * (width - height);
+
+    draw->AddCircleFilled(
+        ImVec2(cx, p.y + r),
+        r - 2,
+        IM_COL32(255,255,255,255)
     );
 
-    return pressed;
+    return true;
 }
 
 int main()
 {
     android::AImGui app;
 
-    android::AImGui::Config config = {
-        .title = "Test UI",
-        .width = 800,
-        .height = 600,
-        .renderType = android::AImGui::RenderType::RenderNative,
-    };
+    app.run([](){
 
-    app.Init(config);
+        static bool s1 = false;
+        static bool s2 = true;
 
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr; // 不保存布局
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-    bool toggle1 = false;
-    bool toggle2 = true;
-
-    app.Run([&]() {
-
-        ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_Once);
         ImGui::Begin("Android Surface ImGui");
 
-        ImGui::Text("FPS: %.1f", io.Framerate);
+        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
 
-        ToggleSwitch("Switch 1", &toggle1, 0);
-        ToggleSwitch("Switch 2", &toggle2, 1);
+        ToggleSwitch("##s1", &s1, 0);
+        ImGui::Text("Switch 1");
+
+        ToggleSwitch("##s2", &s2, 1);
+        ImGui::Text("Switch 2");
 
         ImGui::End();
     });
