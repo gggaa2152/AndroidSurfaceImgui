@@ -17,7 +17,7 @@ bool g_posInit = false;
 // ========== 开关动画 ==========
 float g_anim[3] = {0,0,0};
 
-// ========== 字体（修复问号） ==========
+// ========== 字体 ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
@@ -58,7 +58,6 @@ void LoadChineseFont() {
 // ========== 带动画的开关 ==========
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* w = ImGui::GetCurrentWindow(); if (w->SkipItems) return 0;
-    ImGuiContext& g = *GImGui; const ImGuiStyle& s = g.Style;
     float h = ImGui::GetFrameHeight(), wd = h*1.8f, r = h*0.45f;
     ImVec2 pos = w->DC.CursorPos;
     ImRect bb(pos, ImVec2(pos.x+wd + ImGui::CalcTextSize(label).x, pos.y+h));
@@ -110,7 +109,7 @@ void DrawBoard() {
     }
 }
 
-// ========== 缩放回调（增大触摸区域）==========
+// ========== 缩放回调 ==========
 void Scale(ImGuiSizeCallbackData* data) { 
     g_scale = data->DesiredSize.x / 280; 
     ImGui::GetIO().FontGlobalScale = g_scale;
@@ -146,9 +145,16 @@ int main() {
     IMGUI_CHECKVERSION(); 
     ImGui::CreateContext();
     
-    // 【修改】增大右下角三角的触摸区域
+    // ===== 多重放大右下角三角 =====
     ImGuiStyle& style = ImGui::GetStyle();
-    style.GrabMinSize = 32.0f;  // 从默认 12 或 24 增大到 32
+    style.GrabMinSize = 40.0f;           // 1. 增大抓取柄尺寸
+    style.FramePadding = ImVec2(8, 6);   // 2. 增大内边距
+    style.WindowPadding = ImVec2(12, 12); // 3. 增大窗口内边距
+    style.TouchExtraPadding = ImVec2(4, 4); // 4. 增加触摸额外区域
+    
+    // 5. 增大交互区域（通过修改 ImGui 配置）
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableSetMousePos;
     
     LoadChineseFont();
     
