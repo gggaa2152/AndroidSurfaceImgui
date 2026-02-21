@@ -49,7 +49,7 @@ ImVec2 g_windowPos = ImVec2(50, 100);
 ImVec2 g_windowSize = ImVec2(280, 400);
 bool g_windowPosInitialized = false;
 
-// ========== 共享内存结构 ==========
+// ========== 共享内存结构（只保留这个修改） ==========
 #pragma pack(push, 1)
 struct SharedGameData {
     int gold;
@@ -68,40 +68,30 @@ int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
 
-// ========== 初始化共享内存 ==========
+// ========== 初始化共享内存（完全恢复原始） ==========
 bool InitSharedMemory() {
     printf("[+] Initializing shared memory...\n");
-    
-    // 尝试打开现有文件
-    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR, 0666);
+    g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_CREAT | O_RDWR, 0666);
     if (g_shm_fd < 0) {
-        // 文件不存在，创建新文件
-        g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_CREAT | O_RDWR, 0666);
-        if (g_shm_fd < 0) {
-            printf("[-] Failed to create shared file: %s\n", strerror(errno));
-            return false;
-        }
-        
-        // 设置大小
-        if (ftruncate(g_shm_fd, sizeof(SharedGameData)) < 0) {
-            printf("[-] Failed to set size: %s\n", strerror(errno));
-            close(g_shm_fd);
-            return false;
-        }
-        
-        // 映射内存
-        g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
-                                             PROT_READ | PROT_WRITE,
-                                             MAP_SHARED, g_shm_fd, 0);
-        
-        if (g_sharedData == MAP_FAILED) {
-            printf("[-] Failed to map memory: %s\n", strerror(errno));
-            close(g_shm_fd);
-            g_sharedData = nullptr;
-            return false;
-        }
-        
-        // 初始化数据
+        printf("[-] Failed to create shared file: %s\n", strerror(errno));
+        return false;
+    }
+    if (ftruncate(g_shm_fd, sizeof(SharedGameData)) < 0) {
+        printf("[-] Failed to set size: %s\n", strerror(errno));
+        close(g_shm_fd);
+        return false;
+    }
+    g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
+                                         PROT_READ | PROT_WRITE,
+                                         MAP_SHARED, g_shm_fd, 0);
+    if (g_sharedData == MAP_FAILED) {
+        printf("[-] Failed to map memory: %s\n", strerror(errno));
+        close(g_shm_fd);
+        g_sharedData = nullptr;
+        return false;
+    }
+    if (g_sharedData->version == 0) {
+        printf("[+] First time init, setting default values\n");
         g_sharedData->gold = 100;
         g_sharedData->level = 8;
         g_sharedData->hp = 85;
@@ -110,53 +100,25 @@ bool InitSharedMemory() {
         g_sharedData->timestamp = 1;
         g_sharedData->version = 1;
         strcpy(g_sharedData->scriptName, "default");
-        
-        printf("[+] Created new shared memory\n");
-    } else {
-        // 文件已存在，直接映射
-        printf("[+] Opened existing shared memory\n");
-        
-        // 检查文件大小
-        struct stat st;
-        if (fstat(g_shm_fd, &st) == 0) {
-            if (st.st_size < (off_t)sizeof(SharedGameData)) {
-                ftruncate(g_shm_fd, sizeof(SharedGameData));
-            }
-        }
-        
-        // 映射内存
-        g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
-                                             PROT_READ | PROT_WRITE,
-                                             MAP_SHARED, g_shm_fd, 0);
-        
-        if (g_sharedData == MAP_FAILED) {
-            printf("[-] Failed to map memory: %s\n", strerror(errno));
-            close(g_shm_fd);
-            g_sharedData = nullptr;
-            return false;
-        }
     }
-    
     printf("[+] Shared memory initialized successfully\n");
     return true;
 }
 
-// ========== 从共享内存读取数据 ==========
+// ========== 从共享内存读取数据（完全恢复原始） ==========
 void ReadFromSharedMemory() {
     if (!g_sharedData) return;
-    
     if (g_sharedData->timestamp != g_lastTimestamp) {
         gold = g_sharedData->gold;
         level = g_sharedData->level;
         hp = g_sharedData->hp;
         autoBuy = (g_sharedData->autoBuy != 0);
         autoRefresh = (g_sharedData->autoRefresh != 0);
-        
         g_lastTimestamp = g_sharedData->timestamp;
     }
 }
 
-// ========== 清理共享内存 ==========
+// ========== 清理共享内存（完全恢复原始） ==========
 void CleanupSharedMemory() {
     if (g_sharedData) {
         munmap(g_sharedData, sizeof(SharedGameData));
@@ -168,55 +130,54 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载中文字体 ==========
+// ========== 加载中文字体（完全恢复原始） ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
-    
-    printf("[+] Loading Chinese font...\n");
-    
     const char* fontPaths[] = {
         "/system/fonts/SysSans-Hans-Regular.ttf",
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/DroidSansFallback.ttf",
     };
-    
     ImFont* font = nullptr;
-    ImFontConfig config;
-    config.OversampleH = 2;
-    config.OversampleV = 2;
-    config.PixelSnapH = false;
-    
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        font = io.Fonts->AddFontFromFileTTF(path, 15.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+        font = io.Fonts->AddFontFromFileTTF(path, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
             io.FontDefault = font;
             break;
         }
     }
-    
     if (!font) {
         printf("[-] No Chinese font found, using default\n");
         io.Fonts->AddFontDefault();
     }
-    
     io.Fonts->Build();
 }
 
-// ========== 配置文件路径 ==========
+// ========== 全局缩放控制（完全恢复原始） ==========
+// float g_globalScale = 1.0f;
+// const float MIN_SCALE = 0.5f;
+// const float MAX_SCALE = 2.0f;
+
+// ========== 窗口位置和大小（完全恢复原始） ==========
+// ImVec2 g_windowPos = ImVec2(50, 100);
+// ImVec2 g_windowSize = ImVec2(280, 400);
+// bool g_windowPosInitialized = false;
+
+// ========== 配置文件路径（完全恢复原始） ==========
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
 
-// ========== 帧率计算 ==========
+// ========== 帧率计算（完全恢复原始） ==========
 float g_currentFPS = 0.0f;
 int g_frameCount = 0;
 auto g_fpsTimer = std::chrono::high_resolution_clock::now();
 
-// ========== 动画变量 ==========
+// ========== 动画变量（完全恢复原始） ==========
 float g_toggleAnimProgress[10] = {0};
 int g_toggleAnimTarget[10] = {0};
 
-// ========== 保存配置 ==========
+// ========== 保存配置（完全恢复原始） ==========
 void SaveConfig() {
     FILE* f = fopen(CONFIG_PATH, "w");
     if (f) {
@@ -237,7 +198,7 @@ void SaveConfig() {
     }
 }
 
-// ========== 加载配置 ==========
+// ========== 加载配置（完全恢复原始） ==========
 void LoadConfig() {
     FILE* f = fopen(CONFIG_PATH, "r");
     if (f) {
@@ -269,7 +230,7 @@ void LoadConfig() {
     }
 }
 
-// ========== 精美滑动开关 ==========
+// ========== 精美滑动开关（完全恢复原始） ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return false;
@@ -315,7 +276,7 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     return pressed;
 }
 
-// ========== 绘制棋盘 ==========
+// ========== 绘制棋盘（完全恢复原始） ==========
 void DrawChessboard() {
     if (!g_featureESP) return;
     
@@ -399,10 +360,10 @@ void DrawChessboard() {
     }
 }
 
-// ========== 自定义窗口缩放回调 ==========
+// ========== 自定义窗口缩放回调（完全恢复原始） ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     float newWidth = data->DesiredSize.x;
-    float scaleDelta = newWidth / 200.0f;
+    float scaleDelta = newWidth / 280.0f;
     if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
@@ -413,16 +374,15 @@ void ScaleWindow(ImGuiSizeCallbackData* data) {
 int main()
 {
     printf("[1] Starting JCC Assistant...\n");
-    
     InitSharedMemory();
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
-    // 样式设置
+    // 样式设置（完全恢复原始）
     ImGuiStyle& style = ImGui::GetStyle();
-    style.GrabMinSize = 28.0f;
+    style.GrabMinSize = 24.0f;
     style.FramePadding = ImVec2(6, 4);
     style.WindowPadding = ImVec2(8, 8);
     style.ItemSpacing = ImVec2(6, 4);
@@ -446,19 +406,18 @@ int main()
 
     LoadConfig();
 
-    // ========== 输入线程 ==========
+    // ========== 输入线程（完全恢复原始） ==========
     std::thread inputThread([&] {
         struct sched_param param;
         param.sched_priority = 99;
         pthread_setschedparam(pthread_self(), SCHED_RR, &param);
         while (state) {
             imgui.ProcessInputEvent();
-            // 【恢复原始】500微秒休眠
             std::this_thread::sleep_for(std::chrono::microseconds(500));
         }
     });
 
-    // 【恢复原始】120fps
+    // 【完全恢复原始】帧率控制
     const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
     g_fpsTimer = std::chrono::high_resolution_clock::now();
@@ -469,16 +428,20 @@ int main()
     while (state) {
         auto frameStart = std::chrono::high_resolution_clock::now();
 
+        // 记录当前开关状态
         bool prevPredict = g_featurePredict;
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
+        // 读取共享内存数据
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
 
+        // 绘制棋盘
         DrawChessboard();
 
+        // 帧率计算
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -520,10 +483,6 @@ int main()
 
             ImGui::Separator();
 
-            ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "FPS: %.0f", g_currentFPS);
-            ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "缩放: %.2fx", g_globalScale);
-            ImGui::Separator();
-
             // 显示共享内存状态
             if (g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
@@ -532,6 +491,9 @@ int main()
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
 
+            ImGui::Separator();
+            ImGui::Text("FPS: %.0f", g_currentFPS);
+            ImGui::Text("缩放: %.1fx", g_globalScale);
             ImGui::Separator();
 
             ImGui::Text("功能设置");
@@ -565,7 +527,7 @@ int main()
 
         imgui.EndFrame();
 
-        // 【恢复原始】帧率控制
+        // 帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         if (frameTime < TARGET_FRAME_TIME_MS) {
@@ -573,7 +535,7 @@ int main()
             if (sleepUs > 0) usleep(sleepUs);
         }
 
-        // 【恢复原始】配置保存逻辑
+        // 保存配置
         auto saveTime = std::chrono::high_resolution_clock::now();
         float timeSinceLastSave = std::chrono::duration<float>(saveTime - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
