@@ -1,11 +1,11 @@
-name: Fast Build test-ui
+name: Build test-ui
 
 on:
   push:
     branches: [ "master", "main" ]
   pull_request:
     branches: [ "master", "main" ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'  # 下载 imgui 子模块
+          submodules: 'recursive'
 
       - name: Setup NDK
         run: |
@@ -24,15 +24,14 @@ jobs:
           echo "NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
           echo "NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
 
-      # ===== 【关键】缓存编译产物 =====
-      - name: Cache build artifacts
+      # ===== 缓存编译产物（加速二次编译）=====
+      - name: Cache build
         uses: actions/cache@v3
         id: cache-build
         with:
           path: |
             build/
             libs/
-            tests/
           key: ${{ runner.os }}-build-${{ hashFiles('CMakeLists.txt', 'main.cc', 'src/common/**', 'modules/**', 'includes/**') }}
           restore-keys: |
             ${{ runner.os }}-build-
@@ -58,7 +57,6 @@ jobs:
       - name: Build test-ui
         run: |
           cd build
-          # 如果缓存命中，这里会非常快
           ninja -j $(nproc)
 
       - name: List build outputs
@@ -68,11 +66,13 @@ jobs:
           echo "=== File info ==="
           file build/tests/arm64-v8a/test-ui || true
 
+      # ===== 【关键】直接上传文件，不压缩 =====
       - name: Upload test-ui
         uses: actions/upload-artifact@v4
         with:
-          name: test-ui-arm64
+          name: test-ui
           path: |
             build/tests/arm64-v8a/test-ui
             tests/arm64-v8a/test-ui
           if-no-files-found: error
+          compression-level: 0  # 不压缩，直接上传原始文件
