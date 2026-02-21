@@ -37,7 +37,7 @@ bool g_chessboardDragging = false;   // 是否正在拖动棋盘
 float g_globalScale = 1.0f;
 float g_targetScale = 1.0f;
 const float MIN_SCALE = 0.5f;
-const float MAX_SCALE = 3.0f;
+const float MAX_SCALE = 5.0f;         // 【修改】最大值增加到5.0
 
 // ========== 窗口位置和大小 ==========
 ImVec2 g_windowPos = ImVec2(100, 100);
@@ -69,6 +69,7 @@ void LoadChineseFont() {
     ImFont* font = nullptr;
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
+        // 【修改】恢复默认字体大小 18.0f
         font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
@@ -182,7 +183,7 @@ void LoadConfig() {
         
         ImGui::GetIO().FontGlobalScale = g_globalScale;
         g_windowPosInitialized = true;
-        printf("[+] Config loaded\n");
+        printf("[+] Config loaded (scale=%.2f)\n", g_globalScale);
     } else {
         // 首次运行，创建默认配置
         printf("[-] No config file, using defaults\n");
@@ -371,11 +372,8 @@ void DrawChessboard() {
     }
 }
 
-// ========== 自定义窗口缩放回调（增大右下角触摸区域） ==========
+// ========== 自定义窗口缩放回调（右下角三角控制全局缩放） ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
-    // 增大触摸区域 - 让右下角三角更容易点到
-    // 这里不需要特殊处理，ImGui默认的右下角三角已经足够大
-    
     // 当用户拖动右下角三角时，更新全局缩放
     float newWidth = data->DesiredSize.x;
     
@@ -505,7 +503,6 @@ int main()
                 g_windowSize = currentSize;
             }
             
-            // 【修复】滑块不回弹 - 直接使用ImGui的SliderFloat，不搞复杂逻辑
             ImGui::Separator();
             
             // 信息栏
@@ -517,7 +514,7 @@ int main()
             
             ImGui::Separator();
             
-            // 【修复】滑块控制 - 直接修改g_globalScale
+            // 【修改】滑块最大值改为5.0
             if (ImGui::SliderFloat("全局缩放", &g_globalScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
                 ImGui::GetIO().FontGlobalScale = g_globalScale;
                 g_targetScale = g_globalScale;
@@ -585,7 +582,6 @@ int main()
             auto currentTime = std::chrono::high_resolution_clock::now();
             float timeSinceLastSave = std::chrono::duration<float>(currentTime - lastSaveTime).count();
             
-            bool scaleChanged = true; // 滑块实时变化，我们通过时间控制
             bool switchesChanged = (prevPredict != g_featurePredict || 
                                    prevESP != g_featureESP || 
                                    prevInstantQuit != g_featureInstantQuit ||
