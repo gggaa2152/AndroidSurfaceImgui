@@ -11,9 +11,9 @@
 #include <string>
 #include <map>
 #include <vector>
-#include <dirent.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 #include <sys/stat.h>
-#include <sstream>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -28,47 +28,125 @@ bool g_featureESP = false;         // 透视
 bool g_featureInstantQuit = false; // 秒退
 
 // ========== 棋盘设置 ==========
-bool g_showChessboard = false;      // 是否显示棋盘
-const int CHESSBOARD_ROWS = 8;       // 8行
-const int CHESSBOARD_COLS = 7;       // 7列
-float g_chessboardScale = 1.0f;      // 棋盘缩放
-float g_chessboardPosX = 200;        // 棋盘位置X
-float g_chessboardPosY = 200;        // 棋盘位置Y
-bool g_chessboardDragging = false;   // 是否正在拖动棋盘
+const int CHESSBOARD_ROWS = 8;
+const int CHESSBOARD_COLS = 7;
+float g_chessboardScale = 1.0f;
+float g_chessboardPosX = 200;
+float g_chessboardPosY = 200;
+bool g_chessboardDragging = false;
 
-// ========== 脚本数据结构 ==========
-struct ScriptData {
-    std::string name;
-    std::string content;
-    bool enabled;
-    int value;
-    float progress;
+// ========== 共享内存数据结构 ==========
+struct SharedGameData {
+    int gold;
+    int level;
+    int hp;
+    int autoBuy;
+    int autoRefresh;
+    int timestamp;           // 时间戳，用于检测更新
+    int version;             // 版本号
+    char scriptName[64];     // 当前使用的脚本名
+    int reserved[16];        // 预留空间
 };
-std::vector<ScriptData> g_scripts;
-bool g_showScripts = false;
-int g_selectedScript = -1;
 
-// ========== 全局缩放控制 ==========
-float g_globalScale = 1.0f;
-const float MIN_SCALE = 0.5f;
-const float MAX_SCALE = 2.0f;        // 缩小最大范围
+// ========== 共享内存变量 ==========
+int g_shm_fd = -1;
+SharedGameData* g_sharedData = nullptr;
+int g_lastTimestamp = 0;
 
-// ========== 窗口位置和大小 ==========
-ImVec2 g_windowPos = ImVec2(50, 100);   // 默认位置
-ImVec2 g_windowSize = ImVec2(280, 450); // 缩小默认大小
-bool g_windowPosInitialized = false;
+// ========== 初始化共享内存 ==========
+bool InitSharedMemory() {
+    printf("[+] Initializing shared memory...\n");
+    
+    // 创建/打开共享内存对象
+    g_shm_fd = shm_open("/jcc_assistant_data", O_CREAT | O_RDWR, 0666);
+    if (g_shm_fd < 0) {
+        printf("[-] Failed to create shared memory: %s\n", strerror(errno));
+        return false;
+    }
+    
+    // 设置大小
+    if (ftruncate(g_shm_fd, sizeof(SharedGameData)) < 0) {
+        printf("[-] Failed to set size: %s\n", strerror(errno));
+        close(g_shm_fd);
+        return false;
+    }
+    
+    // 映射到内存
+    g_sharedData = (SharedGameData*)mmap(NULL, sizeof(SharedGameData),
+                                         PROT_READ | PROT_WRITE,
+                                         MAP_SHARED, g_shm_fd, 0);
+    if (g_sharedData == MAP_FAILED) {
+        printf("[-] Failed to map memory: %s\n", strerror(errno));
+        close(g_shm_fd);
+        g_sharedData = nullptr;
+        return false;
+    }
+    
+    // 如果是首次创建，初始化数据
+    if (g_sharedData->version == 0) {
+        printf("[+] First time init, setting default values\n");
+        g_sharedData->gold = 100;
+        g_sharedData->level = 8;
+        g_sharedData->hp = 85;
+        g_sharedData->autoBuy = 1;
+        g_sharedData->autoRefresh = 1;
+        g_sharedData->timestamp = 1;
+        g_sharedData->version = 1;
+        strcpy(g_sharedData->scriptName, "default");
+    }
+    
+    printf("[+] Shared memory initialized successfully\n");
+    printf("    - gold: %d, level: %d, hp: %d\n", 
+           g_sharedData->gold, g_sharedData->level, g_sharedData->hp);
+    
+    return true;
+}
 
-// ========== 配置文件路径 ==========
-const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
+// ========== 从共享内存读取数据 ==========
+void ReadFromSharedMemory() {
+    if (!g_sharedData) return;
+    
+    // 检查是否有更新（通过时间戳）
+    if (g_sharedData->timestamp != g_lastTimestamp) {
+        gold = g_sharedData->gold;
+        level = g_sharedData->level;
+        hp = g_sharedData->hp;
+        autoBuy = (g_sharedData->autoBuy != 0);
+        autoRefresh = (g_sharedData->autoRefresh != 0);
+        
+        g_lastTimestamp = g_sharedData->timestamp;
+        
+        printf("[+] Data updated: gold=%d, level=%d, hp=%d (ts=%d)\n", 
+               gold, level, hp, g_lastTimestamp);
+    }
+}
 
-// ========== 帧率计算 ==========
-float g_currentFPS = 0.0f;
-int g_frameCount = 0;
-auto g_fpsTimer = std::chrono::high_resolution_clock::now();
+// ========== 写入数据到共享内存（可选，用于测试） ==========
+void WriteToSharedMemory(int newGold, int newLevel, int newHp) {
+    if (!g_sharedData) return;
+    
+    g_sharedData->gold = newGold;
+    g_sharedData->level = newLevel;
+    g_sharedData->hp = newHp;
+    g_sharedData->timestamp++;
+    
+    printf("[+] Wrote to shared memory: gold=%d, level=%d, hp=%d (ts=%d)\n",
+           newGold, newLevel, newHp, g_sharedData->timestamp);
+}
 
-// ========== 动画变量 ==========
-float g_toggleAnimProgress[10] = {0};
-int g_toggleAnimTarget[10] = {0};
+// ========== 清理共享内存 ==========
+void CleanupSharedMemory() {
+    if (g_sharedData) {
+        munmap(g_sharedData, sizeof(SharedGameData));
+        g_sharedData = nullptr;
+    }
+    if (g_shm_fd >= 0) {
+        close(g_shm_fd);
+        g_shm_fd = -1;
+    }
+    // 注意：不删除共享内存对象，这样其他程序还可以访问
+    // shm_unlink("/jcc_assistant_data");
+}
 
 // ========== 加载中文字体 ==========
 void LoadChineseFont() {
@@ -99,16 +177,27 @@ void LoadChineseFont() {
     io.Fonts->Build();
 }
 
-// ========== 读取游戏数据 ==========
-void ReadGameData() {
-    FILE* f = fopen("/data/local/tmp/game_data.txt", "r");
-    if (f) {
-        fscanf(f, "gold=%d\n", &gold);
-        fscanf(f, "level=%d\n", &level);
-        fscanf(f, "hp=%d\n", &hp);
-        fclose(f);
-    }
-}
+// ========== 全局缩放控制 ==========
+float g_globalScale = 1.0f;
+const float MIN_SCALE = 0.5f;
+const float MAX_SCALE = 2.0f;
+
+// ========== 窗口位置和大小 ==========
+ImVec2 g_windowPos = ImVec2(50, 100);
+ImVec2 g_windowSize = ImVec2(280, 400);
+bool g_windowPosInitialized = false;
+
+// ========== 配置文件路径 ==========
+const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
+
+// ========== 帧率计算 ==========
+float g_currentFPS = 0.0f;
+int g_frameCount = 0;
+auto g_fpsTimer = std::chrono::high_resolution_clock::now();
+
+// ========== 动画变量 ==========
+float g_toggleAnimProgress[10] = {0};
+int g_toggleAnimTarget[10] = {0};
 
 // ========== 保存配置 ==========
 void SaveConfig() {
@@ -120,8 +209,6 @@ void SaveConfig() {
         fprintf(f, "predict=%d\n", g_featurePredict ? 1 : 0);
         fprintf(f, "esp=%d\n", g_featureESP ? 1 : 0);
         fprintf(f, "instantQuit=%d\n", g_featureInstantQuit ? 1 : 0);
-        fprintf(f, "autoBuy=%d\n", autoBuy ? 1 : 0);
-        fprintf(f, "autoRefresh=%d\n", autoRefresh ? 1 : 0);
         fprintf(f, "windowPosX=%.0f\n", g_windowPos.x);
         fprintf(f, "windowPosY=%.0f\n", g_windowPos.y);
         fprintf(f, "windowWidth=%.0f\n", g_windowSize.x);
@@ -130,7 +217,6 @@ void SaveConfig() {
         fprintf(f, "chessboardPosX=%.0f\n", g_chessboardPosX);
         fprintf(f, "chessboardPosY=%.0f\n", g_chessboardPosY);
         fclose(f);
-        printf("[+] Config saved (scale=%.2f)\n", g_globalScale);
     }
 }
 
@@ -151,23 +237,12 @@ void LoadConfig() {
             }
             else if (sscanf(line, "predict=%d", &ival) == 1) {
                 g_featurePredict = (ival != 0);
-                g_toggleAnimTarget[0] = g_featurePredict ? 1 : 0;
             }
             else if (sscanf(line, "esp=%d", &ival) == 1) {
                 g_featureESP = (ival != 0);
-                g_toggleAnimTarget[1] = g_featureESP ? 1 : 0;
             }
             else if (sscanf(line, "instantQuit=%d", &ival) == 1) {
                 g_featureInstantQuit = (ival != 0);
-                g_toggleAnimTarget[2] = g_featureInstantQuit ? 1 : 0;
-            }
-            else if (sscanf(line, "autoBuy=%d", &ival) == 1) {
-                autoBuy = (ival != 0);
-                g_toggleAnimTarget[3] = autoBuy ? 1 : 0;
-            }
-            else if (sscanf(line, "autoRefresh=%d", &ival) == 1) {
-                autoRefresh = (ival != 0);
-                g_toggleAnimTarget[4] = autoRefresh ? 1 : 0;
             }
             else if (sscanf(line, "windowPosX=%f", &fval) == 1) {
                 g_windowPos.x = fval;
@@ -195,173 +270,9 @@ void LoadConfig() {
         
         ImGui::GetIO().FontGlobalScale = g_globalScale;
         g_windowPosInitialized = true;
-        printf("[+] Config loaded (scale=%.2f)\n", g_globalScale);
     } else {
-        printf("[-] No config file, using defaults\n");
         SaveConfig();
     }
-}
-
-// ========== 读取脚本目录 ==========
-void LoadScriptsFromDirectory() {
-    g_scripts.clear();
-    
-    DIR* dir = opendir("/data/local/tmp/scripts/");
-    if (!dir) {
-        mkdir("/data/local/tmp/scripts/", 0777);
-        return;
-    }
-    
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type == DT_REG) {
-            std::string filename = entry->d_name;
-            
-            if (filename.size() > 4 && 
-                (filename.substr(filename.size() - 4) == ".txt" || 
-                 filename.substr(filename.size() - 7) == ".script")) {
-                
-                ScriptData script;
-                script.name = filename;
-                script.enabled = false;
-                script.value = 0;
-                script.progress = 0.0f;
-                
-                char path[256];
-                snprintf(path, sizeof(path), "/data/local/tmp/scripts/%s", filename.c_str());
-                
-                FILE* f = fopen(path, "r");
-                if (f) {
-                    char buffer[1024];
-                    size_t bytes = fread(buffer, 1, sizeof(buffer) - 1, f);
-                    if (bytes > 0) {
-                        buffer[bytes] = '\0';
-                        script.content = buffer;
-                    }
-                    fclose(f);
-                }
-                
-                g_scripts.push_back(script);
-            }
-        }
-    }
-    closedir(dir);
-}
-
-// ========== 解析脚本数据 ==========
-void ParseScriptData() {
-    for (auto& script : g_scripts) {
-        if (!script.enabled) continue;
-        
-        // JSON 格式
-        if (script.content.find("{") != std::string::npos) {
-            size_t goldPos = script.content.find("\"gold\"");
-            if (goldPos != std::string::npos) {
-                size_t colon = script.content.find(":", goldPos);
-                size_t comma = script.content.find(",", colon);
-                if (comma == std::string::npos) comma = script.content.find("}", colon);
-                std::string valStr = script.content.substr(colon + 1, comma - colon - 1);
-                gold = atoi(valStr.c_str());
-            }
-            
-            size_t levelPos = script.content.find("\"level\"");
-            if (levelPos != std::string::npos) {
-                size_t colon = script.content.find(":", levelPos);
-                size_t comma = script.content.find(",", colon);
-                if (comma == std::string::npos) comma = script.content.find("}", colon);
-                std::string valStr = script.content.substr(colon + 1, comma - colon - 1);
-                level = atoi(valStr.c_str());
-            }
-            
-            size_t hpPos = script.content.find("\"hp\"");
-            if (hpPos != std::string::npos) {
-                size_t colon = script.content.find(":", hpPos);
-                size_t comma = script.content.find(",", colon);
-                if (comma == std::string::npos) comma = script.content.find("}", colon);
-                std::string valStr = script.content.substr(colon + 1, comma - colon - 1);
-                hp = atoi(valStr.c_str());
-            }
-        }
-        // 键值对格式
-        else {
-            std::istringstream iss(script.content);
-            std::string line;
-            while (std::getline(iss, line)) {
-                if (line.empty()) continue;
-                
-                size_t eqPos = line.find('=');
-                if (eqPos != std::string::npos) {
-                    std::string key = line.substr(0, eqPos);
-                    std::string value = line.substr(eqPos + 1);
-                    
-                    if (key == "gold") gold = atoi(value.c_str());
-                    else if (key == "level") level = atoi(value.c_str());
-                    else if (key == "hp") hp = atoi(value.c_str());
-                    else if (key == "autoBuy") autoBuy = (atoi(value.c_str()) != 0);
-                    else if (key == "autoRefresh") autoRefresh = (atoi(value.c_str()) != 0);
-                }
-            }
-        }
-    }
-}
-
-// ========== 显示脚本管理窗口 ==========
-void ShowScriptsWindow() {
-    if (!g_showScripts) return;
-    
-    ImGui::SetNextWindowSize(ImVec2(300 * g_globalScale, 400 * g_globalScale), ImGuiCond_FirstUseEver);
-    ImGui::Begin("脚本管理器", &g_showScripts, ImGuiWindowFlags_NoSavedSettings);
-    
-    if (ImGui::Button("刷新", ImVec2(-1, 30 * g_globalScale))) {
-        LoadScriptsFromDirectory();
-    }
-    
-    ImGui::Separator();
-    
-    // 脚本列表
-    ImGui::BeginChild("ScriptList", ImVec2(120 * g_globalScale, 0), true);
-    
-    for (size_t i = 0; i < g_scripts.size(); i++) {
-        std::string label = g_scripts[i].name;
-        if (g_scripts[i].enabled) {
-            label = "✓ " + label;
-        }
-        
-        if (ImGui::Selectable(label.c_str(), g_selectedScript == (int)i)) {
-            g_selectedScript = i;
-        }
-    }
-    
-    ImGui::EndChild();
-    
-    ImGui::SameLine();
-    
-    // 脚本详情
-    ImGui::BeginChild("ScriptDetail", ImVec2(0, 0), true);
-    
-    if (g_selectedScript >= 0 && g_selectedScript < (int)g_scripts.size()) {
-        auto& script = g_scripts[g_selectedScript];
-        
-        ImGui::Text("文件: %s", script.name.c_str());
-        ImGui::Separator();
-        
-        ImGui::Checkbox("启用", &script.enabled);
-        
-        ImGui::Separator();
-        ImGui::Text("内容:");
-        ImGui::BeginChild("Content", ImVec2(0, 150 * g_globalScale), true);
-        ImGui::TextWrapped("%s", script.content.c_str());
-        ImGui::EndChild();
-        
-        if (ImGui::Button("应用", ImVec2(-1, 30 * g_globalScale))) {
-            for (auto& s : g_scripts) s.enabled = false;
-            script.enabled = true;
-            ParseScriptData();
-        }
-    }
-    
-    ImGui::EndChild();
-    ImGui::End();
 }
 
 // ========== 精美滑动开关 ==========
@@ -451,7 +362,7 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
 
 // ========== 绘制棋盘 ==========
 void DrawChessboard() {
-    if (!g_featureESP && !g_showChessboard) return;
+    if (!g_featureESP) return;
     
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
@@ -547,22 +458,21 @@ int main()
 {
     printf("[1] Starting JCC Assistant...\n");
     
+    // 初始化共享内存
+    if (!InitSharedMemory()) {
+        printf("[-] Shared memory init failed, but continuing...\n");
+    }
+    
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     
     ImGuiIO& io = ImGui::GetIO();
     
     ImGuiStyle& style = ImGui::GetStyle();
-    
-    // 缩小整体尺寸
     style.GrabMinSize = 24.0f;
     style.FramePadding = ImVec2(6, 4);
     style.WindowPadding = ImVec2(8, 8);
     style.ItemSpacing = ImVec2(6, 4);
-    style.TouchExtraPadding = ImVec2(2, 2);
-    
-    style.WindowBorderSize = 0.0f;
-    style.FrameBorderSize = 0.0f;
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
     
@@ -583,7 +493,6 @@ int main()
     }
 
     LoadConfig();
-    LoadScriptsFromDirectory();
 
     std::thread processInputEventThread(
         [&]
@@ -603,12 +512,17 @@ int main()
     
     auto lastSaveTime = std::chrono::high_resolution_clock::now();
     
+    // 测试：写入一些测试数据
+    if (g_sharedData) {
+        WriteToSharedMemory(150, 9, 95);
+    }
+    
     while (state)
     {
         auto frameStart = std::chrono::high_resolution_clock::now();
         
-        ReadGameData();
-        ParseScriptData();
+        // 从共享内存读取数据
+        ReadFromSharedMemory();
 
         imgui.BeginFrame();
 
@@ -662,20 +576,19 @@ int main()
             
             ImGui::Separator();
             
-            // 信息栏
-            ImGui::Columns(2, "info", false);
-            ImGui::Text("FPS: %.0f", g_currentFPS);
-            ImGui::NextColumn();
-            ImGui::Text("缩放: %.1fx", g_globalScale);
-            ImGui::Columns(1);
+            // 显示共享内存状态
+            if (g_sharedData) {
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
+                ImGui::Text("脚本: %s", g_sharedData->scriptName);
+                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
+            } else {
+                ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
+            }
             
             ImGui::Separator();
             
-            // 脚本管理器按钮
-            if (ImGui::Button("📁 脚本", ImVec2(-1, 30 * g_globalScale))) {
-                g_showScripts = !g_showScripts;
-                if (g_showScripts) LoadScriptsFromDirectory();
-            }
+            ImGui::Text("FPS: %.0f", g_currentFPS);
+            ImGui::Text("缩放: %.1fx", g_globalScale);
             
             ImGui::Separator();
             
@@ -684,8 +597,6 @@ int main()
             bool prevPredict = g_featurePredict;
             bool prevESP = g_featureESP;
             bool prevInstantQuit = g_featureInstantQuit;
-            bool prevAutoBuy = autoBuy;
-            bool prevAutoRefresh = autoRefresh;
             
             ToggleSwitch("预测", &g_featurePredict, 0);
             ToggleSwitch("透视", &g_featureESP, 1);
@@ -693,22 +604,16 @@ int main()
             
             ImGui::Separator();
             
-            ImGui::Text("游戏功能");
-            ToggleSwitch("自动购买", &autoBuy, 3);
-            ToggleSwitch("自动刷新", &autoRefresh, 4);
+            ImGui::Text("游戏数据");
+            ImGui::Text("金币: %d", gold);
+            ImGui::Text("等级: %d", level);
+            ImGui::Text("血量: %d", hp);
             
             if (g_featureESP) {
                 ImGui::Separator();
                 ImGui::Text("棋盘设置");
                 ImGui::SliderFloat("缩放", &g_chessboardScale, 0.5f, 2.0f, "%.1f");
             }
-            
-            ImGui::Separator();
-            
-            ImGui::Text("当前数据");
-            ImGui::Text("金币: %d", gold);
-            ImGui::Text("等级: %d", level);
-            ImGui::Text("血量: %d", hp);
             
             ImGui::End();
             ImGui::PopStyleVar(3);
@@ -719,9 +624,7 @@ int main()
             
             bool switchesChanged = (prevPredict != g_featurePredict || 
                                    prevESP != g_featureESP || 
-                                   prevInstantQuit != g_featureInstantQuit ||
-                                   prevAutoBuy != autoBuy ||
-                                   prevAutoRefresh != autoRefresh);
+                                   prevInstantQuit != g_featureInstantQuit);
             bool windowMoved = posChanged || sizeChanged;
             
             if ((switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
@@ -729,8 +632,6 @@ int main()
                 lastSaveTime = currentTime;
             }
         }
-
-        ShowScriptsWindow();
 
         if (showAnotherWindow)
         {
@@ -758,6 +659,8 @@ int main()
         processInputEventThread.join();
 
     SaveConfig();
+    CleanupSharedMemory();
+    
     printf("[3] JCC Assistant exited\n");
     return 0;
 }
