@@ -1,4 +1,4 @@
-name: Build test-ui
+name: Debug Build
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Build
+      - name: Configure CMake
         run: |
           mkdir -p build
           cd build
@@ -33,17 +33,40 @@ jobs:
                 -DANDROID_PLATFORM=android-23 \
                 -DANDROID_ABI=arm64-v8a \
                 -S .. -B . -G Ninja
-          cmake --build . --config Release
-          
-          # 显示编译结果
-          echo "=== Build output ==="
-          find . -name "test-ui" -type f | xargs ls -la
 
-      - name: Upload test-ui
+      - name: Build
+        run: |
+          cd build
+          cmake --build . --config Release
+
+      - name: Show full directory structure
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Full tree ==="
+          find . -type d | head -50
+          echo "=== All files ==="
+          find . -type f | head -50
+          echo "=== Executable files ==="
+          find . -type f -executable | head -50
+          echo "=== .so files ==="
+          find . -name "*.so" | head -50
+          echo "=== Build directory contents ==="
+          ls -la build/
+          echo "=== Build output directories ==="
+          find build -type d | head -20
+
+      - name: Upload everything
         uses: actions/upload-artifact@v4
         with:
-          name: test-ui-arm64
+          name: full-build-output
           path: |
-            build/tests/arm64-v8a/test-ui
+            build/
+            libs/
+            tests/
+            **/*.so
+            **/*.a
             **/test-ui
+            **/canvas-ui
+            **/render-ui
           if-no-files-found: warn
