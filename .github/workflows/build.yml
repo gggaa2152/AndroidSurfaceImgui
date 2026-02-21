@@ -1,4 +1,4 @@
-name: Build test-ui from root
+name: Build test-ui
 
 on:
   push:
@@ -40,15 +40,8 @@ jobs:
           cd build
           cmake --build . --target test-ui --config Release
 
-      - name: Find test-ui
-        run: |
-          echo "=== Looking for test-ui ==="
-          find $GITHUB_WORKSPACE -name "test-ui" -type f | xargs ls -la
-
       - name: Upload test-ui
         uses: actions/upload-artifact@v4
         with:
           name: test-ui-arm64
-          path: |
-            build/tests/arm64-v8a/test-ui
-            tests/arm64-v8a/test-ui
+          path: build/tests/arm64-v8a/test-ui
