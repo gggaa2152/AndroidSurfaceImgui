@@ -26,7 +26,6 @@ bool g_menuOpen = true;             // 菜单是否打开
 float g_circlePosX = 100;           // 圆形位置X
 float g_circlePosY = 100;           // 圆形位置Y
 float g_circleRadius = 40;          // 圆形半径
-bool g_dragging = false;            // 是否正在拖动
 
 // ========== 配置文件路径 ==========
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
@@ -116,52 +115,78 @@ void LoadConfig() {
     }
 }
 
-// ========== 绘制圆形图标 ==========
+// ========== 绘制圆形图标（优化版） ==========
 void DrawCircleIcon() {
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-    
-    // 获取鼠标位置
     ImGuiIO& io = ImGui::GetIO();
-    ImVec2 mousePos = io.MousePos;
     
-    // 计算圆形区域
-    ImVec2 circleCenter(g_circlePosX, g_circlePosY);
-    float distance = sqrt(pow(mousePos.x - circleCenter.x, 2) + pow(mousePos.y - circleCenter.y, 2));
+    // 静态变量避免重复计算
+    static bool isDragging = false;
+    static bool wasMouseDown = false;
     
-    // 处理拖动
-    if (io.MouseDown[0]) {
-        if (!g_dragging && distance < g_circleRadius) {
-            g_dragging = true;
+    bool isMouseDown = io.MouseDown[0];
+    
+    // ===== 拖动逻辑优化 =====
+    if (isMouseDown) {
+        if (!wasMouseDown) {
+            // 只在按下瞬间检测点击区域（使用平方比较避免sqrt）
+            float dx = io.MousePos.x - g_circlePosX;
+            float dy = io.MousePos.y - g_circlePosY;
+            float distSq = dx*dx + dy*dy;
+            float radiusSq = g_circleRadius * g_circleRadius;
+            
+            if (distSq < radiusSq) {
+                isDragging = true;
+            }
         }
-        if (g_dragging) {
-            g_circlePosX = mousePos.x;
-            g_circlePosY = mousePos.y;
+        
+        // 拖动时直接更新位置（最快）
+        if (isDragging) {
+            g_circlePosX = io.MousePos.x;
+            g_circlePosY = io.MousePos.y;
         }
     } else {
-        if (g_dragging) {
-            g_dragging = false;
-            SaveConfig();  // 保存位置
+        if (isDragging) {
+            isDragging = false;
+            SaveConfig();  // 拖动结束保存位置
+        } else if (!g_menuOpen && wasMouseDown) {
+            // 点击打开菜单
+            float dx = io.MousePos.x - g_circlePosX;
+            float dy = io.MousePos.y - g_circlePosY;
+            float distSq = dx*dx + dy*dy;
+            float radiusSq = g_circleRadius * g_circleRadius;
+            
+            if (distSq < radiusSq) {
+                g_menuOpen = true;
+            }
         }
     }
     
-    // 处理点击打开菜单
-    if (!g_menuOpen && !g_dragging && io.MouseReleased[0] && distance < g_circleRadius) {
-        g_menuOpen = true;
-    }
+    wasMouseDown = isMouseDown;
     
-    // 绘制圆形背景
-    drawList->AddCircleFilled(circleCenter, g_circleRadius, IM_COL32(0, 120, 255, 200), 32);
+    // ===== 绘制（每帧执行，但很快） =====
+    ImVec2 center(g_circlePosX, g_circlePosY);
     
-    // 绘制外圈
-    drawList->AddCircle(circleCenter, g_circleRadius, IM_COL32(255, 255, 255, 255), 32, 2.0f);
+    // 圆形背景
+    drawList->AddCircleFilled(center, g_circleRadius, IM_COL32(0, 120, 255, 200), 32);
     
-    // 绘制文字
-    char text[32];
-    int activeCount = (g_featurePredict ? 1 : 0) + (g_featureESP ? 1 : 0) + (g_featureInstantQuit ? 1 : 0);
-    sprintf(text, "%d", activeCount);
+    // 白色外圈
+    drawList->AddCircle(center, g_circleRadius, IM_COL32(255, 255, 255, 255), 32, 2.0f);
     
-    // 【修复】正确计算文字位置
-    drawList->AddText(ImVec2(circleCenter.x - 10, circleCenter.y - 10), IM_COL32(255, 255, 255, 255), text);
+    // 显示开启功能数量
+    int activeCount = (g_featurePredict ? 1 : 0) + 
+                      (g_featureESP ? 1 : 0) + 
+                      (g_featureInstantQuit ? 1 : 0);
+    
+    char text[8];
+    snprintf(text, sizeof(text), "%d", activeCount);
+    
+    // 文字位置居中
+    float textWidth = ImGui::CalcTextSize(text).x;
+    float textHeight = ImGui::GetFontSize();
+    ImVec2 textPos(center.x - textWidth/2, center.y - textHeight/2);
+    
+    drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), text);
 }
 
 int main()
