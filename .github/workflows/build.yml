@@ -1,4 +1,4 @@
-name: Build test-ui arm64-v8a
+name: Build test-ui
 
 on:
   push:
@@ -22,9 +22,9 @@ jobs:
           echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
 
       - name: Install ninja
-        run: sudo apt-get install -y ninja-build
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Configure CMake
+      - name: Build
         run: |
           mkdir -p build
           cd build
@@ -33,14 +33,17 @@ jobs:
                 -DANDROID_PLATFORM=android-23 \
                 -DANDROID_ABI=arm64-v8a \
                 -S .. -B . -G Ninja
-
-      - name: Build
-        run: |
-          cd build
           cmake --build . --config Release
+          
+          # 显示编译结果
+          echo "=== Build output ==="
+          find . -name "test-ui" -type f | xargs ls -la
 
       - name: Upload test-ui
         uses: actions/upload-artifact@v4
         with:
           name: test-ui-arm64
-          path: tests/arm64-v8a/test-ui
+          path: |
+            build/tests/arm64-v8a/test-ui
+            **/test-ui
+          if-no-files-found: warn
