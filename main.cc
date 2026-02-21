@@ -41,8 +41,8 @@ bool g_chessboardDragging = false;
 
 // ========== 全局缩放控制 ==========
 float g_globalScale = 1.0f;
-const float MIN_SCALE = 0.3f;        // 最小缩放0.3
-const float MAX_SCALE = 5.0f;        // 最大缩放5.0
+const float MIN_SCALE = 0.3f;
+const float MAX_SCALE = 5.0f;
 
 // ========== 窗口位置和大小 ==========
 ImVec2 g_windowPos = ImVec2(50, 100);
@@ -129,29 +129,48 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载中文字体 ==========
+// ========== 加载中文字体（修复大小和模糊） ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
+    
+    // 先清空字体
+    io.Fonts->Clear();
+    
     const char* fontPaths[] = {
         "/system/fonts/SysSans-Hans-Regular.ttf",
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/DroidSansFallback.ttf",
     };
+    
     ImFont* font = nullptr;
+    ImFontConfig config;
+    config.OversampleH = 2;  // 水平过采样，提高清晰度
+    config.OversampleV = 2;  // 垂直过采样，提高清晰度
+    config.PixelSnapH = false; // 禁用像素对齐，让字体更平滑
+    config.RasterizerMultiply = 1.0f; // 不乘系数
+    
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        font = io.Fonts->AddFontFromFileTTF(path, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        // 【修改】字体大小从16px降到14px
+        font = io.Fonts->AddFontFromFileTTF(path, 14.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
             io.FontDefault = font;
             break;
         }
     }
+    
     if (!font) {
         printf("[-] No Chinese font found, using default\n");
         io.Fonts->AddFontDefault();
     }
+    
+    // 构建字体纹理
     io.Fonts->Build();
+    
+    // 确保纹理上传到GPU
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    ImGui_ImplOpenGL3_CreateFontsTexture();
 }
 
 // ========== 配置文件路径 ==========
@@ -331,15 +350,13 @@ void DrawChessboard() {
             float centerY = g_chessboardPosY + row * cellSize + cellSize/2;
             float radius = cellSize * 0.3f;
             
-            // 根据行列设置不同颜色（红蓝交替）
             ImU32 circleColor;
             if ((row + col) % 2 == 0) {
-                circleColor = IM_COL32(255, 100, 100, 200);  // 红色
+                circleColor = IM_COL32(255, 100, 100, 200);
             } else {
-                circleColor = IM_COL32(100, 100, 255, 200);  // 蓝色
+                circleColor = IM_COL32(100, 100, 255, 200);
             }
             
-            // 绘制圆形
             drawList->AddCircleFilled(
                 ImVec2(centerX, centerY),
                 radius,
@@ -347,7 +364,6 @@ void DrawChessboard() {
                 32
             );
             
-            // 添加白色边框
             drawList->AddCircle(
                 ImVec2(centerX, centerY),
                 radius,
@@ -359,10 +375,10 @@ void DrawChessboard() {
     }
 }
 
-// ========== 自定义窗口缩放回调（增大缩放幅度） ==========
+// ========== 自定义窗口缩放回调 ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     float newWidth = data->DesiredSize.x;
-    float scaleDelta = newWidth / 200.0f;  // 基准宽度200，缩放幅度更大
+    float scaleDelta = newWidth / 200.0f;
     if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
@@ -381,13 +397,14 @@ int main()
 
     // 样式设置
     ImGuiStyle& style = ImGui::GetStyle();
-    style.GrabMinSize = 28.0f;  // 增大缩放柄，更容易点到
+    style.GrabMinSize = 28.0f;
     style.FramePadding = ImVec2(6, 4);
     style.WindowPadding = ImVec2(8, 8);
     style.ItemSpacing = ImVec2(6, 4);
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
 
+    // 【修改】加载字体（现在在 ImGui_ImplOpenGL3_Init 之前）
     LoadChineseFont();
 
     android::AImGui imgui(android::AImGui::Options{
@@ -426,20 +443,16 @@ int main()
     while (state) {
         auto frameStart = std::chrono::high_resolution_clock::now();
 
-        // 记录当前开关状态
         bool prevPredict = g_featurePredict;
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
-        // 读取共享内存数据
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
 
-        // 绘制棋盘
         DrawChessboard();
 
-        // 帧率计算
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -451,7 +464,6 @@ int main()
 
         if (showDemoWindow) ImGui::ShowDemoWindow(&showDemoWindow);
 
-        // 主窗口
         bool posChanged = false, sizeChanged = false;
         {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * g_globalScale);
@@ -462,7 +474,6 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
 
-            // 设置窗口大小回调，增大缩放幅度
             ImGui::SetNextWindowSizeConstraints(ImVec2(150, 200), ImVec2(FLT_MAX, FLT_MAX), ScaleWindow, nullptr);
             
             if (g_windowPosInitialized) {
@@ -483,12 +494,10 @@ int main()
 
             ImGui::Separator();
 
-            // 显示当前缩放值
             ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "FPS: %.0f", g_currentFPS);
             ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "缩放: %.2fx", g_globalScale);
             ImGui::Separator();
 
-            // 共享内存状态
             if (g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 ImGui::Text("脚本: %s", g_sharedData->scriptName);
@@ -529,7 +538,6 @@ int main()
 
         imgui.EndFrame();
 
-        // 帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         if (frameTime < TARGET_FRAME_TIME_MS) {
@@ -537,7 +545,6 @@ int main()
             if (sleepUs > 0) usleep(sleepUs);
         }
 
-        // 保存配置
         auto saveTime = std::chrono::high_resolution_clock::now();
         float timeSinceLastSave = std::chrono::duration<float>(saveTime - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
@@ -548,7 +555,6 @@ int main()
         }
     }
 
-    // 清理
     CleanupSharedMemory();
     SaveConfig();
     if (inputThread.joinable()) inputThread.join();
