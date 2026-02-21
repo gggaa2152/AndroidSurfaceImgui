@@ -35,9 +35,8 @@ bool g_chessboardDragging = false;   // 是否正在拖动棋盘
 
 // ========== 全局缩放控制 ==========
 float g_globalScale = 1.0f;
-float g_targetScale = 1.0f;
 const float MIN_SCALE = 0.5f;
-const float MAX_SCALE = 5.0f;         // 【修改】最大值增加到5.0
+const float MAX_SCALE = 5.0f;
 
 // ========== 窗口位置和大小 ==========
 ImVec2 g_windowPos = ImVec2(100, 100);
@@ -69,7 +68,6 @@ void LoadChineseFont() {
     ImFont* font = nullptr;
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        // 【修改】恢复默认字体大小 18.0f
         font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
@@ -117,7 +115,7 @@ void SaveConfig() {
         fprintf(f, "chessboardPosX=%.0f\n", g_chessboardPosX);
         fprintf(f, "chessboardPosY=%.0f\n", g_chessboardPosY);
         fclose(f);
-        printf("[+] Config saved\n");
+        printf("[+] Config saved (scale=%.2f)\n", g_globalScale);
     }
 }
 
@@ -133,7 +131,6 @@ void LoadConfig() {
             int ival;
             if (sscanf(line, "scale=%f", &fval) == 1) {
                 g_globalScale = fval;
-                g_targetScale = fval;
                 if (g_globalScale < MIN_SCALE) g_globalScale = MIN_SCALE;
                 if (g_globalScale > MAX_SCALE) g_globalScale = MAX_SCALE;
             }
@@ -191,7 +188,7 @@ void LoadConfig() {
     }
 }
 
-// ========== 精美滑动开关（带动画） ==========
+// ========== 精美滑动开关（正常大小） ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
@@ -202,14 +199,15 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     const ImGuiID id = window->GetID(label);
     const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
     
-    const float height = ImGui::GetFrameHeight() * g_globalScale;
+    // 【修改】开关大小恢复正常，不再乘以g_globalScale
+    const float height = ImGui::GetFrameHeight();
     const float width = height * 1.8f;
     const float radius = height * 0.45f;
     
     ImVec2 pos = window->DC.CursorPos;
-    ImRect total_bb(pos, ImVec2(pos.x + width + (label_size.x > 0.0f ? style.ItemInnerSpacing.x * g_globalScale + label_size.x * g_globalScale : 0.0f), pos.y + height));
+    ImRect total_bb(pos, ImVec2(pos.x + width + (label_size.x > 0.0f ? style.ItemInnerSpacing.x + label_size.x : 0.0f), pos.y + height));
     
-    ImGui::ItemSize(total_bb, style.FramePadding.y * g_globalScale);
+    ImGui::ItemSize(total_bb, style.FramePadding.y);
     if (!ImGui::ItemAdd(total_bb, id))
         return false;
     
@@ -262,7 +260,7 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     
     if (label_size.x > 0.0f) {
         ImGui::RenderText(
-            ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x * g_globalScale, pos.y + (height - label_size.y * g_globalScale) * 0.5f),
+            ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, pos.y + (height - label_size.y) * 0.5f),
             label
         );
     }
@@ -283,7 +281,6 @@ void DrawChessboard() {
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
-    // 检查鼠标是否在棋盘区域内，用于拖动
     float cellSize = 40 * g_chessboardScale;
     float boardWidth = CHESSBOARD_COLS * cellSize;
     float boardHeight = CHESSBOARD_ROWS * cellSize;
@@ -292,7 +289,6 @@ void DrawChessboard() {
     bool mouseInBoard = (mousePos.x >= g_chessboardPosX && mousePos.x <= g_chessboardPosX + boardWidth &&
                          mousePos.y >= g_chessboardPosY && mousePos.y <= g_chessboardPosY + boardHeight);
     
-    // 处理棋盘拖动
     if (io.MouseDown[0]) {
         if (!g_chessboardDragging && mouseInBoard) {
             g_chessboardDragging = true;
@@ -308,7 +304,6 @@ void DrawChessboard() {
         }
     }
     
-    // 绘制棋盘背景（半透明）
     drawList->AddRectFilled(
         ImVec2(g_chessboardPosX, g_chessboardPosY),
         ImVec2(g_chessboardPosX + boardWidth, g_chessboardPosY + boardHeight),
@@ -316,7 +311,6 @@ void DrawChessboard() {
         10.0f
     );
     
-    // 绘制格子线
     for (int row = 0; row <= CHESSBOARD_ROWS; row++) {
         float y = g_chessboardPosY + row * cellSize;
         drawList->AddLine(
@@ -337,21 +331,13 @@ void DrawChessboard() {
         );
     }
     
-    // 绘制圆圈（模拟棋子）
     for (int row = 0; row < CHESSBOARD_ROWS; row++) {
         for (int col = 0; col < CHESSBOARD_COLS; col++) {
             float centerX = g_chessboardPosX + col * cellSize + cellSize/2;
             float centerY = g_chessboardPosY + row * cellSize + cellSize/2;
             
-            // 随机颜色示例（实际应用中可以根据棋子类型设置颜色）
-            ImU32 circleColor = IM_COL32(100, 200, 255, 200);
-            
-            // 根据行列奇偶设置不同颜色，以示区别
-            if ((row + col) % 2 == 0) {
-                circleColor = IM_COL32(255, 100, 100, 200);
-            } else {
-                circleColor = IM_COL32(100, 255, 100, 200);
-            }
+            ImU32 circleColor = ((row + col) % 2 == 0) ? 
+                IM_COL32(255, 100, 100, 200) : IM_COL32(100, 255, 100, 200);
             
             drawList->AddCircleFilled(
                 ImVec2(centerX, centerY),
@@ -360,7 +346,6 @@ void DrawChessboard() {
                 16
             );
             
-            // 添加白色边框
             drawList->AddCircle(
                 ImVec2(centerX, centerY),
                 cellSize * 0.3f,
@@ -372,20 +357,14 @@ void DrawChessboard() {
     }
 }
 
-// ========== 自定义窗口缩放回调（右下角三角控制全局缩放） ==========
+// ========== 自定义窗口缩放回调 ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
-    // 当用户拖动右下角三角时，更新全局缩放
     float newWidth = data->DesiredSize.x;
-    
-    // 根据宽度变化计算缩放比例
-    float scaleDelta = newWidth / 400.0f; // 基准宽度400px
+    float scaleDelta = newWidth / 400.0f;
     if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
-    g_targetScale = scaleDelta;
     g_globalScale = scaleDelta;
-    
-    // 立即应用缩放
     ImGui::GetIO().FontGlobalScale = g_globalScale;
 }
 
@@ -396,10 +375,15 @@ int main()
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     
-    // 设置样式，增大触摸区域
+    ImGuiIO& io = ImGui::GetIO();
+    
+    // 【修改】禁止穿透点击 - 窗口捕获所有点击
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    
     ImGuiStyle& style = ImGui::GetStyle();
-    style.GrabMinSize = 20.0f;  // 增大滑块抓取区域
-    style.FramePadding = ImVec2(8, 6);  // 增大内边距
+    style.GrabMinSize = 20.0f;
+    style.FramePadding = ImVec2(8, 6);
     
     LoadChineseFont();
     
@@ -417,9 +401,7 @@ int main()
         return 0;
     }
 
-    // 加载配置
     LoadConfig();
-    g_targetScale = g_globalScale;
 
     std::thread processInputEventThread(
         [&]
@@ -437,22 +419,18 @@ int main()
     
     printf("[2] Entering main loop\n");
     
-    // 记录上次保存时间
     auto lastSaveTime = std::chrono::high_resolution_clock::now();
     
     while (state)
     {
         auto frameStart = std::chrono::high_resolution_clock::now();
         
-        // 读取游戏数据
         ReadGameData();
 
         imgui.BeginFrame();
 
-        // 绘制棋盘（如果开启透视）
         DrawChessboard();
 
-        // 计算帧率
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -465,7 +443,6 @@ int main()
         if (showDemoWindow)
             ImGui::ShowDemoWindow(&showDemoWindow);
 
-        // ========== 金铲铲助手主窗口 ==========
         {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f * g_globalScale);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f * g_globalScale);
@@ -475,15 +452,13 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
-            // 设置窗口大小回调
             ImGui::SetNextWindowSizeConstraints(
-                ImVec2(200, 150),                      // 最小尺寸
-                ImVec2(FLT_MAX, FLT_MAX),              // 无最大限制
-                ScaleWindow,                            // 回调函数
+                ImVec2(200, 150),
+                ImVec2(FLT_MAX, FLT_MAX),
+                ScaleWindow,
                 nullptr
             );
             
-            // 设置窗口初始位置
             if (g_windowPosInitialized) {
                 ImGui::SetNextWindowPos(g_windowPos, ImGuiCond_FirstUseEver);
                 ImGui::SetNextWindowSize(g_windowSize, ImGuiCond_FirstUseEver);
@@ -491,7 +466,6 @@ int main()
             
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
             
-            // 获取当前窗口位置和大小
             ImVec2 currentPos = ImGui::GetWindowPos();
             ImVec2 currentSize = ImGui::GetWindowSize();
             
@@ -505,7 +479,6 @@ int main()
             
             ImGui::Separator();
             
-            // 信息栏
             ImGui::Columns(2, "info", false);
             ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "FPS: %.0f", g_currentFPS);
             ImGui::NextColumn();
@@ -514,15 +487,14 @@ int main()
             
             ImGui::Separator();
             
-            // 【修改】滑块最大值改为5.0
+            // 【修复】滑块不回弹 - 直接绑定g_globalScale
+            float prevScale = g_globalScale;
             if (ImGui::SliderFloat("全局缩放", &g_globalScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
                 ImGui::GetIO().FontGlobalScale = g_globalScale;
-                g_targetScale = g_globalScale;
             }
             
             ImGui::Separator();
             
-            // 功能设置
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "功能设置");
             
             bool prevPredict = g_featurePredict;
@@ -548,25 +520,20 @@ int main()
             
             ImGui::Separator();
             
-            // 游戏功能
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "游戏功能");
             
             ToggleSwitch("自动购买", &autoBuy, 3);
             ToggleSwitch("自动刷新", &autoRefresh, 4);
             
-            // 棋盘缩放控制（只在透视开启时显示）
             if (g_featureESP) {
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "棋盘设置");
-                if (ImGui::SliderFloat("棋盘缩放", &g_chessboardScale, 0.5f, 2.0f, "%.1f")) {
-                    // 缩放变化
-                }
+                if (ImGui::SliderFloat("棋盘缩放", &g_chessboardScale, 0.5f, 2.0f, "%.1f")) {}
                 ImGui::Text("拖动棋盘可移动位置");
             }
             
             ImGui::Separator();
             
-            // 当前状态显示
             ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "当前状态");
             ImGui::Text("预测: %s", g_featurePredict ? "开启" : "关闭");
             ImGui::Text("透视: %s", g_featureESP ? "开启" : "关闭");
@@ -578,7 +545,6 @@ int main()
             ImGui::PopStyleVar(3);
             ImGui::PopStyleColor(4);
             
-            // 检查是否需要保存配置
             auto currentTime = std::chrono::high_resolution_clock::now();
             float timeSinceLastSave = std::chrono::duration<float>(currentTime - lastSaveTime).count();
             
@@ -588,8 +554,9 @@ int main()
                                    prevAutoBuy != autoBuy ||
                                    prevAutoRefresh != autoRefresh);
             bool windowMoved = posChanged || sizeChanged;
+            bool scaleChanged = (fabs(prevScale - g_globalScale) > 0.01f);
             
-            if ((switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
+            if ((switchesChanged || windowMoved || scaleChanged) && timeSinceLastSave > 2.0f) {
                 SaveConfig();
                 lastSaveTime = currentTime;
             }
@@ -606,7 +573,6 @@ int main()
 
         imgui.EndFrame();
         
-        // 帧率控制
         auto frameEnd = std::chrono::high_resolution_clock::now();
         float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
         
