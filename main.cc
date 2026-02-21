@@ -23,8 +23,8 @@
 int gold = 100;
 int level = 8;
 int hp = 85;
-bool autoBuy = true;
-bool autoRefresh = true;
+bool autoBuy = true;      // 这些变量在脚本中也有
+bool autoRefresh = true;   // 这些变量在脚本中也有
 
 // ========== 功能开关 ==========
 bool g_featurePredict = false;     // 预测
@@ -49,7 +49,7 @@ ImVec2 g_windowPos = ImVec2(50, 100);
 ImVec2 g_windowSize = ImVec2(280, 400);
 bool g_windowPosInitialized = false;
 
-// ========== 共享内存结构（完全对齐） ==========
+// ========== 共享内存结构 ==========
 struct SharedGameData {
     int32_t gold;
     int32_t level;
@@ -109,25 +109,41 @@ bool InitSharedMemory() {
     }
     
     g_shmValid = true;
-    printf("[+] Shared memory initialized successfully\n");
-    return true;
-}
-
-// ========== 从共享内存读取数据（安全版） ==========
-void ReadFromSharedMemory() {
-    if (!g_shmValid || !g_sharedData) return;
     
-    // 使用安全读取函数
-    int ts = safe_read(&g_sharedData->timestamp, 0);
-    
-    if (ts != g_lastTimestamp && ts > 0) {
+    // 立即读取一次初始值
+    if (g_shmValid && g_sharedData) {
         gold = safe_read(&g_sharedData->gold, 100);
         level = safe_read(&g_sharedData->level, 8);
         hp = safe_read(&g_sharedData->hp, 85);
         autoBuy = (safe_read(&g_sharedData->autoBuy, 1) != 0);
         autoRefresh = (safe_read(&g_sharedData->autoRefresh, 1) != 0);
+        g_lastTimestamp = safe_read(&g_sharedData->timestamp, 0);
+        
+        printf("[+] Initial values: gold=%d, level=%d, hp=%d\n", gold, level, hp);
+    }
+    
+    printf("[+] Shared memory initialized successfully\n");
+    return true;
+}
+
+// ========== 从共享内存读取数据 ==========
+void ReadFromSharedMemory() {
+    if (!g_shmValid || !g_sharedData) return;
+    
+    int ts = safe_read(&g_sharedData->timestamp, 0);
+    
+    if (ts != g_lastTimestamp && ts > 0) {
+        gold = safe_read(&g_sharedData->gold, gold);
+        level = safe_read(&g_sharedData->level, level);
+        hp = safe_read(&g_sharedData->hp, hp);
+        autoBuy = (safe_read(&g_sharedData->autoBuy, autoBuy ? 1 : 0) != 0);
+        autoRefresh = (safe_read(&g_sharedData->autoRefresh, autoRefresh ? 1 : 0) != 0);
         
         g_lastTimestamp = ts;
+        
+        // 调试输出
+        printf("[+] Data updated: gold=%d, level=%d, hp=%d, ts=%d\n", 
+               gold, level, hp, ts);
     }
 }
 
@@ -144,7 +160,7 @@ void CleanupSharedMemory() {
     }
 }
 
-// ========== 加载中文字体（安全版） ==========
+// ========== 加载中文字体 ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
@@ -391,7 +407,7 @@ int main()
 {
     printf("[1] Starting JCC Assistant...\n");
     
-    // 初始化共享内存（失败也不影响程序运行）
+    // 初始化共享内存
     InitSharedMemory();
 
     IMGUI_CHECKVERSION();
@@ -448,7 +464,7 @@ int main()
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
-        // 安全读取共享内存
+        // 读取共享内存
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
@@ -499,6 +515,10 @@ int main()
             // 显示共享内存状态
             if (g_shmValid && g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
+                // 显示脚本名
+                char scriptName[65] = {0};
+                memcpy(scriptName, (void*)&g_sharedData->scriptName, 64);
+                ImGui::Text("脚本: %s", scriptName);
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
