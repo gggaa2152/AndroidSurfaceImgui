@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cmath>
 #include <string>
+#include "imgui.h" // 确保引入imgui.h头文件
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -166,6 +167,4 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     );
     ImRect frame_bb(pos, ImVec2(pos.x + width, pos.y + height));
     window->DrawList->AddRectFilled(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(currentBgColor), height * 0.5f);
-    float shift = progress * (width - 2 * radius - 4);
-    ImVec2 thumbCenter(pos.x + radius + shift + (radius/2), pos.y + height/2);
-    window->DrawList->AddCircleFilled(thumbCenter, radius - 1, IM_COL32
+    float shift = progress
