@@ -1,16 +1,15 @@
-#include "imgui.h"
 #include "AImGui.h"
-#include <cmath>
+#include "imgui.h"
 
 static float g_anim[32] = {};
 
-bool ToggleSwitch(const char* label, bool* v, int idx)
+bool ToggleSwitch(const char* id, bool* v, int idx)
 {
-    float height = ImGui::GetFrameHeight();
-    float width = height * 1.8f;
+    float h = ImGui::GetFrameHeight();
+    float w = h * 1.8f;
 
     ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton(label, ImVec2(width, height));
+    ImGui::InvisibleButton(id, ImVec2(w, h));
 
     if (ImGui::IsItemClicked())
         *v = !*v;
@@ -20,19 +19,17 @@ bool ToggleSwitch(const char* label, bool* v, int idx)
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    ImU32 bg = ImGui::GetColorU32(
-        ImLerp(ImVec4(0.3f,0.3f,0.3f,1.0f),
-               ImVec4(0.2f,0.8f,0.3f,1.0f),
-               g_anim[idx])
-    );
+    ImU32 bg = ImGui::GetColorU32(ImVec4(
+        0.3f + 0.0f * g_anim[idx],
+        0.3f + 0.5f * g_anim[idx],
+        0.3f - 0.1f * g_anim[idx],
+        1.0f
+    ));
 
-    draw->AddRectFilled(p,
-                        ImVec2(p.x + width, p.y + height),
-                        bg,
-                        height * 0.5f);
+    draw->AddRectFilled(p, ImVec2(p.x + w, p.y + h), bg, h * 0.5f);
 
-    float r = height * 0.5f;
-    float cx = p.x + r + g_anim[idx] * (width - height);
+    float r = h * 0.5f;
+    float cx = p.x + r + g_anim[idx] * (w - h);
 
     draw->AddCircleFilled(
         ImVec2(cx, p.y + r),
@@ -45,9 +42,7 @@ bool ToggleSwitch(const char* label, bool* v, int idx)
 
 int main()
 {
-    android::AImGui app;
-
-    app.run([](){
+    android::AImGui::run([](){
 
         static bool s1 = false;
         static bool s2 = true;
@@ -57,9 +52,11 @@ int main()
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
 
         ToggleSwitch("##s1", &s1, 0);
+        ImGui::SameLine();
         ImGui::Text("Switch 1");
 
         ToggleSwitch("##s2", &s2, 1);
+        ImGui::SameLine();
         ImGui::Text("Switch 2");
 
         ImGui::End();
