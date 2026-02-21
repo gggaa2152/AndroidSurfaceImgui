@@ -5,6 +5,7 @@
 #include <thread>
 #include <cstdio>
 #include <string>
+#include <cmath>
 
 // ========== 数据 ==========
 int gold = 100, level = 8, hp = 85;
@@ -13,22 +14,23 @@ float g_scale = 1.0f, g_boardScale = 1.0f;
 ImVec2 g_winPos(50,100), g_winSize(280,400);
 bool g_posInit = false;
 
+// ========== 开关动画 ==========
+float g_anim[3] = {0,0,0};
+
 // ========== 字体（修复问号） ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
-    // 中文字体路径列表
     const char* fontPaths[] = {
-        "/system/fonts/SysSans-Hans-Regular.ttf",   // 一加/OPPO
-        "/system/fonts/NotoSansCJK-Regular.ttc",    // Google
-        "/system/fonts/DroidSansFallback.ttf",      // 备用
+        "/system/fonts/SysSans-Hans-Regular.ttf",
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/DroidSansFallback.ttf",
     };
     
     ImFontConfig config;
     config.OversampleH = 2;
     config.OversampleV = 2;
     config.PixelSnapH = false;
-    config.MergeMode = false;  // 不合并，直接使用
     
     ImFont* font = nullptr;
     for (const char* path : fontPaths) {
@@ -40,14 +42,11 @@ void LoadChineseFont() {
         }
     }
     
-    // 如果都没找到，用默认字体但强制包含中文范围
     if (!font) {
         printf("[-] No Chinese font, using fallback\n");
         ImFontConfig fallbackConfig;
         fallbackConfig.MergeMode = true;
         io.Fonts->AddFontDefault(&fallbackConfig);
-        
-        // 尝试加载备用字体合并
         for (const char* path : fontPaths) {
             io.Fonts->AddFontFromFileTTF(path, 16.0f, &fallbackConfig, io.Fonts->GetGlyphRangesChineseFull());
         }
@@ -56,8 +55,8 @@ void LoadChineseFont() {
     io.Fonts->Build();
 }
 
-// ========== 开关 ==========
-bool Toggle(const char* label, bool* v) {
+// ========== 带动画的开关 ==========
+bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* w = ImGui::GetCurrentWindow(); if (w->SkipItems) return 0;
     ImGuiContext& g = *GImGui; const ImGuiStyle& s = g.Style;
     float h = ImGui::GetFrameHeight(), wd = h*1.8f, r = h*0.45f;
@@ -65,9 +64,22 @@ bool Toggle(const char* label, bool* v) {
     ImRect bb(pos, ImVec2(pos.x+wd + ImGui::CalcTextSize(label).x, pos.y+h));
     ImGui::ItemSize(bb); if (!ImGui::ItemAdd(bb, 0)) return 0;
     
-    w->DrawList->AddRectFilled(pos, ImVec2(pos.x+wd,pos.y+h), *v ? 0xFF33CC33 : 0xFF888888, h*0.5f);
-    float shift = (*v ? 1.f : 0.f) * (wd - 2*r);
-    w->DrawList->AddCircleFilled(ImVec2(pos.x+r+shift,pos.y+h/2), r-2, 0xFFFFFFFF);
+    // 动画更新
+    float target = *v ? 1.0f : 0.0f;
+    g_anim[idx] += (target - g_anim[idx]) * 0.25f;
+    if (fabs(g_anim[idx] - target) < 0.01f) g_anim[idx] = target;
+    
+    // 背景颜色渐变
+    ImU32 bgColor = ImGui::GetColorU32(ImVec4(
+        0.2f + g_anim[idx]*0.6f,
+        0.2f + g_anim[idx]*0.6f,
+        0.2f,
+        0.9f
+    ));
+    
+    w->DrawList->AddRectFilled(pos, ImVec2(pos.x+wd, pos.y+h), bgColor, h*0.5f);
+    float shift = g_anim[idx] * (wd - 2*r);
+    w->DrawList->AddCircleFilled(ImVec2(pos.x+r+shift, pos.y+h/2), r-2, 0xFFFFFFFF);
     ImGui::RenderText(ImVec2(pos.x+wd + 8, pos.y), label);
     
     if (ImGui::ButtonBehavior(bb, ImGui::GetID(label), 0, 0, ImGuiButtonFlags_PressedOnClick))
@@ -75,11 +87,12 @@ bool Toggle(const char* label, bool* v) {
     return 1;
 }
 
-// ========== 棋盘 ==========
+// ========== 棋盘（无限缩放） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
-    float sz = 40*g_boardScale, w = 7*sz, h = 4*sz;
+    float sz = 40 * g_boardScale;
+    float w = 7*sz, h = 4*sz;
     static float x=200,y=200; static bool drag=0;
     
     if (ImGui::IsMouseDown(0)) {
@@ -99,7 +112,7 @@ void DrawBoard() {
     }
 }
 
-// ========== 缩放 ==========
+// ========== 缩放回调 ==========
 void Scale(ImGuiSizeCallbackData* d) { 
     g_scale = d->DesiredSize.x / 280; 
     ImGui::GetIO().FontGlobalScale = g_scale;
@@ -122,6 +135,9 @@ void LoadConfig() {
         fscanf(f, "%f %d %d %d %f", &g_scale, &g_predict, &g_esp, &g_instant, &g_boardScale);
         fclose(f);
         ImGui::GetIO().FontGlobalScale = g_scale;
+        g_anim[0] = g_predict ? 1 : 0;
+        g_anim[1] = g_esp ? 1 : 0;
+        g_anim[2] = g_instant ? 1 : 0;
     }
 }
 
@@ -132,7 +148,6 @@ int main() {
     IMGUI_CHECKVERSION(); 
     ImGui::CreateContext();
     
-    // 先加载字体（关键！要在 ImGui 初始化后立即加载）
     LoadChineseFont();
     
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
@@ -163,7 +178,6 @@ int main() {
             
             ImGui::Begin("金铲铲助手", &running);
             
-            // 获取窗口位置
             ImVec2 curPos = ImGui::GetWindowPos();
             ImVec2 curSize = ImGui::GetWindowSize();
             if (curPos.x != g_winPos.x || curPos.y != g_winPos.y) g_winPos = curPos;
@@ -174,9 +188,9 @@ int main() {
             ImGui::Separator();
             
             ImGui::Text("功能设置");
-            Toggle("预测", &g_predict);
-            Toggle("透视", &g_esp);
-            Toggle("秒退", &g_instant);
+            Toggle("预测", &g_predict, 0);
+            Toggle("透视", &g_esp, 1);
+            Toggle("秒退", &g_instant, 2);
             
             ImGui::Separator();
             ImGui::Text("游戏数据");
@@ -187,7 +201,7 @@ int main() {
             if (g_esp) {
                 ImGui::Separator();
                 ImGui::Text("棋盘设置");
-                ImGui::SliderFloat("棋盘缩放", &g_boardScale, 0.3f, 3.0f, "%.1f");
+                ImGui::SliderFloat("棋盘缩放", &g_boardScale, 0.1f, 10.0f, "%.1f");
             }
             
             ImGui::End();
@@ -195,12 +209,10 @@ int main() {
         
         imgui.EndFrame();
         
-        // 120fps 控制
         auto end = std::chrono::high_resolution_clock::now();
         int sleep = 8333 - std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
         if (sleep > 0) usleep(sleep);
         
-        // 每2秒保存配置
         auto now = std::chrono::high_resolution_clock::now();
         if (std::chrono::duration<float>(now - lastSave).count() > 2) {
             SaveConfig();
