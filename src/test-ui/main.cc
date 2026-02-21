@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "AImGui.h"
+#include "imgui_internal.h"  // 必须添加这个头文件！
 
 #include <thread>
 #include <iostream>
@@ -131,7 +132,7 @@ void LoadConfig() {
     }
 }
 
-// ========== 自定义滑动开关 ==========
+// ========== 自定义滑动开关（修复版） ==========
 bool ToggleSwitch(const char* label, bool* v) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
@@ -155,22 +156,21 @@ bool ToggleSwitch(const char* label, bool* v) {
     
     // 背景
     float t = *v ? 1.0f : 0.0f;
-    ImGuiContext& gg = g;
-    float ANIM_SPEED = 0.08f;
-    if (g.LastActiveId == id) {
-        float t_anim = ImSaturate(g.LastActiveIdTimer / ANIM_SPEED);
-        t = *v ? (t_anim) : (1.0f - t_anim);
-    }
     
+    // 【修复】移除对 g.LastActiveIdTimer 的依赖，简化动画
     ImU32 col_bg = *v ? ImGui::GetColorU32(ImVec4(0.26f, 0.98f, 0.26f, 0.94f)) : ImGui::GetColorU32(ImVec4(0.76f, 0.76f, 0.76f, 0.94f));
     
     ImRect frame_bb(pos, ImVec2(pos.x + width, pos.y + height));
     window->DrawList->AddRectFilled(frame_bb.Min, frame_bb.Max, col_bg, height * 0.5f);
     
-    // 滑块
-    float shift = t * (width - 2 * radius - 2);
-    ImRect thumb_bb(ImVec2(pos.x + radius + shift, pos.y + 2), ImVec2(pos.x + width - radius + shift, pos.y + height - 2));
-    window->DrawList->AddCircleFilled(ImVec2(pos.x + radius + shift + (radius/2), pos.y + height/2), radius-2, IM_COL32(255, 255, 255, 255), 32);
+    // 滑块（根据状态计算位置）
+    float shift = t * (width - 2 * radius - 4);
+    window->DrawList->AddCircleFilled(
+        ImVec2(pos.x + radius + shift + (radius/2), pos.y + height/2), 
+        radius-2, 
+        IM_COL32(255, 255, 255, 255), 
+        32
+    );
     
     if (label_size.x > 0.0f) {
         ImGui::RenderText(ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, pos.y + (height - label_size.y) * 0.5f), label);
@@ -180,7 +180,6 @@ bool ToggleSwitch(const char* label, bool* v) {
     bool pressed = ImGui::ButtonBehavior(total_bb, id, NULL, NULL, ImGuiButtonFlags_PressedOnClick);
     if (pressed) {
         *v = !*v;
-        g.LastActiveIdTimer = 0.0f;
     }
     
     return pressed;
@@ -282,7 +281,7 @@ int main()
             bool prevAutoBuy = autoBuy;
             bool prevAutoRefresh = autoRefresh;
             
-            // 使用滑动开关
+            // 使用滑动开关（修复版）
             ToggleSwitch("预测", &g_featurePredict);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("开启后预测敌方下一步行动");
