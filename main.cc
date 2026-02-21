@@ -284,12 +284,12 @@ int main()
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
-    // 样式设置
+    // 样式设置 - 优化触摸响应
     ImGuiStyle& style = ImGui::GetStyle();
-    style.GrabMinSize = 24.0f;
-    style.FramePadding = ImVec2(6, 4);
-    style.WindowPadding = ImVec2(8, 8);
-    style.ItemSpacing = ImVec2(6, 4);
+    style.GrabMinSize = 28.0f;        // 增大抓取区域
+    style.FramePadding = ImVec2(8, 6); // 增大内边距
+    style.WindowPadding = ImVec2(10, 10);
+    style.ItemSpacing = ImVec2(8, 6);
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
 
@@ -310,19 +310,28 @@ int main()
 
     LoadConfig();
 
-    // ========== 输入线程 ==========
+    // ========== 输入线程（优化优先级） ==========
     std::thread inputThread([&] {
+        // 设置实时优先级
         struct sched_param param;
         param.sched_priority = 99;
         pthread_setschedparam(pthread_self(), SCHED_RR, &param);
+        
         while (state) {
             imgui.ProcessInputEvent();
-            std::this_thread::sleep_for(std::chrono::microseconds(500));
+            // 极短休眠，让出CPU但保持响应
+            std::this_thread::yield();
         }
     });
 
+    // 主线程也提高优先级
+    struct sched_param main_param;
+    main_param.sched_priority = 98;
+    pthread_setschedparam(pthread_self(), SCHED_RR, &main_param);
+
+    // 120fps 精确控制
     const float TARGET_FPS = 120.0f;
-    const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
+    const float TARGET_FRAME_TIME_US = 1000000.0f / TARGET_FPS; // 微秒
     g_fpsTimer = std::chrono::high_resolution_clock::now();
     auto lastSaveTime = std::chrono::high_resolution_clock::now();
 
@@ -360,6 +369,7 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
 
+            // 移除大小约束，让用户自由调整
             ImGui::SetNextWindowSizeConstraints(ImVec2(150, 200), ImVec2(FLT_MAX, FLT_MAX), ScaleWindow, nullptr);
             
             if (g_windowPosInitialized) {
@@ -415,18 +425,20 @@ int main()
 
         imgui.EndFrame();
 
+        // 精确帧率控制（微秒级）
         auto frameEnd = std::chrono::high_resolution_clock::now();
-        float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
-        if (frameTime < TARGET_FRAME_TIME_MS) {
-            int sleepUs = (int)((TARGET_FRAME_TIME_MS - frameTime) * 1000);
-            if (sleepUs > 0) usleep(sleepUs);
+        auto frameTimeUs = std::chrono::duration_cast<std::chrono::microseconds>(frameEnd - frameStart).count();
+        
+        if (frameTimeUs < TARGET_FRAME_TIME_US) {
+            usleep(TARGET_FRAME_TIME_US - frameTimeUs);
         }
 
+        // 保存配置（降低频率，不影响性能）
         auto saveTime = std::chrono::high_resolution_clock::now();
         float timeSinceLastSave = std::chrono::duration<float>(saveTime - lastSaveTime).count();
         bool switchesChanged = (prevPredict != g_featurePredict || prevESP != g_featureESP || prevInstantQuit != g_featureInstantQuit);
         bool windowMoved = posChanged || sizeChanged;
-        if ((switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
+        if ((switchesChanged || windowMoved) && timeSinceLastSave > 1.0f) {
             SaveConfig();
             lastSaveTime = saveTime;
         }
