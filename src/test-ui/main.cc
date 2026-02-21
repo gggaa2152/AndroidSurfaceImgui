@@ -55,17 +55,6 @@ auto g_fpsTimer = std::chrono::high_resolution_clock::now();
 float g_toggleAnimProgress[10] = {0};
 int g_toggleAnimTarget[10] = {0};
 
-// ========== 缓动函数 ==========
-float EaseOutElastic(float x) {
-    if (x == 0.0f || x == 1.0f) return x;
-    float p = 0.3f;
-    return pow(2.0f, -10.0f * x) * sin((x - p/4.0f) * (2.0f * 3.14159f) / p) + 1.0f;
-}
-
-float EaseOutCubic(float x) {
-    return 1.0f - pow(1.0f - x, 3.0f);
-}
-
 // ========== 加载中文字体 ==========
 void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
@@ -199,53 +188,7 @@ void LoadConfig() {
     }
 }
 
-// ========== 设置精美UI样式 ==========
-void SetupImGuiStyle() {
-    ImGuiStyle& style = ImGui::GetStyle();
-    
-    // 颜色方案 - 现代深色
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.1f, 0.1f, 0.12f, 0.95f);
-    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.15f, 0.15f, 0.18f, 1.0f);
-    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.2f, 0.3f, 0.6f, 1.0f);
-    style.Colors[ImGuiCol_Button] = ImVec4(0.2f, 0.3f, 0.5f, 0.8f);
-    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.3f, 0.4f, 0.6f, 1.0f);
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.1f, 0.2f, 0.4f, 1.0f);
-    style.Colors[ImGuiCol_CheckMark] = ImVec4(0.2f, 0.8f, 0.3f, 1.0f);
-    style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
-    style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.5f, 0.7f, 1.0f, 1.0f);
-    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.2f, 0.2f, 0.3f, 0.8f);
-    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.3f, 0.3f, 0.4f, 0.9f);
-    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.4f, 0.4f, 0.5f, 1.0f);
-    style.Colors[ImGuiCol_Header] = ImVec4(0.2f, 0.3f, 0.5f, 0.8f);
-    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.3f, 0.4f, 0.6f, 0.9f);
-    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.4f, 0.5f, 0.7f, 1.0f);
-    style.Colors[ImGuiCol_ResizeGrip] = ImVec4(0.3f, 0.4f, 0.6f, 0.5f);
-    style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.4f, 0.5f, 0.7f, 0.8f);
-    style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(0.5f, 0.6f, 0.8f, 1.0f);
-    
-    // 圆角设置
-    style.WindowRounding = 12.0f;
-    style.FrameRounding = 6.0f;
-    style.PopupRounding = 8.0f;
-    style.GrabRounding = 6.0f;
-    style.ScrollbarRounding = 12.0f;
-    
-    // 间距优化
-    style.WindowPadding = ImVec2(12, 12);
-    style.FramePadding = ImVec2(8, 6);
-    style.ItemSpacing = ImVec2(8, 6);
-    style.ItemInnerSpacing = ImVec2(6, 4);
-    style.IndentSpacing = 20.0f;
-    style.ScrollbarSize = 16.0f;
-    style.GrabMinSize = 24.0f;  // 【增大】滑块抓取区域，更容易点到
-    
-    // 去掉边框
-    style.WindowBorderSize = 0.0f;
-    style.FrameBorderSize = 0.0f;
-    style.PopupBorderSize = 0.0f;
-}
-
-// ========== 精美滑动开关（带动画和阴影） ==========
+// ========== 精美滑动开关（正常大小） ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
@@ -275,58 +218,30 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     progress += (target - progress) * speed;
     if (fabs(progress - target) < 0.01f) progress = target;
     
-    // 使用缓动动画
-    float animProgress = EaseOutCubic(progress);
-    
     ImVec4 bgColorOn(0.2f, 0.8f, 0.3f, 0.9f);
     ImVec4 bgColorOff(0.3f, 0.3f, 0.3f, 0.9f);
     
     ImVec4 currentBgColor(
-        bgColorOff.x + (bgColorOn.x - bgColorOff.x) * animProgress,
-        bgColorOff.y + (bgColorOn.y - bgColorOff.y) * animProgress,
-        bgColorOff.z + (bgColorOn.z - bgColorOff.z) * animProgress,
-        bgColorOff.w + (bgColorOn.w - bgColorOff.w) * animProgress
+        bgColorOff.x + (bgColorOn.x - bgColorOff.x) * progress,
+        bgColorOff.y + (bgColorOn.y - bgColorOff.y) * progress,
+        bgColorOff.z + (bgColorOn.z - bgColorOff.z) * progress,
+        bgColorOff.w + (bgColorOn.w - bgColorOff.w) * progress
     );
     
     ImRect frame_bb(pos, ImVec2(pos.x + width, pos.y + height));
     
-    // 绘制阴影
-    for (int i = 0; i < 3; i++) {
-        window->DrawList->AddRectFilled(
-            ImVec2(frame_bb.Min.x - i, frame_bb.Min.y - i),
-            ImVec2(frame_bb.Max.x + i, frame_bb.Max.y + i),
-            IM_COL32(0, 0, 0, 20 - i * 5),
-            height * 0.5f + i
-        );
-    }
-    
-    // 绘制背景
     window->DrawList->AddRectFilled(
         frame_bb.Min, frame_bb.Max,
         ImGui::GetColorU32(currentBgColor),
         height * 0.5f
     );
     
-    float shift = animProgress * (width - 2 * radius - 4);
+    float shift = progress * (width - 2 * radius - 4);
     ImVec2 thumbCenter(
         pos.x + radius + shift + (radius/2),
         pos.y + height/2
     );
     
-    // 滑块外发光
-    if (*v) {
-        for (int i = 0; i < 3; i++) {
-            window->DrawList->AddCircle(
-                thumbCenter,
-                radius + i * 2,
-                IM_COL32(100, 200, 255, 100 - i * 30),
-                32,
-                1.0f
-            );
-        }
-    }
-    
-    // 绘制滑块
     window->DrawList->AddCircleFilled(
         thumbCenter,
         radius - 1,
@@ -334,20 +249,12 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
         32
     );
     
-    // 滑块内阴影
-    window->DrawList->AddCircleFilled(
+    window->DrawList->AddCircle(
         thumbCenter,
         radius - 3,
         IM_COL32(200, 200, 200, 100),
-        32
-    );
-    
-    // 滑块高光
-    window->DrawList->AddCircleFilled(
-        ImVec2(thumbCenter.x - 2, thumbCenter.y - 2),
-        radius - 4,
-        IM_COL32(255, 255, 255, 150),
-        32
+        32,
+        1.0f
     );
     
     if (label_size.x > 0.0f) {
@@ -396,7 +303,6 @@ void DrawChessboard() {
         }
     }
     
-    // 绘制棋盘背景（半透明）
     drawList->AddRectFilled(
         ImVec2(g_chessboardPosX, g_chessboardPosY),
         ImVec2(g_chessboardPosX + boardWidth, g_chessboardPosY + boardHeight),
@@ -404,7 +310,6 @@ void DrawChessboard() {
         10.0f
     );
     
-    // 绘制格子线
     for (int row = 0; row <= CHESSBOARD_ROWS; row++) {
         float y = g_chessboardPosY + row * cellSize;
         drawList->AddLine(
@@ -425,7 +330,6 @@ void DrawChessboard() {
         );
     }
     
-    // 绘制圆圈（模拟棋子）
     for (int row = 0; row < CHESSBOARD_ROWS; row++) {
         for (int col = 0; col < CHESSBOARD_COLS; col++) {
             float centerX = g_chessboardPosX + col * cellSize + cellSize/2;
@@ -434,15 +338,6 @@ void DrawChessboard() {
             ImU32 circleColor = ((row + col) % 2 == 0) ? 
                 IM_COL32(255, 100, 100, 200) : IM_COL32(100, 255, 100, 200);
             
-            // 绘制棋子阴影
-            drawList->AddCircleFilled(
-                ImVec2(centerX + 2, centerY + 2),
-                cellSize * 0.3f,
-                IM_COL32(0, 0, 0, 50),
-                16
-            );
-            
-            // 绘制棋子
             drawList->AddCircleFilled(
                 ImVec2(centerX, centerY),
                 cellSize * 0.3f,
@@ -450,21 +345,12 @@ void DrawChessboard() {
                 16
             );
             
-            // 添加白色边框
             drawList->AddCircle(
                 ImVec2(centerX, centerY),
                 cellSize * 0.3f,
                 IM_COL32(255, 255, 255, 200),
                 16,
                 1.0f
-            );
-            
-            // 添加高光
-            drawList->AddCircleFilled(
-                ImVec2(centerX - 3, centerY - 3),
-                cellSize * 0.1f,
-                IM_COL32(255, 255, 255, 150),
-                8
             );
         }
     }
@@ -494,8 +380,9 @@ int main()
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     
-    // 设置精美UI样式
-    SetupImGuiStyle();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.GrabMinSize = 28.0f;           // 【加大】右下角三角更容易点到
+    style.FramePadding = ImVec2(8, 6);
     
     LoadChineseFont();
     
@@ -559,6 +446,10 @@ int main()
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f * g_globalScale);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f * g_globalScale);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.95f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.15f, 0.2f, 0.6f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
             // 【修改】设置窗口大小回调，右下角三角更容易点到
             ImGui::SetNextWindowSizeConstraints(
@@ -597,15 +488,8 @@ int main()
             
             ImGui::Separator();
             
-            // 【修复】滑块不回弹 - 直接绑定g_globalScale
-            float prevScale = g_globalScale;
-            if (ImGui::SliderFloat("全局缩放", &g_globalScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
-                ImGui::GetIO().FontGlobalScale = g_globalScale;
-            }
+            // 【删除】全局缩放滑块已被移除
             
-            ImGui::Separator();
-            
-            // 功能设置
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "功能设置");
             
             bool prevPredict = g_featurePredict;
@@ -631,7 +515,6 @@ int main()
             
             ImGui::Separator();
             
-            // 游戏功能
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "游戏功能");
             
             ToggleSwitch("自动购买", &autoBuy, 3);
@@ -646,7 +529,6 @@ int main()
             
             ImGui::Separator();
             
-            // 当前状态显示
             ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "当前状态");
             ImGui::Text("预测: %s", g_featurePredict ? "开启" : "关闭");
             ImGui::Text("透视: %s", g_featureESP ? "开启" : "关闭");
@@ -656,6 +538,7 @@ int main()
             
             ImGui::End();
             ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(4);
             
             auto currentTime = std::chrono::high_resolution_clock::now();
             float timeSinceLastSave = std::chrono::duration<float>(currentTime - lastSaveTime).count();
@@ -666,9 +549,8 @@ int main()
                                    prevAutoBuy != autoBuy ||
                                    prevAutoRefresh != autoRefresh);
             bool windowMoved = posChanged || sizeChanged;
-            bool scaleChanged = (fabs(prevScale - g_globalScale) > 0.01f);
             
-            if ((switchesChanged || windowMoved || scaleChanged) && timeSinceLastSave > 2.0f) {
+            if ((switchesChanged || windowMoved) && timeSinceLastSave > 2.0f) {
                 SaveConfig();
                 lastSaveTime = currentTime;
             }
