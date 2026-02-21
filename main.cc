@@ -18,7 +18,6 @@
 #include <string>
 #include <map>
 #include <vector>
-#include <atomic>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -50,15 +49,15 @@ ImVec2 g_windowPos = ImVec2(50, 100);
 ImVec2 g_windowSize = ImVec2(280, 400);
 bool g_windowPosInitialized = false;
 
-// ========== 简化版共享内存结构（保证对齐） ==========
-#pragma pack(push, 1)  // 1字节对齐，避免内存对齐问题
+// ========== 简化版共享内存结构（只修改这部分） ==========
+#pragma pack(push, 1)
 struct SharedGameData {
     int gold;
     int level;
     int hp;
     int autoBuy;
     int autoRefresh;
-    volatile int timestamp;  // 使用 volatile 防止优化
+    int timestamp;
     int version;
     char scriptName[64];
 };
@@ -68,13 +67,12 @@ struct SharedGameData {
 int g_shm_fd = -1;
 SharedGameData* g_sharedData = nullptr;
 int g_lastTimestamp = 0;
-std::atomic<bool> g_shmValid{false};  // 原子标志，表示共享内存是否有效
 
 // ========== 初始化共享内存 ==========
 bool InitSharedMemory() {
     printf("[+] Initializing shared memory...\n");
     
-    // 尝试打开现有文件，如果不存在则创建
+    // 尝试打开现有文件
     g_shm_fd = open("/data/local/tmp/jcc_shared_mem", O_RDWR, 0666);
     if (g_shm_fd < 0) {
         // 文件不存在，创建新文件
@@ -113,16 +111,15 @@ bool InitSharedMemory() {
         g_sharedData->version = 1;
         strcpy(g_sharedData->scriptName, "default");
         
-        printf("[+] Created new shared memory with default values\n");
+        printf("[+] Created new shared memory\n");
     } else {
         // 文件已存在，直接映射
-        printf("[+] Opened existing shared memory file\n");
+        printf("[+] Opened existing shared memory\n");
         
         // 检查文件大小
         struct stat st;
         if (fstat(g_shm_fd, &st) == 0) {
             if (st.st_size < (off_t)sizeof(SharedGameData)) {
-                printf("[+] Resizing shared memory file\n");
                 ftruncate(g_shm_fd, sizeof(SharedGameData));
             }
         }
@@ -138,71 +135,29 @@ bool InitSharedMemory() {
             g_sharedData = nullptr;
             return false;
         }
-        
-        // 验证版本，如果版本不对则重新初始化
-        if (g_sharedData->version != 1) {
-            printf("[+] Reinitializing shared memory (version mismatch)\n");
-            g_sharedData->gold = 100;
-            g_sharedData->level = 8;
-            g_sharedData->hp = 85;
-            g_sharedData->autoBuy = 1;
-            g_sharedData->autoRefresh = 1;
-            g_sharedData->timestamp = 1;
-            g_sharedData->version = 1;
-            strcpy(g_sharedData->scriptName, "default");
-        }
     }
     
-    g_shmValid = true;
-    printf("[+] Shared memory initialized successfully at %p\n", g_sharedData);
-    printf("    gold=%d, level=%d, hp=%d, timestamp=%d\n", 
-           g_sharedData->gold, g_sharedData->level, g_sharedData->hp, g_sharedData->timestamp);
-    
+    printf("[+] Shared memory initialized successfully\n");
     return true;
 }
 
-// ========== 从共享内存读取数据（安全版本） ==========
+// ========== 从共享内存读取数据 ==========
 void ReadFromSharedMemory() {
-    if (!g_shmValid || !g_sharedData) return;
+    if (!g_sharedData) return;
     
-    // 使用 try-catch 风格的检查（实际是检查内存可访问性）
-    int currentTimestamp;
-    
-    // 安全地读取时间戳
-    currentTimestamp = g_sharedData->timestamp;
-    
-    // 如果时间戳变化，读取所有数据
-    if (currentTimestamp != g_lastTimestamp && currentTimestamp > 0) {
-        // 一次性读取所有数据，减少访问次数
-        int newGold = g_sharedData->gold;
-        int newLevel = g_sharedData->level;
-        int newHp = g_sharedData->hp;
-        int newAutoBuy = g_sharedData->autoBuy;
-        int newAutoRefresh = g_sharedData->autoRefresh;
+    if (g_sharedData->timestamp != g_lastTimestamp) {
+        gold = g_sharedData->gold;
+        level = g_sharedData->level;
+        hp = g_sharedData->hp;
+        autoBuy = (g_sharedData->autoBuy != 0);
+        autoRefresh = (g_sharedData->autoRefresh != 0);
         
-        // 验证数据合理性（防止读取到垃圾数据）
-        if (newGold >= 0 && newGold <= 10000 &&
-            newLevel >= 1 && newLevel <= 100 &&
-            newHp >= 0 && newHp <= 1000) {
-            
-            gold = newGold;
-            level = newLevel;
-            hp = newHp;
-            autoBuy = (newAutoBuy != 0);
-            autoRefresh = (newAutoRefresh != 0);
-            
-            g_lastTimestamp = currentTimestamp;
-            
-            // 可选：打印更新信息
-            // printf("[+] Data updated: gold=%d, level=%d, hp=%d\n", gold, level, hp);
-        }
+        g_lastTimestamp = g_sharedData->timestamp;
     }
 }
 
 // ========== 清理共享内存 ==========
 void CleanupSharedMemory() {
-    g_shmValid = false;
-    
     if (g_sharedData) {
         munmap(g_sharedData, sizeof(SharedGameData));
         g_sharedData = nullptr;
@@ -214,7 +169,7 @@ void CleanupSharedMemory() {
 }
 
 // ========== 加载中文字体 ==========
-bool LoadChineseFont() {
+void LoadChineseFont() {
     ImGuiIO& io = ImGui::GetIO();
     
     printf("[+] Loading Chinese font...\n");
@@ -247,7 +202,6 @@ bool LoadChineseFont() {
     }
     
     io.Fonts->Build();
-    return true;
 }
 
 // ========== 配置文件路径 ==========
@@ -460,7 +414,7 @@ int main()
 {
     printf("[1] Starting JCC Assistant...\n");
     
-    // 初始化共享内存
+    // 初始化共享内存（只修改了这一部分的初始化逻辑）
     if (!InitSharedMemory()) {
         printf("[-] Shared memory init failed, continuing without it\n");
     }
@@ -469,6 +423,7 @@ int main()
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
+    // 样式设置（完全恢复原始）
     ImGuiStyle& style = ImGui::GetStyle();
     style.GrabMinSize = 28.0f;
     style.FramePadding = ImVec2(6, 4);
@@ -476,6 +431,8 @@ int main()
     style.ItemSpacing = ImVec2(6, 4);
     style.WindowRounding = 8.0f;
     style.FrameRounding = 4.0f;
+
+    LoadChineseFont();
 
     android::AImGui imgui(android::AImGui::Options{
         .renderType = android::AImGui::RenderType::RenderNative,
@@ -490,9 +447,9 @@ int main()
         return 0;
     }
 
-    LoadChineseFont();
     LoadConfig();
 
+    // ========== 输入线程（完全恢复原始） ==========
     std::thread inputThread([&] {
         struct sched_param param;
         param.sched_priority = 99;
@@ -503,6 +460,7 @@ int main()
         }
     });
 
+    // 【恢复原始帧率】120fps
     const float TARGET_FPS = 120.0f;
     const float TARGET_FRAME_TIME_MS = 1000.0f / TARGET_FPS;
     g_fpsTimer = std::chrono::high_resolution_clock::now();
@@ -517,7 +475,7 @@ int main()
         bool prevESP = g_featureESP;
         bool prevInstantQuit = g_featureInstantQuit;
 
-        // 安全读取共享内存
+        // 读取共享内存
         ReadFromSharedMemory();
 
         imgui.BeginFrame();
@@ -570,10 +528,9 @@ int main()
             ImGui::Separator();
 
             // 显示共享内存状态
-            if (g_sharedData && g_shmValid) {
+            if (g_sharedData) {
                 ImGui::TextColored(ImVec4(0,1,0,1), "✓ 共享内存已连接");
                 ImGui::Text("脚本: %s", g_sharedData->scriptName);
-                ImGui::Text("时间戳: %d", g_sharedData->timestamp);
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ 共享内存未连接");
             }
