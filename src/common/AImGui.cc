@@ -5,7 +5,7 @@
 #include "ATouchEvent.h"
 
 #include <ImGui-SharedDrawData/modules/ImGuiSharedDrawData.h>
-#include <zstd.h>
+//#include <zstd.h>
 
 size_t android::anative_window_creator::detail::compat::SystemVersion = 13;
 
