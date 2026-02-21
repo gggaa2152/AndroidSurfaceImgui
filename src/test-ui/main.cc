@@ -4,7 +4,7 @@
 #include <thread>
 #include <iostream>
 #include <cstdio>
-#include <filesystem>
+#include <chrono>
 
 // ========== 金铲铲助手数据 ==========
 int gold = 100;
@@ -29,58 +29,42 @@ void ReadGameData() {
     }
 }
 
-// ========== 加载中文字体 ==========
-void LoadChineseFont() {
-    ImGuiIO& io = ImGui::GetIO();
-    
-    // 常见的 Android 中文字体路径
-    const char* fontPaths[] = {
-        "/system/fonts/NotoSansCJK-Regular.ttc",     // Google Noto
-        "/system/fonts/DroidSansFallback.ttf",       // Droid Sans
-        "/system/fonts/Roboto-Regular.ttf",           // Roboto（包含中文）
-        "/system/fonts/NotoSerifCJK-Regular.ttc",     // Noto Serif
-        "/system/fonts/SourceHanSansSC-Regular.otf", // Source Han Sans
-    };
-    
-    ImFont* font = nullptr;
-    for (const char* path : fontPaths) {
-        if (std::filesystem::exists(path)) {
-            font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
-            if (font) {
-                printf("[+] Loaded font: %s\n", path);
-                break;
-            }
-        }
-    }
-    
-    // 如果都没找到，使用默认字体但强制包含中文
-    if (!font) {
-        printf("[-] No Chinese font found, using default with Chinese glyphs\n");
-        io.Fonts->AddFontDefault();
-        // 添加中文字符范围
-        ImFontConfig config;
-        config.MergeMode = true;
-        io.Fonts->AddFontFromFileTTF("/system/fonts/DroidSansFallback.ttf", 18.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
-    }
-    
-    // 重建字体
-    io.Fonts->Build();
-}
-
 int main()
 {
-    android::AImGui imgui(android::AImGui::Options{.renderType = android::AImGui::RenderType::RenderNative, .autoUpdateOrientation = true});
+    // 先初始化 ImGui 上下文
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    
+    // 在创建窗口之前加载字体
+    printf("[+] Loading Chinese font...\n");
+    ImFont* font = io.Fonts->AddFontFromFileTTF("/system/fonts/NotoSansCJK-Regular.ttc", 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+    if (font) {
+        printf("[+] Font loaded successfully\n");
+    } else {
+        printf("[-] Font loading failed\n");
+    }
+    
+    // 构建字体
+    io.Fonts->Build();
+    
+    // 设置默认字体
+    io.FontDefault = font;
+    
+    // 现在创建窗口
+    android::AImGui imgui(android::AImGui::Options{
+        .renderType = android::AImGui::RenderType::RenderNative,
+        .autoUpdateOrientation = true
+    });
+    
     bool state = true, showDemoWindow = false, showAnotherWindow = false;
     ImVec4 clearColor(0.45f, 0.55f, 0.60f, 1.00f);
 
     if (!imgui)
     {
-        LogInfo("[-] ImGui initialization failed");
+        printf("[-] ImGui initialization failed\n");
         return 0;
     }
-
-    // ========== 加载中文字体 ==========
-    LoadChineseFont();
 
     std::thread processInputEventThread(
         [&]
