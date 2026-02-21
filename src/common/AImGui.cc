@@ -5,7 +5,7 @@
 #include "ATouchEvent.h"
 
 #include <ImGui-SharedDrawData/modules/ImGuiSharedDrawData.h>
-//#include <zstd.h>
+// #include <zstd.h>  // 注释掉 zstd 头文件
 
 size_t android::anative_window_creator::detail::compat::SystemVersion = 13;
 
@@ -440,6 +440,8 @@ namespace android
                 }
                 else
                 {
+                    // ===== 注释掉 zstd 压缩代码块 =====
+                    /*
                     static std::vector<uint8_t> compressBuffer;
                     static std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> compressContext(ZSTD_createCCtx(), &ZSTD_freeCCtx);
                     size_t compressBufferSize = 7 + ZSTD_compressBound(sharedData.size());
@@ -469,6 +471,7 @@ namespace android
                     }
                     else
                         LogDebug("[-] Client compression frame data error");
+                    */
                 }
             }
         }
@@ -926,6 +929,8 @@ namespace android
                     m_serverRenderData.swap(m_serverRenderDataBack);
                 else
                 {
+                    // ===== 注释掉 zstd 解压代码块 =====
+                    /*
                     static std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> decompressContext(ZSTD_createDCtx(), &ZSTD_freeDCtx);
 
                     if (nullptr == decompressContext)
@@ -943,6 +948,7 @@ namespace android
                     ZSTD_outBuffer output{m_serverRenderData.data(), m_serverRenderData.size(), 0};
                     if (0 != ZSTD_decompressStream(decompressContext.get(), &output, &input))
                         LogDebug("[-] Server decompression frame data error");
+                    */
                 }
                 m_renderState = RenderState::Rendering;
             }
