@@ -23,8 +23,10 @@ bool g_featureInstantQuit = false; // 秒退
 
 // ========== 全局缩放控制 ==========
 float g_globalScale = 1.0f;
+float g_targetScale = 1.0f;
 const float MIN_SCALE = 0.5f;
 const float MAX_SCALE = 3.0f;
+float g_scaleAnimProgress = 1.0f;
 
 // ========== 配置文件路径 ==========
 const char* CONFIG_PATH = "/data/local/tmp/jcc_assistant_config.txt";
@@ -106,6 +108,7 @@ void LoadConfig() {
             int ival;
             if (sscanf(line, "scale=%f", &fval) == 1) {
                 g_globalScale = fval;
+                g_targetScale = fval;
                 if (g_globalScale < MIN_SCALE) g_globalScale = MIN_SCALE;
                 if (g_globalScale > MAX_SCALE) g_globalScale = MAX_SCALE;
             }
@@ -137,6 +140,30 @@ void LoadConfig() {
     }
 }
 
+// ========== 高斯模糊背景 ==========
+void BlurBackground() {
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    ImGuiIO& io = ImGui::GetIO();
+    
+    drawList->AddRectFilled(
+        ImVec2(0, 0),
+        ImVec2(io.DisplaySize.x, io.DisplaySize.y),
+        IM_COL32(0, 0, 0, 180),
+        0
+    );
+    
+    for (int i = 0; i < 100; i++) {
+        float x = rand() % (int)io.DisplaySize.x;
+        float y = rand() % (int)io.DisplaySize.y;
+        drawList->AddCircleFilled(
+            ImVec2(x, y),
+            1,
+            IM_COL32(255, 255, 255, 30),
+            4
+        );
+    }
+}
+
 // ========== 精美滑动开关（带动画） ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -159,7 +186,6 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     if (!ImGui::ItemAdd(total_bb, id))
         return false;
     
-    // 更新动画进度
     float target = (*v ? 1.0f : 0.0f);
     g_toggleAnimTarget[animIdx] = target;
     
@@ -168,7 +194,6 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     progress += (target - progress) * speed;
     if (fabs(progress - target) < 0.01f) progress = target;
     
-    // 背景色
     ImVec4 bgColorOn(0.2f, 0.8f, 0.3f, 0.9f);
     ImVec4 bgColorOff(0.3f, 0.3f, 0.3f, 0.9f);
     
@@ -224,6 +249,21 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     return pressed;
 }
 
+// ========== 自定义窗口缩放回调 ==========
+void ScaleWindow(ImGuiSizeCallbackData* data) {
+    // 当用户拖动右下角三角时，更新全局缩放
+    float oldWidth = data->CurrentSize.x;
+    float oldHeight = data->CurrentSize.y;
+    float newWidth = data->DesiredSize.x;
+    
+    // 根据宽度变化计算缩放比例
+    float scaleDelta = newWidth / 400.0f; // 基准宽度400px
+    if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
+    if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
+    
+    g_targetScale = scaleDelta;
+}
+
 int main()
 {
     printf("[1] Starting JCC Assistant...\n");
@@ -248,6 +288,7 @@ int main()
     }
 
     LoadConfig();
+    g_targetScale = g_globalScale;
 
     std::thread processInputEventThread(
         [&]
@@ -273,6 +314,8 @@ int main()
 
         imgui.BeginFrame();
 
+        BlurBackground();
+
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -287,33 +330,52 @@ int main()
 
         // ========== 金铲铲助手主窗口 ==========
         {
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.12f, 0.95f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.2f, 0.3f, 0.8f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.4f, 0.8f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.5f, 0.9f, 0.9f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.15f, 0.2f, 0.6f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 0.9f));
+            
+            // 设置窗口大小回调，使右下角三角控制全局缩放
+            ImGui::SetNextWindowSizeConstraints(
+                ImVec2(200, 150),                     // 最小尺寸
+                ImVec2(1200, 900),                     // 最大尺寸
+                ScaleWindow,                           // 回调函数
+                (void*)&g_targetScale                  // 用户数据
+            );
             
             ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
+            
+            // 平滑更新全局缩放
+            float scaleSpeed = 0.1f;
+            g_globalScale += (g_targetScale - g_globalScale) * scaleSpeed;
+            if (fabs(g_globalScale - g_targetScale) < 0.01f) {
+                g_globalScale = g_targetScale;
+            }
+            
+            // 应用全局缩放
+            ImGui::GetIO().FontGlobalScale = g_globalScale;
             
             ImGui::Separator();
             
             // 信息栏
             ImGui::Columns(2, "info", false);
-            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "FPS: %.0f", g_currentFPS);
+            ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "FPS: %.0f", g_currentFPS);
             ImGui::NextColumn();
-            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "缩放: %.1fx", g_globalScale);
+            ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "缩放: %.2fx", g_globalScale);
             ImGui::Columns(1);
             
             ImGui::Separator();
             
-            // 全局缩放滑块
+            // 滑块控制（与三角同步）
             float prevScale = g_globalScale;
-            if (ImGui::SliderFloat("全局缩放", &g_globalScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
-                ImGui::GetIO().FontGlobalScale = g_globalScale;
+            if (ImGui::SliderFloat("全局缩放", &g_targetScale, MIN_SCALE, MAX_SCALE, "%.2f")) {
+                // 滑块也会更新目标缩放
             }
             
-            if (prevScale != g_globalScale) {
+            if (fabs(prevScale - g_globalScale) > 0.01f) {
                 SaveConfig();
             }
             
@@ -353,18 +415,12 @@ int main()
             
             ImGui::Separator();
             
-            // 游戏数据
-            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.2f, 1.0f), "金币: %d", gold);
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "等级: %d", level);
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "血量: %d", hp);
+            // 按钮
+            float buttonWidth = 100.0f * g_globalScale;
+            float buttonHeight = 30.0f * g_globalScale;
             
-            float progressWidth = 200.0f * g_globalScale;
-            float progressHeight = 20.0f * g_globalScale;
-            ImGui::ProgressBar(hp/100.0f, ImVec2(progressWidth, progressHeight), "");
-            
-            ImGui::Separator();
-            
-            if (ImGui::Button("刷新", ImVec2(100 * g_globalScale, 30 * g_globalScale))) {
+            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - buttonWidth) * 0.5f);
+            if (ImGui::Button("刷新", ImVec2(buttonWidth, buttonHeight))) {
                 printf("[+] Refresh button clicked\n");
             }
             
@@ -385,7 +441,7 @@ int main()
             }
             
             ImGui::End();
-            ImGui::PopStyleVar(2);
+            ImGui::PopStyleVar(3);
             ImGui::PopStyleColor(4);
         }
 
