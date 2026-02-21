@@ -381,8 +381,17 @@ int main()
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     
     ImGuiStyle& style = ImGui::GetStyle();
-    style.GrabMinSize = 28.0f;           // 【加大】右下角三角更容易点到
-    style.FramePadding = ImVec2(8, 6);
+    
+    // ===== 超大右下角缩放区域 =====
+    style.GrabMinSize = 40.0f;           // 增大到40px，更容易点到
+    style.FramePadding = ImVec2(10, 8);  // 增大内边距
+    style.WindowPadding = ImVec2(12, 12);
+    
+    // 让窗口底部区域更大，更容易点到缩放柄
+    style.WindowBorderSize = 0.0f;
+    style.FrameBorderSize = 0.0f;
+    style.WindowRounding = 12.0f;
+    style.FrameRounding = 6.0f;
     
     LoadChineseFont();
     
@@ -451,7 +460,7 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
-            // 【修改】设置窗口大小回调，右下角三角更容易点到
+            // 设置窗口大小回调，右下角三角更容易点到
             ImGui::SetNextWindowSizeConstraints(
                 ImVec2(200, 150),                      // 最小尺寸
                 ImVec2(FLT_MAX, FLT_MAX),              // 无最大限制
@@ -487,8 +496,6 @@ int main()
             ImGui::Columns(1);
             
             ImGui::Separator();
-            
-            // 【删除】全局缩放滑块已被移除
             
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 1.0f, 1.0f), "功能设置");
             
