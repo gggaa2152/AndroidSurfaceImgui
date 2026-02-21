@@ -24,7 +24,7 @@ jobs:
           echo "NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
           echo "NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
 
-      # ===== 缓存编译产物（加速二次编译）=====
+      # ===== 缓存编译产物 =====
       - name: Cache build
         uses: actions/cache@v3
         id: cache-build
@@ -59,20 +59,34 @@ jobs:
           cd build
           ninja -j $(nproc)
 
-      - name: List build outputs
+      # ===== 【关键】复制文件到根目录，去掉路径 =====
+      - name: Prepare artifact
         run: |
-          echo "=== Build Output ==="
-          find build/tests -name "test-ui" -type f | xargs ls -la || true
-          echo "=== File info ==="
-          file build/tests/arm64-v8a/test-ui || true
+          mkdir -p output
+          # 查找编译出的 test-ui 文件
+          find build/tests -name "test-ui" -type f | while read file; do
+            cp "$file" output/test-ui
+            chmod 755 output/test-ui
+            echo "Copied $file to output/test-ui"
+          done
+          # 如果没找到，尝试其他可能的位置
+          if [ ! -f output/test-ui ]; then
+            find . -name "test-ui" -type f -exec cp {} output/test-ui \;
+          fi
+          ls -la output/
 
-      # ===== 【关键】直接上传文件，不压缩 =====
-      - name: Upload test-ui
+      # ===== 上传到 Actions（扁平结构）=====
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: test-ui
-          path: |
-            build/tests/arm64-v8a/test-ui
-            tests/arm64-v8a/test-ui
+          path: output/test-ui
           if-no-files-found: error
-          compression-level: 0  # 不压缩，直接上传原始文件
+          compression-level: 0
+
+      # ===== 列出文件信息方便调试 =====
+      - name: List files
+        run: |
+          echo "=== Build output ==="
+          file output/test-ui || true
+          ls -la output/ || true
