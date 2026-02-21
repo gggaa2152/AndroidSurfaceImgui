@@ -36,11 +36,11 @@ bool g_chessboardDragging = false;   // 是否正在拖动棋盘
 // ========== 全局缩放控制 ==========
 float g_globalScale = 1.0f;
 const float MIN_SCALE = 0.5f;
-const float MAX_SCALE = 5.0f;
+const float MAX_SCALE = 3.0f;        // 缩小范围，更适合手机
 
 // ========== 窗口位置和大小 ==========
-ImVec2 g_windowPos = ImVec2(100, 100);
-ImVec2 g_windowSize = ImVec2(400, 300);
+ImVec2 g_windowPos = ImVec2(50, 100); // 默认位置靠左
+ImVec2 g_windowSize = ImVec2(320, 400); // 默认大小适合手机
 bool g_windowPosInitialized = false;
 
 // ========== 配置文件路径 ==========
@@ -68,7 +68,7 @@ void LoadChineseFont() {
     ImFont* font = nullptr;
     for (const char* path : fontPaths) {
         printf("[+] Trying font: %s\n", path);
-        font = io.Fonts->AddFontFromFileTTF(path, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        font = io.Fonts->AddFontFromFileTTF(path, 20.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             printf("[+] Loaded font: %s\n", path);
             io.FontDefault = font;
@@ -359,7 +359,7 @@ void DrawChessboard() {
 // ========== 自定义窗口缩放回调 ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     float newWidth = data->DesiredSize.x;
-    float scaleDelta = newWidth / 400.0f;
+    float scaleDelta = newWidth / 320.0f;  // 基准宽度改为320
     if (scaleDelta < MIN_SCALE) scaleDelta = MIN_SCALE;
     if (scaleDelta > MAX_SCALE) scaleDelta = MAX_SCALE;
     
@@ -382,12 +382,13 @@ int main()
     
     ImGuiStyle& style = ImGui::GetStyle();
     
-    // ===== 超大右下角缩放区域 =====
-    style.GrabMinSize = 40.0f;           // 增大到40px，更容易点到
-    style.FramePadding = ImVec2(10, 8);  // 增大内边距
+    // ===== 适合手机的触摸区域 =====
+    style.GrabMinSize = 36.0f;           // 缩放柄大小
+    style.FramePadding = ImVec2(10, 8);  // 内边距
     style.WindowPadding = ImVec2(12, 12);
+    style.ItemSpacing = ImVec2(10, 8);   // 项目间距
+    style.TouchExtraPadding = ImVec2(4, 4); // 触摸额外区域
     
-    // 让窗口底部区域更大，更容易点到缩放柄
     style.WindowBorderSize = 0.0f;
     style.FrameBorderSize = 0.0f;
     style.WindowRounding = 12.0f;
@@ -460,9 +461,9 @@ int main()
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
-            // 设置窗口大小回调，右下角三角更容易点到
+            // 设置窗口大小回调
             ImGui::SetNextWindowSizeConstraints(
-                ImVec2(200, 150),                      // 最小尺寸
+                ImVec2(240, 300),                      // 最小尺寸更大
                 ImVec2(FLT_MAX, FLT_MAX),              // 无最大限制
                 ScaleWindow,                            // 回调函数
                 nullptr
