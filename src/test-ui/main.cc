@@ -140,30 +140,6 @@ void LoadConfig() {
     }
 }
 
-// ========== 高斯模糊背景 ==========
-void BlurBackground() {
-    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-    ImGuiIO& io = ImGui::GetIO();
-    
-    drawList->AddRectFilled(
-        ImVec2(0, 0),
-        ImVec2(io.DisplaySize.x, io.DisplaySize.y),
-        IM_COL32(0, 0, 0, 180),
-        0
-    );
-    
-    for (int i = 0; i < 100; i++) {
-        float x = rand() % (int)io.DisplaySize.x;
-        float y = rand() % (int)io.DisplaySize.y;
-        drawList->AddCircleFilled(
-            ImVec2(x, y),
-            1,
-            IM_COL32(255, 255, 255, 30),
-            4
-        );
-    }
-}
-
 // ========== 精美滑动开关（带动画） ==========
 bool ToggleSwitch(const char* label, bool* v, int animIdx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -252,8 +228,6 @@ bool ToggleSwitch(const char* label, bool* v, int animIdx) {
 // ========== 自定义窗口缩放回调 ==========
 void ScaleWindow(ImGuiSizeCallbackData* data) {
     // 当用户拖动右下角三角时，更新全局缩放
-    float oldWidth = data->CurrentSize.x;
-    float oldHeight = data->CurrentSize.y;
     float newWidth = data->DesiredSize.x;
     
     // 根据宽度变化计算缩放比例
@@ -314,8 +288,6 @@ int main()
 
         imgui.BeginFrame();
 
-        BlurBackground();
-
         g_frameCount++;
         auto now = std::chrono::high_resolution_clock::now();
         float elapsedMs = std::chrono::duration<float, std::milli>(now - g_fpsTimer).count();
@@ -333,10 +305,10 @@ int main()
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.15f, 0.2f, 0.6f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.95f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.15f, 0.2f, 0.6f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.25f, 0.5f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.6f, 1.0f));
             
             // 设置窗口大小回调，使右下角三角控制全局缩放
             ImGui::SetNextWindowSizeConstraints(
@@ -415,16 +387,7 @@ int main()
             
             ImGui::Separator();
             
-            // 按钮
-            float buttonWidth = 100.0f * g_globalScale;
-            float buttonHeight = 30.0f * g_globalScale;
-            
-            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - buttonWidth) * 0.5f);
-            if (ImGui::Button("刷新", ImVec2(buttonWidth, buttonHeight))) {
-                printf("[+] Refresh button clicked\n");
-            }
-            
-            ImGui::Separator();
+            // 当前状态显示（去掉了刷新按钮）
             ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "当前状态");
             ImGui::Text("预测: %s", g_featurePredict ? "开启" : "关闭");
             ImGui::Text("透视: %s", g_featureESP ? "开启" : "关闭");
