@@ -3,6 +3,30 @@
 
 #include <thread>
 #include <iostream>
+#include <cstdio>
+
+// ========== 金铲铲助手数据 ==========
+int gold = 100;
+int level = 8;
+int hp = 85;
+bool autoBuy = true;
+bool autoRefresh = true;
+bool autoScaleEnabled = true;
+float manualScale = 1.0f;
+float currentScale = 1.0f;
+ImVec2 baseSize(400, 300);
+bool firstTime = true;
+
+// ========== 读取游戏数据 ==========
+void ReadGameData() {
+    FILE* f = fopen("/data/local/tmp/game_data.txt", "r");
+    if (f) {
+        fscanf(f, "gold=%d\n", &gold);
+        fscanf(f, "level=%d\n", &level);
+        fscanf(f, "hp=%d\n", &hp);
+        fclose(f);
+    }
+}
 
 int main()
 {
@@ -28,32 +52,75 @@ int main()
 
     while (state)
     {
+        // 读取游戏数据
+        ReadGameData();
+
         imgui.BeginFrame();
 
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (showDemoWindow)
             ImGui::ShowDemoWindow(&showDemoWindow);
 
-        // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
+        // ========== 金铲铲助手窗口（替换原来的窗口）==========
         {
-            static float f = 0.0f;
-            static int counter = 0;
+            ImGui::Begin("金铲铲助手", &state, ImGuiWindowFlags_NoSavedSettings);
+            
+            // 获取当前窗口大小用于自动缩放
+            ImVec2 currentSize = ImGui::GetWindowSize();
+            
+            // 第一次运行时记录基准大小
+            if (firstTime) {
+                baseSize = currentSize;
+                firstTime = false;
+            }
+            
+            // 自动缩放计算
+            float scaleX = currentSize.x / baseSize.x;
+            float scaleY = currentSize.y / baseSize.y;
+            float newScale = (scaleX > scaleY ? scaleX : scaleY);
+            
+            const float MIN_SCALE = 0.5f;
+            const float MAX_SCALE = 5.0f;
+            if (newScale < MIN_SCALE) newScale = MIN_SCALE;
+            if (newScale > MAX_SCALE) newScale = MAX_SCALE;
+            
+            // 缩放控制
+            ImGui::Checkbox("自动缩放", &autoScaleEnabled);
+            
+            float effectiveScale;
+            if (autoScaleEnabled) {
+                effectiveScale = newScale;
+                ImGui::Text("当前缩放: %.2f", effectiveScale);
+            } else {
+                ImGui::SliderFloat("缩放比例", &manualScale, MIN_SCALE, MAX_SCALE, "%.2f");
+                effectiveScale = manualScale;
+            }
+            
+            // 应用字体缩放
+            ImGui::GetIO().FontGlobalScale = effectiveScale;
+            
+            ImGui::Separator();
 
-            ImGui::Begin("Hello, world!", &state); // Create a window called "Hello, world!" and append into it.
-
-            ImGui::Text("This is some useful text.");        // Display some text (you can use a format strings too)
-            ImGui::Checkbox("Demo Window", &showDemoWindow); // Edit bools storing our window open/close state
-            ImGui::Checkbox("Another Window", &showAnotherWindow);
-
-            ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-            ImGui::ColorEdit3("clear color", (float *)&clearColor); // Edit 3 floats representing a color
-
-            if (ImGui::Button("Button")) // Buttons return true when clicked (most widgets return true when edited/activated)
-                counter++;
-            ImGui::SameLine();
-            ImGui::Text("counter = %d", counter);
-
-            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+            // 游戏数据显示
+            ImGui::Text("金币: %d", gold);
+            ImGui::Text("等级: %d", level);
+            ImGui::Text("血量: %d", hp);
+            
+            // 进度条
+            float progressWidth = 200.0f * effectiveScale;
+            float progressHeight = 20.0f * effectiveScale;
+            ImGui::ProgressBar(hp/100.0f, ImVec2(progressWidth, progressHeight), "");
+            
+            // 功能开关
+            ImGui::Checkbox("自动购买", &autoBuy);
+            ImGui::Checkbox("自动刷新", &autoRefresh);
+            
+            // 按钮
+            if (ImGui::Button("刷新")) {
+                // 这里添加刷新功能
+                printf("刷新按钮点击\n");
+            }
+            
             ImGui::End();
         }
 
