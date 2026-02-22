@@ -1,4 +1,125 @@
-// ========== 棋盘（只用圆形包裹图片） ==========
+#include "Global.h"
+#include "AImGui.h"
+#include "imgui_internal.h"
+
+// ===== 添加图片加载支持 =====
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+#include <thread>
+#include <cstdio>
+#include <string>
+#include <cmath>
+#include <map>
+
+// ========== 数据 ==========
+int gold = 100, level = 8, hp = 85;
+bool g_predict = false, g_esp = false, g_instant = false;
+float g_scale = 1.0f, g_boardScale = 1.0f;
+ImVec2 g_winPos(50,100), g_winSize(280,400);
+bool g_posInit = false;
+
+// ========== 开关动画 ==========
+float g_anim[3] = {0,0,0};
+
+// ========== 头像纹理 ==========
+GLuint g_testTexture = 0;
+bool g_textureLoaded = false;
+
+// ========== 从文件加载纹理 ==========
+GLuint LoadTextureFromFile(const char* filename) {
+    int width, height, channels;
+    unsigned char* data = stbi_load(filename, &width, &height, &channels, 4);
+    if (!data) {
+        printf("[-] Failed to load image: %s\n", filename);
+        return 0;
+    }
+    
+    printf("[+] Loaded image: %s (%dx%d)\n", filename, width, height);
+    
+    GLuint texture_id;
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    
+    stbi_image_free(data);
+    return texture_id;
+}
+
+// ========== 字体 ==========
+void LoadChineseFont() {
+    ImGuiIO& io = ImGui::GetIO();
+    
+    const char* fontPaths[] = {
+        "/system/fonts/SysSans-Hans-Regular.ttf",
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/DroidSansFallback.ttf",
+    };
+    
+    ImFontConfig config;
+    config.OversampleH = 2;
+    config.OversampleV = 2;
+    config.PixelSnapH = false;
+    
+    ImFont* font = nullptr;
+    for (const char* path : fontPaths) {
+        font = io.Fonts->AddFontFromFileTTF(path, 16.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+        if (font) {
+            printf("[+] Loaded font: %s\n", path);
+            io.FontDefault = font;
+            break;
+        }
+    }
+    
+    if (!font) {
+        printf("[-] No Chinese font, using fallback\n");
+        ImFontConfig fallbackConfig;
+        fallbackConfig.MergeMode = true;
+        io.Fonts->AddFontDefault(&fallbackConfig);
+        for (const char* path : fontPaths) {
+            io.Fonts->AddFontFromFileTTF(path, 16.0f, &fallbackConfig, io.Fonts->GetGlyphRangesChineseFull());
+        }
+    }
+    
+    io.Fonts->Build();
+}
+
+// ========== 带动画的开关 ==========
+bool Toggle(const char* label, bool* v, int idx) {
+    ImGuiWindow* w = ImGui::GetCurrentWindow(); if (w->SkipItems) return 0;
+    float h = ImGui::GetFrameHeight(), wd = h*1.8f, r = h*0.45f;
+    ImVec2 pos = w->DC.CursorPos;
+    ImRect bb(pos, ImVec2(pos.x+wd + ImGui::CalcTextSize(label).x, pos.y+h));
+    ImGui::ItemSize(bb); if (!ImGui::ItemAdd(bb, 0)) return 0;
+    
+    float target = *v ? 1.0f : 0.0f;
+    g_anim[idx] += (target - g_anim[idx]) * 0.25f;
+    if (fabs(g_anim[idx] - target) < 0.01f) g_anim[idx] = target;
+    
+    ImU32 bgColor = ImGui::GetColorU32(ImVec4(
+        0.2f + g_anim[idx]*0.6f,
+        0.2f + g_anim[idx]*0.6f,
+        0.2f,
+        0.9f
+    ));
+    
+    w->DrawList->AddRectFilled(pos, ImVec2(pos.x+wd, pos.y+h), bgColor, h*0.5f);
+    float shift = g_anim[idx] * (wd - 2*r);
+    w->DrawList->AddCircleFilled(ImVec2(pos.x+r+shift, pos.y+h/2), r-2, 0xFFFFFFFF);
+    ImGui::RenderText(ImVec2(pos.x+wd + 8, pos.y), label);
+    
+    if (ImGui::ButtonBehavior(bb, ImGui::GetID(label), 0, 0, ImGuiButtonFlags_PressedOnClick))
+        *v = !*v;
+    return 1;
+}
+
+// ========== 棋盘（方案1：三角形遮罩实现圆形裁剪） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -13,16 +134,17 @@ void DrawBoard() {
     } else drag=0;
     
     // 绘制棋盘背景
-    d->AddRectFilled(ImVec2(x,y), ImVec2(x+w,y+h), 0x1E1E1E64, 4);
+    ImU32 bgColor = 0x1E1E1E64;  // 保存背景色用于遮罩
+    d->AddRectFilled(ImVec2(x,y), ImVec2(x+w,y+h), bgColor, 4);
     
     // 绘制格子线
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    // ===== 只用圆形包裹图片 =====
+    // ===== 用三角形遮罩实现圆形裁剪 =====
     if (g_testTexture) {
         ImTextureID texID = (ImTextureID)(intptr_t)g_testTexture;
-        float radius = sz * 0.35f;  // 圆形半径
+        float radius = sz * 0.4f;  // 圆形半径
         
         for (int r=0; r<4; r++) {
             for (int c=0; c<7; c++) {
@@ -30,19 +152,53 @@ void DrawBoard() {
                 float cy = y + r*sz + sz/2;
                 
                 if (r == 3) {  // 底部格子（第4行）
-                    // 绘制圆形背景（半透明黑）
+                    // 1. 绘制圆形背景（半透明黑，让图片更突出）
                     d->AddCircleFilled(ImVec2(cx,cy), radius, 0x00000080, 32);
                     
-                    // 绘制图片（大小正好适合圆形）
-                    float imgSize = radius * 1.4f;  // 图片大小刚好被圆形包裹
+                    // 2. 绘制方形图片（比圆形大，覆盖整个圆形区域）
+                    float imgSize = radius * 2.2f;  // 图片大小
                     float imgX = cx - imgSize/2;
                     float imgY = cy - imgSize/2;
                     d->AddImage(texID, 
                                ImVec2(imgX, imgY), 
                                ImVec2(imgX + imgSize, imgY + imgSize));
                     
-                    // 绘制白色圆形边框
+                    // 3. 用四个三角形覆盖图片的四个角（使用背景色）
+                    // 左上角三角形
+                    d->AddTriangleFilled(
+                        ImVec2(imgX, imgY),                          // 图片左上角
+                        ImVec2(cx, cy - radius),                     // 圆上顶点
+                        ImVec2(cx - radius, cy),                     // 圆左顶点
+                        bgColor
+                    );
+                    
+                    // 右上角三角形
+                    d->AddTriangleFilled(
+                        ImVec2(imgX + imgSize, imgY),                // 图片右上角
+                        ImVec2(cx + radius, cy),                     // 圆右顶点
+                        ImVec2(cx, cy - radius),                     // 圆上顶点
+                        bgColor
+                    );
+                    
+                    // 左下角三角形
+                    d->AddTriangleFilled(
+                        ImVec2(imgX, imgY + imgSize),                // 图片左下角
+                        ImVec2(cx - radius, cy),                     // 圆左顶点
+                        ImVec2(cx, cy + radius),                     // 圆下顶点
+                        bgColor
+                    );
+                    
+                    // 右下角三角形
+                    d->AddTriangleFilled(
+                        ImVec2(imgX + imgSize, imgY + imgSize),      // 图片右下角
+                        ImVec2(cx, cy + radius),                     // 圆下顶点
+                        ImVec2(cx + radius, cy),                     // 圆右顶点
+                        bgColor
+                    );
+                    
+                    // 4. 绘制白色圆形边框（让边缘更清晰）
                     d->AddCircle(ImVec2(cx,cy), radius, 0xFFFFFFFF, 32, 2.0f);
+                    
                 } else {
                     // 其他格子绘制圆形（红蓝交替）
                     d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, (r+c)%2 ? 0x6464FFFF : 0xFF6464FF, 32);
@@ -58,4 +214,152 @@ void DrawBoard() {
             d->AddCircle(ImVec2(cx,cy), sz*0.3, 0xFFFFFF96, 32, 1);
         }
     }
+}
+
+// ========== 缩放回调 ==========
+void Scale(ImGuiSizeCallbackData* data) { 
+    g_scale = data->DesiredSize.x / 280; 
+    ImGui::GetIO().FontGlobalScale = g_scale;
+}
+
+// ========== 保存配置 ==========
+void SaveConfig() {
+    FILE* f = fopen("/data/local/tmp/jcc_config.txt", "w");
+    if (f) {
+        fprintf(f, "%.2f %d %d %d %.2f\n", 
+                g_scale, g_predict, g_esp, g_instant, g_boardScale);
+        fclose(f);
+    }
+}
+
+// ========== 加载配置 ==========
+void LoadConfig() {
+    FILE* f = fopen("/data/local/tmp/jcc_config.txt", "r");
+    if (f) {
+        fscanf(f, "%f %d %d %d %f", &g_scale, &g_predict, &g_esp, &g_instant, &g_boardScale);
+        fclose(f);
+        ImGui::GetIO().FontGlobalScale = g_scale;
+        g_anim[0] = g_predict ? 1 : 0;
+        g_anim[1] = g_esp ? 1 : 0;
+        g_anim[2] = g_instant ? 1 : 0;
+    }
+}
+
+// ========== 主函数 ==========
+int main() {
+    printf("[1] Starting JCC Assistant...\n");
+    
+    IMGUI_CHECKVERSION(); 
+    ImGui::CreateContext();
+    
+    // 多重放大右下角三角
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.GrabMinSize = 40.0f;
+    style.FramePadding = ImVec2(8, 6);
+    style.WindowPadding = ImVec2(12, 12);
+    style.TouchExtraPadding = ImVec2(4, 4);
+    
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableSetMousePos;
+    
+    LoadChineseFont();
+    
+    android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
+    if (!imgui) { printf("[-] Init failed\n"); return 0; }
+    
+    // ===== 加载 aurora 头像 =====
+    const char* testPath = "/data/1/heroes/FUX/aurora.png";
+    FILE* f = fopen(testPath, "r");
+    if (f) {
+        printf("[+] Found aurora.png\n");
+        fclose(f);
+        g_testTexture = LoadTextureFromFile(testPath);
+        if (g_testTexture) {
+            g_textureLoaded = true;
+            printf("[+] Texture loaded successfully\n");
+        }
+    } else {
+        printf("[-] aurora.png not found at %s\n", testPath);
+        printf("    Please create directory: mkdir -p /data/1/heroes/FUX\n");
+        printf("    Push image: adb push aurora.png /data/1/heroes/FUX/\n");
+    }
+    
+    LoadConfig();
+    bool running = 1;
+    
+    std::thread input([&] { 
+        while(running) { 
+            imgui.ProcessInputEvent(); 
+            std::this_thread::yield(); 
+        } 
+    });
+    
+    auto lastSave = std::chrono::high_resolution_clock::now();
+    printf("[2] Entering main loop\n");
+    
+    while (running) {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        imgui.BeginFrame();
+        DrawBoard();
+        
+        {
+            ImGui::SetNextWindowSizeConstraints({150,200}, {FLT_MAX,FLT_MAX}, Scale);
+            if (g_posInit) ImGui::SetNextWindowPos(g_winPos, ImGuiCond_FirstUseEver);
+            
+            ImGui::Begin("金铲铲助手", &running);
+            
+            ImVec2 curPos = ImGui::GetWindowPos();
+            ImVec2 curSize = ImGui::GetWindowSize();
+            if (curPos.x != g_winPos.x || curPos.y != g_winPos.y) g_winPos = curPos;
+            if (curSize.x != g_winSize.x || curSize.y != g_winSize.y) g_winSize = curSize;
+            g_posInit = true;
+            
+            // 显示纹理状态
+            if (g_textureLoaded) {
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ aurora已加载（底部圆形头像）");
+            } else {
+                ImGui::TextColored(ImVec4(1,0,0,1), "✗ aurora未加载");
+            }
+            
+            ImGui::Text("缩放: %.1fx", g_scale);
+            ImGui::Separator();
+            
+            ImGui::Text("功能设置");
+            Toggle("预测", &g_predict, 0);
+            Toggle("透视", &g_esp, 1);
+            Toggle("秒退", &g_instant, 2);
+            
+            ImGui::Separator();
+            ImGui::Text("游戏数据");
+            ImGui::Text("金币: %d", gold);
+            ImGui::Text("等级: %d", level);
+            ImGui::Text("血量: %d", hp);
+            
+            if (g_esp) {
+                ImGui::Separator();
+                ImGui::Text("棋盘设置");
+                ImGui::SliderFloat("棋盘缩放", &g_boardScale, 0.1f, 10.0f, "%.1f");
+            }
+            
+            ImGui::End();
+        }
+        
+        imgui.EndFrame();
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        int sleep = 8333 - std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        if (sleep > 0) usleep(sleep);
+        
+        auto now = std::chrono::high_resolution_clock::now();
+        if (std::chrono::duration<float>(now - lastSave).count() > 2) {
+            SaveConfig();
+            lastSave = now;
+        }
+    }
+    
+    SaveConfig();
+    input.join();
+    printf("[3] Exited\n");
+    return 0;
 }
