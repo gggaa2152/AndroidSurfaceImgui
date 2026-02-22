@@ -119,7 +119,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（带头像） ==========
+// ========== 棋盘（图片底部格子用圆形，其他不变） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -133,32 +133,39 @@ void DrawBoard() {
         if (drag) { x = m.x-w/2; y = m.y-h/2; }
     } else drag=0;
     
+    // 绘制棋盘背景
     d->AddRectFilled(ImVec2(x,y), ImVec2(x+w,y+h), 0x1E1E1E64, 4);
+    
+    // 绘制格子线
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    // ===== 如果有头像纹理，绘制头像 =====
+    // ===== 如果有头像纹理，只在底部格子绘制头像 =====
     if (g_testTexture) {
         ImTextureID texID = (ImTextureID)(intptr_t)g_testTexture;
-        float imgSize = sz * 0.7f;  // 头像大小（比格子小一点）
+        float imgSize = sz * 0.7f;  // 头像大小
         
         for (int r=0; r<4; r++) {
             for (int c=0; c<7; c++) {
                 float cx = x + c*sz + sz/2;
                 float cy = y + r*sz + sz/2;
                 
-                // 计算头像位置（居中）
-                float imgX = cx - imgSize/2;
-                float imgY = cy - imgSize/2;
-                
-                // 绘制头像
-                d->AddImage(texID, 
-                           ImVec2(imgX, imgY), 
-                           ImVec2(imgX + imgSize, imgY + imgSize));
+                if (r == 3) {  // 底部格子（第4行，索引从0开始）
+                    // 绘制头像
+                    float imgX = cx - imgSize/2;
+                    float imgY = cy - imgSize/2;
+                    d->AddImage(texID, 
+                               ImVec2(imgX, imgY), 
+                               ImVec2(imgX + imgSize, imgY + imgSize));
+                } else {
+                    // 其他格子绘制圆形（保持原有逻辑）
+                    d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, (r+c)%2 ? 0x6464FFFF : 0xFF6464FF, 32);
+                    d->AddCircle(ImVec2(cx,cy), sz*0.3, 0xFFFFFF96, 32, 1);
+                }
             }
         }
     } else {
-        // 没有头像就画圆圈（保持原有逻辑）
+        // 没有头像就全部画圆圈
         for (int r=0; r<4; r++) for (int c=0; c<7; c++) {
             float cx = x + c*sz + sz/2, cy = y + r*sz + sz/2;
             d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, (r+c)%2 ? 0x6464FFFF : 0xFF6464FF, 32);
@@ -268,7 +275,7 @@ int main() {
             
             // 显示纹理状态
             if (g_textureLoaded) {
-                ImGui::TextColored(ImVec4(0,1,0,1), "✓ aurora 已加载");
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ aurora 已加载 (底部格子显示)");
             } else {
                 ImGui::TextColored(ImVec4(1,0,0,1), "✗ aurora 未加载");
             }
