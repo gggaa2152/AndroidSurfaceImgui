@@ -119,7 +119,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（图片用圆形包裹） ==========
+// ========== 棋盘（圆形裁剪图片） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -140,10 +140,9 @@ void DrawBoard() {
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    // ===== 如果有头像纹理，用圆形包裹图片 =====
+    // ===== 修复：用圆形裁剪图片 =====
     if (g_testTexture) {
         ImTextureID texID = (ImTextureID)(intptr_t)g_testTexture;
-        float imgSize = sz * 0.6f;  // 图片大小
         
         for (int r=0; r<4; r++) {
             for (int c=0; c<7; c++) {
@@ -151,20 +150,28 @@ void DrawBoard() {
                 float cy = y + r*sz + sz/2;
                 
                 if (r == 3) {  // 底部格子（第4行）
-                    // 1. 先绘制圆形背景（让图片有圆形底座）
-                    d->AddCircleFilled(ImVec2(cx,cy), sz*0.35, 0x00000080, 32);
+                    // 圆形半径
+                    float radius = sz * 0.3f;
                     
-                    // 2. 绘制图片（稍小一点）
+                    // 1. 先绘制圆形背景（半透明黑）
+                    d->AddCircleFilled(ImVec2(cx,cy), radius, 0x00000080, 32);
+                    
+                    // 2. 用圆形遮罩的方式绘制图片（实际上是画方形，但用圆形边框掩盖）
+                    float imgSize = radius * 1.8f;  // 图片稍大
                     float imgX = cx - imgSize/2;
                     float imgY = cy - imgSize/2;
+                    
+                    // 绘制图片（方形）
                     d->AddImage(texID, 
                                ImVec2(imgX, imgY), 
                                ImVec2(imgX + imgSize, imgY + imgSize));
                     
-                    // 3. 绘制圆形边框包裹图片
-                    d->AddCircle(ImVec2(cx,cy), sz*0.35, 0xFFFFFFFF, 32, 2.0f);
+                    // 3. 绘制白色圆形边框（盖住图片的四个角）
+                    d->AddCircle(ImVec2(cx,cy), radius, 0xFFFFFFFF, 32, 3.0f);
+                    
+                    // 4. 在四个角额外绘制黑色三角形来遮盖（可选）
                 } else {
-                    // 其他格子绘制圆形（保持原有逻辑）
+                    // 其他格子绘制圆形（红蓝交替）
                     d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, (r+c)%2 ? 0x6464FFFF : 0xFF6464FF, 32);
                     d->AddCircle(ImVec2(cx,cy), sz*0.3, 0xFFFFFF96, 32, 1);
                 }
@@ -281,9 +288,9 @@ int main() {
             
             // 显示纹理状态
             if (g_textureLoaded) {
-                ImGui::TextColored(ImVec4(0,1,0,1), "✓ aurora 已加载 (底部格子圆形头像)");
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ aurora已加载（底部圆形头像）");
             } else {
-                ImGui::TextColored(ImVec4(1,0,0,1), "✗ aurora 未加载");
+                ImGui::TextColored(ImVec4(1,0,0,1), "✗ aurora未加载");
             }
             
             ImGui::Text("缩放: %.1fx", g_scale);
