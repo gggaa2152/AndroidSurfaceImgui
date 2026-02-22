@@ -12,7 +12,6 @@
 #include <cmath>
 #include <map>
 #include <vector>
-#include <cstring>  // 添加 memset
 
 // ========== 数据 ==========
 int gold = 100, level = 8, hp = 85;
@@ -28,10 +27,17 @@ float g_anim[3] = {0,0,0};
 GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;
 
-// ========== 从文件加载纹理（强制透明背景） ==========
+// ========== 模拟对手棋盘数据（0表示空，非0表示有英雄） ==========
+int g_enemyBoard[4][7] = {
+    {1, 0, 0, 0, 1, 0, 0},
+    {0, 1, 0, 1, 0, 0, 0},
+    {0, 0, 0, 0, 0, 1, 0},
+    {1, 0, 1, 0, 1, 0, 1}  // 第4行有多个英雄
+};
+
+// ========== 从文件加载纹理 ==========
 GLuint LoadTextureFromFile(const char* filename) {
     int width, height, channels;
-    // 强制加载为 RGBA
     unsigned char* data = stbi_load(filename, &width, &height, &channels, 4);
     if (!data) {
         printf("[-] Failed to load image: %s\n", filename);
@@ -40,15 +46,10 @@ GLuint LoadTextureFromFile(const char* filename) {
     
     printf("[+] Loaded image: %s (%dx%d)\n", filename, width, height);
     
-    // 【关键】检查并强制透明背景
-    // 如果图片没有 alpha 通道或背景不透明，这里可以处理
-    // 但 stb_image 已经加载为 RGBA，所以没问题
-    
     GLuint texture_id;
     glGenTextures(1, &texture_id);
     glBindTexture(GL_TEXTURE_2D, texture_id);
     
-    // 使用线性过滤让边缘更平滑
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -127,7 +128,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（修复版：确保没有正方形外框） ==========
+// ========== 棋盘（只画空心圆格子，有英雄的格子显示图片） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -141,63 +142,40 @@ void DrawBoard() {
         if (drag) { x = m.x-w/2; y = m.y-h/2; }
     } else drag=0;
     
-    // 棋盘背景
+    // 棋盘背景（半透明）
     d->AddRectFilled(ImVec2(x,y), ImVec2(x+w,y+h), 0x1E1E1E64, 4);
     
-    // 格子线
+    // 绘制格子线（空心圆的网格）
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    // ===== 修复版：确保没有正方形外框 =====
-    if (g_heroTexture) {
-        float imgSize = sz * 0.7f;  // 图片大小
-        float radius = imgSize / 2;  // 圆形半径
-        
-        for (int r=0; r<4; r++) {
-            for (int c=0; c<7; c++) {
-                float cx = x + c*sz + sz/2;
-                float cy = y + r*sz + sz/2;
-                
-                if (r == 3) {  // 底部格子
-                    // 【关键】只画圆形区域，不画任何方形背景
-                    
-                    // 1. 先画一个深色圆形背景（可选，让图片更明显）
-                    d->AddCircleFilled(ImVec2(cx,cy), radius, IM_COL32(0,0,0,80), 32);
-                    
-                    // 2. 计算图片位置（基于圆形中心）
-                    float imgX = cx - radius;
-                    float imgY = cy - radius;
-                    
-                    // 3. 正确转换纹理ID
-                    ImTextureID texID = (ImTextureID)(intptr_t)g_heroTexture;
-                    
-                    // 4. 用 AddImageRounded 绘制，圆角设置为半径
-                    d->AddImageRounded(texID,
-                        ImVec2(imgX, imgY),
-                        ImVec2(imgX + imgSize, imgY + imgSize),
-                        ImVec2(0,0), ImVec2(1,1),
-                        IM_COL32(255,255,255,255),
-                        radius,  // 圆角等于半径，确保正圆
-                        ImDrawFlags_RoundCornersAll);
-                    
-                    // 5. 加个细白色边框（可选）
-                    d->AddCircle(ImVec2(cx,cy), radius, 0x80FFFFFF, 32, 1);
-                    
-                } else {
-                    // 其他格子保持红蓝圆形
-                    d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, 
-                        (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
-                    d->AddCircle(ImVec2(cx,cy), sz*0.3, IM_COL32(255,255,255,150), 32, 1);
-                }
-            }
-        }
-    } else {
-        // 没有图片时的默认显示
-        for (int r=0; r<4; r++) for (int c=0; c<7; c++) {
-            float cx = x + c*sz + sz/2, cy = y + r*sz + sz/2;
-            d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, 
-                (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
+    // ===== 绘制所有空心圆格子 =====
+    for (int r=0; r<4; r++) {
+        for (int c=0; c<7; c++) {
+            float cx = x + c*sz + sz/2;
+            float cy = y + r*sz + sz/2;
+            
+            // 绘制空心圆（所有格子都是空心圆）
             d->AddCircle(ImVec2(cx,cy), sz*0.3, IM_COL32(255,255,255,150), 32, 1);
+            
+            // 如果这个格子有英雄，显示图片
+            if (g_enemyBoard[r][c] != 0 && g_heroTexture) {
+                float imgSize = sz * 0.5f;  // 图片比圆小一点
+                float imgX = cx - imgSize/2;
+                float imgY = cy - imgSize/2;
+                
+                // 正确转换纹理ID
+                ImTextureID texID = (ImTextureID)(intptr_t)g_heroTexture;
+                
+                // 绘制圆角图片（覆盖在空心圆上）
+                d->AddImageRounded(texID,
+                    ImVec2(imgX, imgY),
+                    ImVec2(imgX + imgSize, imgY + imgSize),
+                    ImVec2(0,0), ImVec2(1,1),
+                    IM_COL32(255,255,255,255),
+                    imgSize/2,  // 圆角等于半径，正圆
+                    ImDrawFlags_RoundCornersAll);
+            }
         }
     }
 }
@@ -253,7 +231,7 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     if (!imgui) { printf("[-] Init failed\n"); return 0; }
     
-    // 加载英雄图片
+    // 加载测试图片
     const char* testPath = "/data/1/heroes/FUX/aurora.png";
     FILE* f = fopen(testPath, "r");
     if (f) {
@@ -292,7 +270,7 @@ int main() {
             g_posInit = true;
             
             if (g_textureLoaded) {
-                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 圆形图片已加载");
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 英雄图片已加载");
             }
             
             ImGui::Text("缩放: %.1fx", g_scale);
