@@ -208,31 +208,18 @@ void DrawBoard() {
                     // 先画圆形背景
                     d->AddCircleFilled(ImVec2(cx,cy), imgSize/2, IM_COL32(0,0,0,100), 32);
                     
-                    // 方法1：用 ImageRounded（最简单）
-                    d->AddImageRounded(g_heroTexture,
+                    // 【修复】正确转换 GLuint 到 ImTextureID
+                    ImTextureID texID = (ImTextureID)(intptr_t)g_heroTexture;
+                    ImTextureID maskID = (ImTextureID)(intptr_t)g_maskTexture;
+                    
+                    // 方法1：用 AddImageRounded（最简单）
+                    d->AddImageRounded(texID,
                         ImVec2(imgX, imgY),
                         ImVec2(imgX + imgSize, imgY + imgSize),
                         ImVec2(0,0), ImVec2(1,1),
                         IM_COL32(255,255,255,255),
                         imgSize/2,  // 圆角大小
                         ImDrawFlags_RoundCornersAll);
-                    
-                    // 方法2：如果需要更完美的圆形，可以用遮罩（取消下面注释）
-                    /*
-                    // 先用 Image 绘制原图
-                    d->AddImage(g_heroTexture,
-                        ImVec2(imgX, imgY),
-                        ImVec2(imgX + imgSize, imgY + imgSize),
-                        ImVec2(0,0), ImVec2(1,1),
-                        IM_COL32(255,255,255,255));
-                    
-                    // 再用遮罩纹理裁剪
-                    d->AddImage(g_maskTexture,
-                        ImVec2(imgX, imgY),
-                        ImVec2(imgX + imgSize, imgY + imgSize),
-                        ImVec2(0,0), ImVec2(1,1),
-                        IM_COL32(255,255,255,255));
-                    */
                     
                     // 加个白色边框
                     d->AddCircle(ImVec2(cx,cy), imgSize/2, 0xFFFFFFFF, 32, 1);
@@ -274,7 +261,12 @@ void SaveConfig() {
 void LoadConfig() {
     FILE* f = fopen("/data/local/tmp/jcc_config.txt", "r");
     if (f) {
-        fscanf(f, "%f %d %d %d %f", &g_scale, &g_predict, &g_esp, &g_instant, &g_boardScale);
+        // 【修复】使用临时 int 变量来读取 bool 值
+        int temp_predict, temp_esp, temp_instant;
+        fscanf(f, "%f %d %d %d %f", &g_scale, &temp_predict, &temp_esp, &temp_instant, &g_boardScale);
+        g_predict = (temp_predict != 0);
+        g_esp = (temp_esp != 0);
+        g_instant = (temp_instant != 0);
         fclose(f);
         ImGui::GetIO().FontGlobalScale = g_scale;
         g_anim[0] = g_predict ? 1 : 0;
