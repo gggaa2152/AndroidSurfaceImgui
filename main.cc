@@ -119,7 +119,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（用 AddImageRounded 实现圆形） ==========
+// ========== 棋盘（修复版：确保四个角都被圆角处理） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -154,22 +154,28 @@ void DrawBoard() {
                     float imgX = cx - imgSize/2;
                     float imgY = cy - imgSize/2;
                     
-                    // 【关键】AddImageRounded 直接画圆形图片！
+                    // 【关键修复】确保圆角大小正确，并绘制四个角都被圆角处理
+                    float rounding = imgSize / 2;  // 圆角大小为宽度的一半，确保正圆
+                    
+                    // 先画一个圆形背景（增强视觉效果）
+                    d->AddCircleFilled(ImVec2(cx,cy), imgSize/2, IM_COL32(0,0,0,100), 32);
+                    
+                    // 用 AddImageRounded 绘制圆角图片
                     d->AddImageRounded(texID,
                         ImVec2(imgX, imgY),                           // 左上
                         ImVec2(imgX + imgSize, imgY + imgSize),       // 右下
-                        ImVec2(0,0), ImVec2(1,1),                      // 显示整张图
-                        IM_COL32(255,255,255,255),                     // 颜色
-                        imgSize/2,                                      // 圆角 = 一半宽度 → 正圆！
-                        32);                                            // 圆角质量
+                        ImVec2(0,0), ImVec2(1,1),                      // 纹理坐标（显示整张图）
+                        IM_COL32(255,255,255,255),                     // 颜色（白色）
+                        rounding,                                       // 圆角半径 = 一半宽度
+                        ImDrawFlags_RoundCornersAll);                  // 所有四个角都圆角化
                     
-                    // 加个白色边框更好看
+                    // 加个白色边框
                     d->AddCircle(ImVec2(cx,cy), imgSize/2 + 2, 0xFFFFFFFF, 32, 1);
                     
                 } else {
                     // 其他格子保持圆形
                     d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, 
-                                      (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
+                        (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
                 }
             }
         }
@@ -178,7 +184,7 @@ void DrawBoard() {
         for (int r=0; r<4; r++) for (int c=0; c<7; c++) {
             float cx = x + c*sz + sz/2, cy = y + r*sz + sz/2;
             d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, 
-                             (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
+                (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
         }
     }
 }
