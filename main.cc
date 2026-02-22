@@ -218,11 +218,11 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     if (!imgui) { printf("[-] Init failed\n"); return 0; }
     
-    // ===== 加载测试头像 =====
-    const char* testPath = "/data/1/heroes/aatrox.png";
+    // ===== 加载 aurora 头像 =====
+    const char* testPath = "/data/1/heroes/FUX/aurora.png";
     FILE* f = fopen(testPath, "r");
     if (f) {
-        printf("[+] Found aatrox.png\n");
+        printf("[+] Found aurora.png\n");
         fclose(f);
         g_testTexture = LoadTextureFromFile(testPath);
         if (g_testTexture) {
@@ -230,8 +230,9 @@ int main() {
             printf("[+] Texture loaded successfully\n");
         }
     } else {
-        printf("[-] aatrox.png not found at %s\n", testPath);
-        printf("    Please push image: adb push aatrox.png /data/1/heroes/\n");
+        printf("[-] aurora.png not found at %s\n", testPath);
+        printf("    Please create directory: mkdir -p /data/1/heroes/FUX\n");
+        printf("    Push image: adb push aurora.png /data/1/heroes/FUX/\n");
     }
     
     LoadConfig();
@@ -267,9 +268,9 @@ int main() {
             
             // 显示纹理状态
             if (g_textureLoaded) {
-                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 头像已加载");
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ aurora 已加载");
             } else {
-                ImGui::TextColored(ImVec4(1,0,0,1), "✗ 头像未加载");
+                ImGui::TextColored(ImVec4(1,0,0,1), "✗ aurora 未加载");
             }
             
             ImGui::Text("缩放: %.1fx", g_scale);
