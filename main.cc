@@ -2,10 +2,15 @@
 #include "AImGui.h"
 #include "imgui_internal.h"
 
+// ===== 添加图片加载支持 =====
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include <thread>
 #include <cstdio>
 #include <string>
 #include <cmath>
+#include <map>
 
 // ========== 数据 ==========
 int gold = 100, level = 8, hp = 85;
@@ -16,6 +21,36 @@ bool g_posInit = false;
 
 // ========== 开关动画 ==========
 float g_anim[3] = {0,0,0};
+
+// ========== 头像纹理 ==========
+GLuint g_testTexture = 0;
+bool g_textureLoaded = false;
+
+// ========== 从文件加载纹理 ==========
+GLuint LoadTextureFromFile(const char* filename) {
+    int width, height, channels;
+    unsigned char* data = stbi_load(filename, &width, &height, &channels, 4);
+    if (!data) {
+        printf("[-] Failed to load image: %s\n", filename);
+        return 0;
+    }
+    
+    printf("[+] Loaded image: %s (%dx%d)\n", filename, width, height);
+    
+    GLuint texture_id;
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    
+    stbi_image_free(data);
+    return texture_id;
+}
 
 // ========== 字体 ==========
 void LoadChineseFont() {
@@ -84,7 +119,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘 ==========
+// ========== 棋盘（带头像） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -102,10 +137,33 @@ void DrawBoard() {
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    for (int r=0; r<4; r++) for (int c=0; c<7; c++) {
-        float cx = x + c*sz + sz/2, cy = y + r*sz + sz/2;
-        d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, (r+c)%2 ? 0x6464FFFF : 0xFF6464FF, 32);
-        d->AddCircle(ImVec2(cx,cy), sz*0.3, 0xFFFFFF96, 32, 1);
+    // ===== 如果有头像纹理，绘制头像 =====
+    if (g_testTexture) {
+        ImTextureID texID = (ImTextureID)(intptr_t)g_testTexture;
+        float imgSize = sz * 0.7f;  // 头像大小（比格子小一点）
+        
+        for (int r=0; r<4; r++) {
+            for (int c=0; c<7; c++) {
+                float cx = x + c*sz + sz/2;
+                float cy = y + r*sz + sz/2;
+                
+                // 计算头像位置（居中）
+                float imgX = cx - imgSize/2;
+                float imgY = cy - imgSize/2;
+                
+                // 绘制头像
+                d->AddImage(texID, 
+                           ImVec2(imgX, imgY), 
+                           ImVec2(imgX + imgSize, imgY + imgSize));
+            }
+        }
+    } else {
+        // 没有头像就画圆圈（保持原有逻辑）
+        for (int r=0; r<4; r++) for (int c=0; c<7; c++) {
+            float cx = x + c*sz + sz/2, cy = y + r*sz + sz/2;
+            d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, (r+c)%2 ? 0x6464FFFF : 0xFF6464FF, 32);
+            d->AddCircle(ImVec2(cx,cy), sz*0.3, 0xFFFFFF96, 32, 1);
+        }
     }
 }
 
@@ -145,14 +203,13 @@ int main() {
     IMGUI_CHECKVERSION(); 
     ImGui::CreateContext();
     
-    // ===== 多重放大右下角三角 =====
+    // 多重放大右下角三角
     ImGuiStyle& style = ImGui::GetStyle();
-    style.GrabMinSize = 40.0f;           // 1. 增大抓取柄尺寸
-    style.FramePadding = ImVec2(8, 6);   // 2. 增大内边距
-    style.WindowPadding = ImVec2(12, 12); // 3. 增大窗口内边距
-    style.TouchExtraPadding = ImVec2(4, 4); // 4. 增加触摸额外区域
+    style.GrabMinSize = 40.0f;
+    style.FramePadding = ImVec2(8, 6);
+    style.WindowPadding = ImVec2(12, 12);
+    style.TouchExtraPadding = ImVec2(4, 4);
     
-    // 5. 增大交互区域（通过修改 ImGui 配置）
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableSetMousePos;
     
@@ -160,6 +217,22 @@ int main() {
     
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     if (!imgui) { printf("[-] Init failed\n"); return 0; }
+    
+    // ===== 加载测试头像 =====
+    const char* testPath = "/data/1/heroes/aatrox.png";
+    FILE* f = fopen(testPath, "r");
+    if (f) {
+        printf("[+] Found aatrox.png\n");
+        fclose(f);
+        g_testTexture = LoadTextureFromFile(testPath);
+        if (g_testTexture) {
+            g_textureLoaded = true;
+            printf("[+] Texture loaded successfully\n");
+        }
+    } else {
+        printf("[-] aatrox.png not found at %s\n", testPath);
+        printf("    Please push image: adb push aatrox.png /data/1/heroes/\n");
+    }
     
     LoadConfig();
     bool running = 1;
@@ -191,6 +264,13 @@ int main() {
             if (curPos.x != g_winPos.x || curPos.y != g_winPos.y) g_winPos = curPos;
             if (curSize.x != g_winSize.x || curSize.y != g_winSize.y) g_winSize = curSize;
             g_posInit = true;
+            
+            // 显示纹理状态
+            if (g_textureLoaded) {
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 头像已加载");
+            } else {
+                ImGui::TextColored(ImVec4(1,0,0,1), "✗ 头像未加载");
+            }
             
             ImGui::Text("缩放: %.1fx", g_scale);
             ImGui::Separator();
