@@ -119,7 +119,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（修复版：确保四个角都被圆角处理） ==========
+// ========== 棋盘（纯圆形图片，没有正方形边框） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -140,10 +140,11 @@ void DrawBoard() {
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    // ===== 用 AddImageRounded 绘制圆形图片 =====
+    // ===== 只画圆形图片，没有正方形边框 =====
     if (g_testTexture) {
         ImTextureID texID = (ImTextureID)(intptr_t)g_testTexture;
         float imgSize = sz * 0.6f;  // 图片大小
+        float radius = imgSize / 2;  // 圆形半径
         
         for (int r=0; r<4; r++) {
             for (int c=0; c<7; c++) {
@@ -151,26 +152,23 @@ void DrawBoard() {
                 float cy = y + r*sz + sz/2;
                 
                 if (r == 3) {  // 底部格子
-                    float imgX = cx - imgSize/2;
-                    float imgY = cy - imgSize/2;
+                    float imgX = cx - radius;
+                    float imgY = cy - radius;
                     
-                    // 【关键修复】确保圆角大小正确，并绘制四个角都被圆角处理
-                    float rounding = imgSize / 2;  // 圆角大小为宽度的一半，确保正圆
+                    // 绘制圆形背景（可选，让图片更明显）
+                    d->AddCircleFilled(ImVec2(cx,cy), radius, IM_COL32(0,0,0,80), 32);
                     
-                    // 先画一个圆形背景（增强视觉效果）
-                    d->AddCircleFilled(ImVec2(cx,cy), imgSize/2, IM_COL32(0,0,0,100), 32);
-                    
-                    // 用 AddImageRounded 绘制圆角图片
+                    // 用 AddImageRounded 绘制圆角图片，圆角大小等于半径 → 正圆
                     d->AddImageRounded(texID,
-                        ImVec2(imgX, imgY),                           // 左上
-                        ImVec2(imgX + imgSize, imgY + imgSize),       // 右下
-                        ImVec2(0,0), ImVec2(1,1),                      // 纹理坐标（显示整张图）
-                        IM_COL32(255,255,255,255),                     // 颜色（白色）
-                        rounding,                                       // 圆角半径 = 一半宽度
-                        ImDrawFlags_RoundCornersAll);                  // 所有四个角都圆角化
+                        ImVec2(imgX, imgY),
+                        ImVec2(imgX + imgSize, imgY + imgSize),
+                        ImVec2(0,0), ImVec2(1,1),
+                        IM_COL32(255,255,255,255),
+                        radius,  // 圆角半径 = 图片一半 → 正圆
+                        ImDrawFlags_RoundCornersAll);
                     
-                    // 加个白色边框
-                    d->AddCircle(ImVec2(cx,cy), imgSize/2 + 2, 0xFFFFFFFF, 32, 1);
+                    // 加个细白色边框（可选，不加也行）
+                    // d->AddCircle(ImVec2(cx,cy), radius, 0xFFFFFFFF, 32, 1);
                     
                 } else {
                     // 其他格子保持圆形
