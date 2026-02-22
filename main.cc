@@ -11,6 +11,7 @@
 #include <string>
 #include <cmath>
 #include <map>
+#include <vector>
 
 // ========== 数据 ==========
 int gold = 100, level = 8, hp = 85;
@@ -23,8 +24,59 @@ bool g_posInit = false;
 float g_anim[3] = {0,0,0};
 
 // ========== 头像纹理 ==========
-GLuint g_testTexture = 0;
+GLuint g_heroTexture = 0;
+GLuint g_maskTexture = 0;  // 圆形遮罩纹理
 bool g_textureLoaded = false;
+
+// ========== 创建圆形遮罩纹理 ==========
+GLuint CreateCircleMaskTexture(int size) {
+    // 创建一个 RGBA 图像，中心是白色，边缘透明
+    std::vector<unsigned char> pixels(size * size * 4, 0);
+    
+    float centerX = size/2.0f;
+    float centerY = size/2.0f;
+    float radius = size/2.0f;
+    
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            float dx = x - centerX;
+            float dy = y - centerY;
+            float dist = sqrt(dx*dx + dy*dy);
+            
+            int idx = (y * size + x) * 4;
+            if (dist <= radius) {
+                // 圆内：白色不透明
+                float alpha = 1.0f;
+                if (dist > radius - 2.0f) {
+                    // 边缘抗锯齿
+                    alpha = (radius - dist) * 0.5f;
+                    if (alpha < 0) alpha = 0;
+                    if (alpha > 1) alpha = 1;
+                }
+                pixels[idx] = 255;      // R
+                pixels[idx+1] = 255;    // G
+                pixels[idx+2] = 255;    // B
+                pixels[idx+3] = (unsigned char)(alpha * 255);  // A
+            } else {
+                // 圆外：完全透明
+                pixels[idx+3] = 0;
+            }
+        }
+    }
+    
+    GLuint texture_id;
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    
+    return texture_id;
+}
 
 // ========== 从文件加载纹理 ==========
 GLuint LoadTextureFromFile(const char* filename) {
@@ -119,7 +171,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（纯圆形图片，没有正方形边框） ==========
+// ========== 棋盘（用遮罩纹理实现完美圆形） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -140,11 +192,9 @@ void DrawBoard() {
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    // ===== 只画圆形图片，没有正方形边框 =====
-    if (g_testTexture) {
-        ImTextureID texID = (ImTextureID)(intptr_t)g_testTexture;
-        float imgSize = sz * 0.6f;  // 图片大小
-        float radius = imgSize / 2;  // 圆形半径
+    // ===== 用遮罩纹理实现完美圆形 =====
+    if (g_heroTexture && g_maskTexture) {
+        float imgSize = sz * 0.7f;  // 图片大小
         
         for (int r=0; r<4; r++) {
             for (int c=0; c<7; c++) {
@@ -152,23 +202,40 @@ void DrawBoard() {
                 float cy = y + r*sz + sz/2;
                 
                 if (r == 3) {  // 底部格子
-                    float imgX = cx - radius;
-                    float imgY = cy - radius;
+                    float imgX = cx - imgSize/2;
+                    float imgY = cy - imgSize/2;
                     
-                    // 绘制圆形背景（可选，让图片更明显）
-                    d->AddCircleFilled(ImVec2(cx,cy), radius, IM_COL32(0,0,0,80), 32);
+                    // 先画圆形背景
+                    d->AddCircleFilled(ImVec2(cx,cy), imgSize/2, IM_COL32(0,0,0,100), 32);
                     
-                    // 用 AddImageRounded 绘制圆角图片，圆角大小等于半径 → 正圆
-                    d->AddImageRounded(texID,
+                    // 方法1：用 ImageRounded（最简单）
+                    d->AddImageRounded(g_heroTexture,
                         ImVec2(imgX, imgY),
                         ImVec2(imgX + imgSize, imgY + imgSize),
                         ImVec2(0,0), ImVec2(1,1),
                         IM_COL32(255,255,255,255),
-                        radius,  // 圆角半径 = 图片一半 → 正圆
+                        imgSize/2,  // 圆角大小
                         ImDrawFlags_RoundCornersAll);
                     
-                    // 加个细白色边框（可选，不加也行）
-                    // d->AddCircle(ImVec2(cx,cy), radius, 0xFFFFFFFF, 32, 1);
+                    // 方法2：如果需要更完美的圆形，可以用遮罩（取消下面注释）
+                    /*
+                    // 先用 Image 绘制原图
+                    d->AddImage(g_heroTexture,
+                        ImVec2(imgX, imgY),
+                        ImVec2(imgX + imgSize, imgY + imgSize),
+                        ImVec2(0,0), ImVec2(1,1),
+                        IM_COL32(255,255,255,255));
+                    
+                    // 再用遮罩纹理裁剪
+                    d->AddImage(g_maskTexture,
+                        ImVec2(imgX, imgY),
+                        ImVec2(imgX + imgSize, imgY + imgSize),
+                        ImVec2(0,0), ImVec2(1,1),
+                        IM_COL32(255,255,255,255));
+                    */
+                    
+                    // 加个白色边框
+                    d->AddCircle(ImVec2(cx,cy), imgSize/2, 0xFFFFFFFF, 32, 1);
                     
                 } else {
                     // 其他格子保持圆形
@@ -234,14 +301,18 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     if (!imgui) { printf("[-] Init failed\n"); return 0; }
     
-    // 加载测试图片
+    // 加载英雄图片
     const char* testPath = "/data/1/heroes/FUX/aurora.png";
     FILE* f = fopen(testPath, "r");
     if (f) {
         printf("[+] Found aurora.png\n");
         fclose(f);
-        g_testTexture = LoadTextureFromFile(testPath);
-        g_textureLoaded = (g_testTexture != 0);
+        g_heroTexture = LoadTextureFromFile(testPath);
+        
+        // 创建圆形遮罩纹理
+        g_maskTexture = CreateCircleMaskTexture(128);  // 128x128 的圆形遮罩
+        
+        g_textureLoaded = (g_heroTexture != 0);
     }
     
     LoadConfig();
