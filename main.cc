@@ -119,7 +119,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     return 1;
 }
 
-// ========== 棋盘（精确三角形遮罩） ==========
+// ========== 棋盘（用 AddImageRounded 实现圆形） ==========
 void DrawBoard() {
     if (!g_esp) return;
     ImDrawList* d = ImGui::GetBackgroundDrawList();
@@ -133,18 +133,17 @@ void DrawBoard() {
         if (drag) { x = m.x-w/2; y = m.y-h/2; }
     } else drag=0;
     
-    // 棋盘背景色（固定）
-    ImU32 bgColor = IM_COL32(30, 30, 30, 100);
-    d->AddRectFilled(ImVec2(x,y), ImVec2(x+w,y+h), bgColor, 4);
+    // 棋盘背景
+    d->AddRectFilled(ImVec2(x,y), ImVec2(x+w,y+h), 0x1E1E1E64, 4);
     
-    // 绘制格子线
+    // 格子线
     for (int i=0; i<=4; i++) d->AddLine(ImVec2(x,y+i*sz), ImVec2(x+w,y+i*sz), 0x646464FF);
     for (int i=0; i<=7; i++) d->AddLine(ImVec2(x+i*sz,y), ImVec2(x+i*sz,y+h), 0x646464FF);
     
-    // ===== 三角形遮罩实现圆形裁剪 =====
+    // ===== 用 AddImageRounded 绘制圆形图片 =====
     if (g_testTexture) {
         ImTextureID texID = (ImTextureID)(intptr_t)g_testTexture;
-        float radius = sz * 0.38f;  // 圆形半径
+        float imgSize = sz * 0.6f;  // 图片大小
         
         for (int r=0; r<4; r++) {
             for (int c=0; c<7; c++) {
@@ -152,37 +151,25 @@ void DrawBoard() {
                 float cy = y + r*sz + sz/2;
                 
                 if (r == 3) {  // 底部格子
-                    // 1. 圆形背景（让图片更明显）
-                    d->AddCircleFilled(ImVec2(cx,cy), radius, IM_COL32(0,0,0,150), 40);
-                    
-                    // 2. 绘制方形图片（比圆形大）
-                    float imgSize = radius * 2.2f;
                     float imgX = cx - imgSize/2;
                     float imgY = cy - imgSize/2;
-                    d->AddImage(texID, 
-                               ImVec2(imgX, imgY), 
-                               ImVec2(imgX + imgSize, imgY + imgSize));
                     
-                    // 3. 圆上四个关键点
-                    ImVec2 top(cx, cy - radius);
-                    ImVec2 bottom(cx, cy + radius);
-                    ImVec2 left(cx - radius, cy);
-                    ImVec2 right(cx + radius, cy);
+                    // 【关键】AddImageRounded 直接画圆形图片！
+                    d->AddImageRounded(texID,
+                        ImVec2(imgX, imgY),                           // 左上
+                        ImVec2(imgX + imgSize, imgY + imgSize),       // 右下
+                        ImVec2(0,0), ImVec2(1,1),                      // 显示整张图
+                        IM_COL32(255,255,255,255),                     // 颜色
+                        imgSize/2,                                      // 圆角 = 一半宽度 → 正圆！
+                        32);                                            // 圆角质量
                     
-                    // 4. 四个三角形精确覆盖圆外区域
-                    d->AddTriangleFilled(ImVec2(imgX, imgY), left, top, bgColor);        // 左上
-                    d->AddTriangleFilled(ImVec2(imgX + imgSize, imgY), top, right, bgColor); // 右上
-                    d->AddTriangleFilled(ImVec2(imgX, imgY + imgSize), bottom, left, bgColor); // 左下
-                    d->AddTriangleFilled(ImVec2(imgX + imgSize, imgY + imgSize), right, bottom, bgColor); // 右下
-                    
-                    // 5. 白色圆形边框
-                    d->AddCircle(ImVec2(cx,cy), radius, IM_COL32(255,255,255,255), 40, 2.0f);
+                    // 加个白色边框更好看
+                    d->AddCircle(ImVec2(cx,cy), imgSize/2 + 2, 0xFFFFFFFF, 32, 1);
                     
                 } else {
-                    // 其他格子：红蓝交替圆形
+                    // 其他格子保持圆形
                     d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, 
                                       (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
-                    d->AddCircle(ImVec2(cx,cy), sz*0.3, IM_COL32(255,255,255,150), 32, 1);
                 }
             }
         }
@@ -192,7 +179,6 @@ void DrawBoard() {
             float cx = x + c*sz + sz/2, cy = y + r*sz + sz/2;
             d->AddCircleFilled(ImVec2(cx,cy), sz*0.3, 
                              (r+c)%2 ? IM_COL32(100,100,255,200) : IM_COL32(255,100,100,200), 32);
-            d->AddCircle(ImVec2(cx,cy), sz*0.3, IM_COL32(255,255,255,150), 32, 1);
         }
     }
 }
@@ -283,7 +269,7 @@ int main() {
             g_posInit = true;
             
             if (g_textureLoaded) {
-                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 图片已加载（圆形裁剪）");
+                ImGui::TextColored(ImVec4(0,1,0,1), "✓ 圆形图片已加载");
             }
             
             ImGui::Text("缩放: %.1fx", g_scale);
