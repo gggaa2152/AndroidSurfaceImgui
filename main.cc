@@ -60,6 +60,9 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
+// [修复点1] 定义标志位，用于延迟更新字体
+bool g_needUpdateFont = false;
+
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
     {0, 0, 0, 0, 0, 1, 0}, {1, 0, 1, 0, 1, 0, 1}
@@ -210,7 +213,6 @@ void UpdateFontHD(bool force = false) {
     float targetSize = (baseSize > 120.0f) ? 120.0f : baseSize; 
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     
-    // 关键修正：这里的修改必须在 BeginFrame 之前
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     ImFontConfig config;
@@ -385,7 +387,8 @@ void DrawMenu() {
                     lockedPos.y -= diffH * 0.5f;
                 } else { 
                     isScalingMenu = false; 
-                    UpdateFontHD(true); 
+                    // [修复点2] 缩放结束时不直接更新字体，而是设置标志位
+                    g_needUpdateFont = true; 
                 } 
             }
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
@@ -395,7 +398,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 程序入口 (修正版)
+// 7. 程序入口
 // =================================================================
 int main() {
     _tls_align_fix[0] = 1; 
@@ -403,17 +406,21 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     LoadConfig();        
-    UpdateFontHD(true);  // 初始加载：此时未进入循环，安全
+    UpdateFontHD(true);  
     
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
-        // --- 核心修复：更新字体必须在 BeginFrame 之前调用 ---
-        // 这样在执行 io.Fonts->Clear() 时，字体集尚未被锁定
-        UpdateFontHD(); 
+        // [修复点3] 在 BeginFrame 之前处理字体更新请求
+        // 此时 ImFontAtlas 处于 Unlocked 状态，可以安全操作
+        if (g_needUpdateFont) {
+            UpdateFontHD(true);
+            g_needUpdateFont = false;
+        }
+        UpdateFontHD(); // 自动适配屏幕缩放的检查
 
-        imgui.BeginFrame(); // 进入锁定状态
+        imgui.BeginFrame(); // [此处开始锁定]
         
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
@@ -423,7 +430,7 @@ int main() {
         DrawBoard(); 
         DrawMenu();
         
-        imgui.EndFrame(); // 渲染完成，解除锁定
+        imgui.EndFrame(); // [此处解锁]
     }
     
     running = false; 
