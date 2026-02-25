@@ -1,0 +1,54 @@
+name: Build Android 64bit ELF
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive # 自动拉取你降级后的子模块
+
+      - name: Compile 64bit ELF
+        run: |
+          # 1. 环境准备
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
+          BIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin
+          CXX=$BIN/aarch64-linux-android33-clang++
+          CC=$BIN/aarch64-linux-android33-clang
+
+          # 2. 编译 zstd 静态库组件 (使用 C 编译器，避开窄化转换报错)
+          $CC -O3 -c \
+            -I./third_party/zstd/lib \
+            third_party/zstd/lib/common/*.c \
+            third_party/zstd/lib/compress/*.c \
+            third_party/zstd/lib/decompress/*.c
+
+          # 3. 编译 C++ 源码并链接
+          # -I./third_party 确保 <imgui/imgui.h> 映射到 third_party/imgui/imgui.h
+          $CXX -O3 -s -std=c++20 -static-libstdc++ \
+            -Wno-error=narrowing \
+            -I. \
+            -I./includes \
+            -I./modules \
+            -I./third_party \
+            -I./third_party/imgui \
+            -I./third_party/imgui/backends \
+            -I./third_party/zstd/lib \
+            -I./third_party/ImGui-SharedDrawData/modules \
+            main.cc \
+            src/common/*.cc \
+            third_party/imgui/*.cpp \
+            third_party/imgui/backends/imgui_impl_android.cpp \
+            third_party/imgui/backends/imgui_impl_opengl3.cpp \
+            *.o \
+            -lGLESv3 -lEGL -landroid -llog \
+            -o com_tencent_jkchess_elf
+
+      - name: Upload ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: com-tencent-jkchess-64bit
+          path: com_tencent_jkchess_elf
