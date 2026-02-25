@@ -115,7 +115,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助 (Shader / Texture)
+// 4. 渲染辅助
 // =================================================================
 class HexShader {
 public:
@@ -209,7 +209,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (原始逻辑)
+// 5. 棋盘绘制 (保持原始)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -268,7 +268,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (最终修复：三角与标题栏绝对同步)
+// 6. 菜单 UI (最终解决方案：手动矩形判定)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -292,40 +292,37 @@ bool Toggle(const char* label, bool* v, int idx) {
 void DrawMenu() {
     static bool isScalingMenu = false; static float startMS = 1.0f; static ImVec2 startMP;
     ImGuiIO& io = ImGui::GetIO(); 
-    
-    // 初始化窗口设置
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
-    ImGui::SetNextWindowSize(ImVec2(baseW * g_scale, baseH * g_scale), ImGuiCond_FirstUseEver);
+    float currentW = baseW * g_scale;
+
+    // 预设窗口状态
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(currentW, baseH * g_scale), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
-    
-    // 【关键】这一行让变量直接受控于窗口系统的折叠状态
-    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Once);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
         
-        // --- 核心同步逻辑 ---
-        // 1. 获取当前窗口真实的折叠状态 (不论点击三角还是双击标题栏触发的)
-        bool currentStatus = ImGui::IsWindowCollapsed();
-        if (currentStatus != g_menuCollapsed) {
-            g_menuCollapsed = currentStatus;
+        // --- 核心修复：手动判定点击 ---
+        // 1. 同步三角按钮的状态
+        if (ImGui::IsWindowCollapsed() != g_menuCollapsed) {
+            g_menuCollapsed = ImGui::IsWindowCollapsed();
             SaveConfig();
         }
 
-        // 2. 点击标题栏空白处主动切换折叠状态
-        // 当点击标题栏（Item）时，直接反转状态，ImGui 系统会自动处理动画
-        if (ImGui::IsItemClicked(0)) {
+        // 2. 这里的判定不依赖 ItemClicked，而是直接算屏幕矩形
+        // 标题栏矩形 = 窗口位置 到 窗口位置+宽度+标题栏高度
+        ImRect titleBarRect = window->TitleBarRect();
+        if (ImGui::IsMouseClicked(0) && titleBarRect.Contains(io.MousePos)) {
+            // 如果点击的是标题栏，反转状态
+            // 我们延迟到下一帧生效，或者直接 SetWindowCollapsed
             g_menuCollapsed = !g_menuCollapsed;
-            ImGui::SetWindowCollapsed(g_menuCollapsed); // 立即生效
+            ImGui::SetWindowCollapsed(window, g_menuCollapsed);
             SaveConfig();
         }
 
-        // 拖拽逻辑 (仅在标题栏区域)
-        if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
-            if (io.MousePos.y < ImGui::GetWindowPos().y + ImGui::GetFrameHeight()) {
-                g_menuX = ImGui::GetWindowPos().x; g_menuY = ImGui::GetWindowPos().y;
-                if (ImGui::IsMouseReleased(0)) SaveConfig();
-            }
-        }
+        // 更新全局坐标（用于保存）
+        g_menuX = window->Pos.x; g_menuY = window->Pos.y;
 
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
@@ -349,8 +346,7 @@ void DrawMenu() {
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    float oldS = g_scale; g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
-                    // 修正缩放中心
+                    g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
                 } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
