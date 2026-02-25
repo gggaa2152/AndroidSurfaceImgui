@@ -11,9 +11,9 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Download missing headers
+      - name: Download stb_image.h
         run: |
-          # 自动下载代码中缺少的 stb_image.h 到根目录
+          # 自动补全代码中引用的 stb_image.h 依赖
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
       - name: Compile 64bit ELF
@@ -24,15 +24,18 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 2. 编译 zstd
+          # 2. 编译 zstd (使用 C 编译器，防止 C++ 严格类型报错)
           $CC -O3 -c \
             -I./third_party/zstd/lib \
             third_party/zstd/lib/common/*.c \
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 3. 编译 C++ 源码并链接
+          # 3. 编译 C++ 主程序
+          # -DIMGUI_DEFINE_MATH_OPERATORS: 启用 ImVec2 加减乘除运算，修复 operands 报错
+          # -I./third_party: 解决 <imgui/imgui.h> 包含路径问题
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
+            -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing \
             -I. \
             -I./includes \
