@@ -29,18 +29,13 @@ jobs:
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 2. 编译 C++ 
-          # 关键增加：-DIMGUI_DISABLE_DEBUG_CHECK (跳过被锁定的断言错误)
+          # 2. 编译 C++
+          # -DIMGUI_DEFINE_MATH_OPERATORS: 必须保留，用于 ImVec2 运算
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
-            -DIMGUI_DISABLE_DEBUG_CHECK \
             -Wno-error=narrowing \
-            -I. \
-            -I./includes \
-            -I./modules \
-            -I./third_party \
-            -I./third_party/imgui \
-            -I./third_party/imgui/backends \
+            -I. -I./includes -I./modules -I./third_party \
+            -I./third_party/imgui -I./third_party/imgui/backends \
             -I./third_party/zstd/lib \
             -I./third_party/ImGui-SharedDrawData/modules \
             main.cc \
