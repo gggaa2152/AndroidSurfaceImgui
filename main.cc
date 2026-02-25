@@ -209,6 +209,8 @@ void UpdateFontHD(bool force = false) {
     float baseSize = 18.0f * g_autoScale * g_scale;
     float targetSize = (baseSize > 120.0f) ? 120.0f : baseSize; 
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
+    
+    // 关键修正：这里的修改必须在 BeginFrame 之前
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     ImFontConfig config;
@@ -224,7 +226,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (保留所有逻辑)
+// 5. 棋盘绘制
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -286,7 +288,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (全功能修复版)
+// 6. 菜单 UI
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -318,7 +320,6 @@ void DrawMenu() {
     float baseW = 320.0f * g_autoScale;
     float baseH = 500.0f * g_autoScale;
 
-    // 解决黑框：收缩时高度限制在标题栏高度
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
@@ -328,14 +329,11 @@ void DrawMenu() {
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar;
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, flags)) {
-        // 单击标题栏收起/展开 (区分点击与拖动)
         if (ImGui::IsWindowHovered() && io.MousePos.y < (lockedPos.y + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
                 g_menuCollapsed = !g_menuCollapsed;
             }
         }
-
-        // 窗口拖动逻辑 (非缩放时)
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             lockedPos += io.MouseDelta;
         }
@@ -369,9 +367,7 @@ void DrawMenu() {
 
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
-            ImGui::TextDisabled((const char*)u8"路径: %s", g_configPath);
 
-            // 全方位缩放 (右下角三角)
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
             ImRect handleRect(br - ImVec2(hSz, hSz), br);
@@ -383,8 +379,6 @@ void DrawMenu() {
                 if (ImGui::IsMouseDown(0)) {
                     float oldScale = g_scale;
                     g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
-                    
-                    // 坐标补偿：实现全方位中心缩放，不产生位移感
                     float diffW = (baseW * g_scale) - (baseW * oldScale);
                     float diffH = (baseH * g_scale) - (baseH * oldScale);
                     lockedPos.x -= diffW * 0.5f; 
@@ -406,21 +400,32 @@ void DrawMenu() {
 int main() {
     _tls_align_fix[0] = 1; 
     ImGui::CreateContext();
-    android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); // 修正报错点
+    android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     LoadConfig();        
-    UpdateFontHD(true);  
+    UpdateFontHD(true);  // 初始加载
+    
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
+
     while (running) {
-        imgui.BeginFrame();
+        // --- 核心修复：更新字体必须在 BeginFrame 之前 ---
+        UpdateFontHD(); 
+
+        imgui.BeginFrame(); // 此时 ImFontAtlas 锁定
+        
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; 
         }
+        
         DrawBoard(); 
         DrawMenu();
-        imgui.EndFrame(); 
+        
+        imgui.EndFrame(); // 渲染结束，ImFontAtlas 解锁
     }
-    running = false; if (it.joinable()) it.join(); return 0;
+    
+    running = false; 
+    if (it.joinable()) it.join(); 
+    return 0;
 }
