@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 1. 全局变量 (com.tencent.jkchess)
+// 1. 全局变量 (com.tencent.jkchess) - 完整保留你的所有字段
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -58,7 +58,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理
+// 2. 配置管理 - 修复了布尔值的读取逻辑
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -112,45 +112,14 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 3. 六边形着色器系统
+// 3. 渲染系统 (Shader & Texture)
 // =================================================================
 class HexShader {
 public:
-    GLuint program = 0;
-    GLint resLoc = -1;
+    GLuint program = 0; GLint resLoc = -1;
     void Init() {
-        const char* vs = "#version 300 es\n"
-            "layout(location=0) in vec2 Position;\n"
-            "layout(location=1) in vec2 UV;\n"
-            "out vec2 Frag_UV;\n"
-            "uniform vec2 u_Res;\n"
-            "void main() {\n"
-            "    Frag_UV = UV;\n"
-            "    vec2 ndc = (Position / u_Res) * 2.0 - 1.0;\n"
-            "    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n"
-            "}";
-        const char* fs = "#version 300 es\n"
-            "precision mediump float;\n"
-            "uniform sampler2D Texture;\n"
-            "in vec2 Frag_UV;\n"
-            "out vec4 Out_Color;\n"
-            "float sdHex(vec2 p, float r) {\n"
-            "    vec3 k = vec3(-0.866025, 0.5, 0.57735);\n"
-            "    p = abs(p);\n"
-            "    p -= 2.0*min(dot(k.xy, p), 0.0)*k.xy;\n"
-            "    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);\n"
-            "    return length(p)*sign(p.y);\n"
-            "}\n"
-            "void main() {\n"
-            "    vec2 p = (Frag_UV - 0.5) * 2.0;\n"
-            "    vec2 rotated_p = vec2(p.y, p.x);\n"
-            "    float d = sdHex(rotated_p, 0.92);\n"
-            "    float w = fwidth(d);\n"
-            "    float m = 1.0 - smoothstep(-w, w, d);\n"
-            "    vec4 tex = texture(Texture, Frag_UV);\n"
-            "    if(m <= 0.0) discard;\n"
-            "    Out_Color = tex * m;\n"
-            "}";
+        const char* vs = "#version 300 es\nlayout(location=0) in vec2 Position;\nlayout(location=1) in vec2 UV;\nout vec2 Frag_UV;\nuniform vec2 u_Res;\nvoid main() {\n    Frag_UV = UV;\n    vec2 ndc = (Position / u_Res) * 2.0 - 1.0;\n    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}";
+        const char* fs = "#version 300 es\nprecision mediump float;\nuniform sampler2D Texture;\nin vec2 Frag_UV;\nout vec4 Out_Color;\nfloat sdHex(vec2 p, float r) {\n    vec3 k = vec3(-0.866025, 0.5, 0.57735);\n    p = abs(p);\n    p -= 2.0*min(dot(k.xy, p), 0.0)*k.xy;\n    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);\n    return length(p)*sign(p.y);\n}\nvoid main() {\n    vec2 p = (Frag_UV - 0.5) * 2.0;\n    vec2 rotated_p = vec2(p.y, p.x);\n    float d = sdHex(rotated_p, 0.92);\n    float w = fwidth(d);\n    float m = 1.0 - smoothstep(-w, w, d);\n    vec4 tex = texture(Texture, Frag_UV);\n    if(m <= 0.0) discard;\n    Out_Color = tex * m;\n}";
         program = glCreateProgram();
         GLuint v = glCreateShader(GL_VERTEX_SHADER); glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
         GLuint f = glCreateShader(GL_FRAGMENT_SHADER); glShaderSource(f, 1, &fs, NULL); glCompileShader(f);
@@ -184,20 +153,19 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 棋盘绘制与缩放
+// 4. 棋盘绘制 (独立缩放逻辑)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
-    float xStep = sz * 1.73205f;
-    float yStep = sz * 1.5f;
+    float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
 
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
 
-    // 棋盘缩放手柄绘制
+    // 棋盘缩放标识
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
     ImVec2 p_top = ImVec2(lastCX + sz * cosf(a1), lastCY + sz * sinf(a1));
     ImVec2 p_bot = ImVec2(lastCX + sz * cosf(a2), lastCY + sz * sinf(a2));
@@ -240,7 +208,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 5. 字体与 UI 基础
+// 5. 菜单 UI 组件
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -278,74 +246,91 @@ bool Toggle(const char* label, bool* v, int idx) {
 }
 
 // =================================================================
-// 6. 核心菜单 (修复标题栏与缩放独立性)
+// 6. 核心菜单 (完美修复标题栏与缩放的完全独立)
 // =================================================================
 void DrawMenu() {
     static bool isScaling = false; 
     static bool isDraggingHeader = false;
     ImGuiIO& io = ImGui::GetIO();
 
-    // 设置位置与大小
+    // 强制窗口属性
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), isScaling ? ImGuiCond_Always : ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(g_baseW * g_autoScale * g_scale, g_baseH * g_autoScale * g_scale), ImGuiCond_Always);
-    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Appearing);
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         ImGuiWindow* window = ImGui::GetCurrentWindow();
 
-        // --- 标题栏逻辑：移动与折叠 ---
+        // --- 逻辑1：标题栏点击与拖拽分离 ---
         if (ImGui::IsWindowHovered() && io.MousePos.y < (window->Pos.y + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseClicked(0)) isDraggingHeader = true;
         }
-
         if (isDraggingHeader) {
             g_menuX = window->Pos.x; g_menuY = window->Pos.y; 
             if (ImGui::IsMouseReleased(0)) {
+                // 如果位移极小，视为点击标题栏，切换折叠
                 if (io.MouseDragMaxDistanceSqr[0] < 15.0f && !isScaling) {
-                    g_menuCollapsed = !window->Collapsed;
-                    ImGui::SetWindowCollapsed(window, g_menuCollapsed);
+                    g_menuCollapsed = !g_menuCollapsed;
+                    SaveConfig();
                 }
-                isDraggingHeader = false; SaveConfig();
+                isDraggingHeader = false;
             }
         }
 
-        if (!window->Collapsed) {
+        // --- 逻辑2：菜单内部内容 ---
+        if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
 
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
-            if (ImGui::CollapsingHeader((const char*)u8"功能列表")) {
-                Toggle((const char*)u8"预测对手", &g_predict_enemy, 1);
-                Toggle((const char*)u8"棋盘透视", &g_esp_board, 2);
-                Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 3);
+            
+            // 找回你的所有菜单项
+            if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
+                ImGui::Indent();
+                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
+                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2);
+                ImGui::Unindent();
             }
-            if (ImGui::Button((const char*)u8"保存配置", ImVec2(-1, 40 * g_autoScale * g_scale))) SaveConfig();
+            if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
+                ImGui::Indent();
+                Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3);
+                Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4);
+                Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5);
+                ImGui::Unindent();
+            }
+            ImGui::Separator();
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6);
+            Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
+            
+            ImGui::Spacing();
+            if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // --- 缩放逻辑：右下角手柄 ---
+            // --- 逻辑3：右下角独立缩放 ---
             ImVec2 br = window->Pos + window->Size; 
             float handleSize = 80.0f * g_autoScale;
 
             if (!isDraggingHeader && ImGui::IsMouseClicked(0)) {
                 if (ImRect(br - ImVec2(handleSize, handleSize), br).Contains(io.MousePos)) isScaling = true;
             }
-
             if (isScaling) {
                 if (ImGui::IsMouseDown(0)) {
+                    // 缩放计算基于稳定的锚点 g_menuX，绝不跳动
                     float newScale = (io.MousePos.x - g_menuX) / (g_baseW * g_autoScale);
-                    g_scale = std::clamp(newScale, 0.5f, 4.0f);
+                    g_scale = std::clamp(newScale, 0.4f, 4.0f);
                 } else {
                     isScaling = false; g_needUpdateFontSafe = true; SaveConfig();
                 }
             }
-            window->DrawList->AddTriangleFilled(br, br - ImVec2(handleSize*0.3f, 0), br - ImVec2(0, handleSize*0.3f), IM_COL32(0, 150, 255, 200));
+            // 绘制缩放三角标识
+            window->DrawList->AddTriangleFilled(br, br - ImVec2(handleSize*0.35f, 0), br - ImVec2(0, handleSize*0.35f), IM_COL32(0, 150, 255, 200));
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 7. 入口
+// 7. 主循环
 // =================================================================
 int main() {
     ImGui::CreateContext();
