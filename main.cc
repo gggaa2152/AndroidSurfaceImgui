@@ -16,11 +16,12 @@
 #include <android/log.h>
 #include <algorithm>
 #include <unistd.h>
+#include <chrono>
 
 // =================================================================
 // 2. 全局状态变量
 // =================================================================
-const char* g_configPath = "/data/jkchess_config.ini"; 
+const char* g_configPath = "/sdcard/jkchess_config.ini";  // 改为SD卡，避免权限问题
 
 bool g_predict_enemy = false;
 bool g_predict_hex = false;
@@ -51,6 +52,7 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 
 bool g_needUpdateFontSafe = false;
+float g_lastFontUpdateTime = 0.0f;  // 上次字体更新时间
 
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
@@ -207,7 +209,12 @@ void UpdateFontHD(bool force = false) {
     g_autoScale = screenH / 1080.0f;
     
     float targetSize = std::min(20.0f * g_autoScale * g_scale, 140.0f);
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 1.0f) return;
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 2.0f) return;
+    
+    // 限制字体更新频率（最多每秒2次）
+    float currentTime = ImGui::GetTime();
+    if (!force && currentTime - g_lastFontUpdateTime < 0.5f) return;
+    g_lastFontUpdateTime = currentTime;
     
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
@@ -227,13 +234,27 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制
+// 5. 棋盘绘制（优化版）
 // =================================================================
+struct HexGridCache {
+    ImVec2 points[6];  // 单位向量
+    bool valid = false;
+} g_hexCache;
+
 void DrawBoard() {
     if (!g_esp_board) return;
     
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
+    
+    // 预计算六边形顶点（只计算一次）
+    if (!g_hexCache.valid) {
+        for(int i=0; i<6; i++) {
+            float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
+            g_hexCache.points[i] = ImVec2(cosf(a), sinf(a));
+        }
+        g_hexCache.valid = true;
+    }
     
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
     float xStep = sz * 1.73205f;
@@ -287,17 +308,6 @@ void DrawBoard() {
         }
     }
     
-    // 预计算六边形顶点
-    static ImVec2 hexPoints[6];
-    static bool pointsCached = false;
-    if (!pointsCached) {
-        for(int i=0; i<6; i++) {
-            float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-            hexPoints[i] = ImVec2(cosf(a), sinf(a));
-        }
-        pointsCached = true;
-    }
-    
     // 绘制六边形网格
     float time = (float)ImGui::GetTime();
     for(int r=0; r<4; r++) {
@@ -314,7 +324,8 @@ void DrawBoard() {
             
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
-                pts[i] = ImVec2(cx + sz * hexPoints[i].x, cy + sz * hexPoints[i].y);
+                pts[i] = ImVec2(cx + sz * g_hexCache.points[i].x, 
+                               cy + sz * g_hexCache.points[i].y);
             }
             d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 255), 
                 ImDrawFlags_Closed, 4.0f * g_autoScale);
@@ -365,7 +376,7 @@ bool ToggleSwitch(const char* label, bool* v) {
 }
 
 // =================================================================
-// 7. 菜单UI
+// 7. 菜单UI（优化版）
 // =================================================================
 void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
@@ -394,7 +405,6 @@ void DrawMenu() {
         drawList->AddRectFilled(titleBarRect.Min, titleBarRect.Max, IM_COL32(40, 40, 50, 240), 8.0f, ImDrawFlags_RoundCornersTop);
         
         // 标题文字
-        ImGui::SetWindowFontScale(1.2f);
         const char* title = g_menuCollapsed ? (const char*)u8"🔍 金铲铲助手 ▼" : (const char*)u8"🔍 金铲铲助手 ▲";
         ImVec2 textPos = ImVec2(windowPos.x + 15, windowPos.y + (titleBarHeight - ImGui::GetTextLineHeight()) * 0.5f);
         drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), title);
@@ -405,18 +415,19 @@ void DrawMenu() {
         ImRect scaleHandle(br - ImVec2(handleSize, handleSize), br);
         
         // 绘制缩放手柄
+        bool handleHovered = scaleHandle.Contains(io.MousePos);
         drawList->AddTriangleFilled(
             ImVec2(br.x - 10, br.y - handleSize + 10),
             ImVec2(br.x - handleSize + 10, br.y - 10),
             ImVec2(br.x - 10, br.y - 10),
-            scaleHandle.Contains(io.MousePos) ? IM_COL32(0, 150, 255, 255) : IM_COL32(100, 100, 100, 200));
+            handleHovered ? IM_COL32(0, 150, 255, 255) : IM_COL32(100, 100, 100, 200));
         
-        // 缩放交互
+        // 缩放交互（优化：使用乘法而不是加法，更线性）
         static bool isScaling = false;
         static float startScale = 1.0f;
         static float startMouseX = 0;
         
-        if (scaleHandle.Contains(io.MousePos) && ImGui::IsMouseClicked(0)) {
+        if (handleHovered && ImGui::IsMouseClicked(0)) {
             isScaling = true;
             startScale = g_scale;
             startMouseX = io.MousePos.x;
@@ -424,9 +435,12 @@ void DrawMenu() {
         
         if (isScaling) {
             if (ImGui::IsMouseDown(0)) {
-                float delta = (io.MousePos.x - startMouseX) / 200.0f;
-                float newScale = std::clamp(startScale + delta, 0.5f, 2.5f);
-                if (newScale != g_scale) {
+                // 使用乘法缩放，更自然
+                float ratio = 1.0f + (io.MousePos.x - startMouseX) / 500.0f;
+                float newScale = std::clamp(startScale * ratio, 0.5f, 2.5f);
+                
+                // 减少字体更新频率
+                if (std::abs(newScale - g_scale) > 0.02f) {
                     g_scale = newScale;
                     g_needUpdateFontSafe = true;
                 }
@@ -466,9 +480,11 @@ void DrawMenu() {
         if (!g_menuCollapsed) {
             ImGui::SetCursorPosY(titleBarHeight + 10);
             
-            // 设置字体
+            // 设置字体（限制缩放时的更新频率）
             float fontSize = 18.0f * g_scale;
-            ImGui::SetWindowFontScale(fontSize / g_current_rendered_size);
+            if (std::abs(fontSize / g_current_rendered_size - 1.0f) > 0.1f) {
+                ImGui::SetWindowFontScale(fontSize / g_current_rendered_size);
+            }
             
             // FPS显示
             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "FPS: %.1f", io.Framerate);
@@ -502,9 +518,6 @@ void DrawMenu() {
             if (ImGui::Button((const char*)u8"💾 保存设置", ImVec2(-1, 45 * g_scale))) {
                 SaveConfig();
             }
-            
-            // 状态提示
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "右下角拖动缩放");
         }
     }
     ImGui::End();
@@ -522,10 +535,25 @@ int main() {
     UpdateFontHD(true);
     
     std::thread inputThread([&] {
-        while (true) { imgui.ProcessInputEvent(); std::this_thread::yield(); }
+        while (true) { 
+            imgui.ProcessInputEvent(); 
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));  // 减少CPU占用
+        }
     });
     
+    int frameCount = 0;
+    auto lastTime = std::chrono::steady_clock::now();
+    
     while (true) {
+        auto currentTime = std::chrono::steady_clock::now();
+        float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+        lastTime = currentTime;
+        
+        // 限制帧率，避免CPU过载
+        if (deltaTime < 0.016f) {  // 约60fps
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        
         if (g_needUpdateFontSafe) {
             UpdateFontHD(true);
             g_needUpdateFontSafe = false;
@@ -534,7 +562,7 @@ int main() {
         imgui.BeginFrame();
         
         if (!g_resLoaded) {
-            g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png");
+            g_heroTexture = LoadTextureFromFile("/sdcard/heroes/FUX/aurora.png");  // 改为SD卡路径
             g_textureLoaded = (g_heroTexture != 0);
             g_resLoaded = true;
         }
@@ -543,7 +571,8 @@ int main() {
         DrawMenu();
         
         imgui.EndFrame();
-        std::this_thread::yield();
+        
+        frameCount++;
     }
     
     inputThread.detach();
