@@ -13,6 +13,7 @@ jobs:
 
       - name: Download stb_image.h
         run: |
+          # 自动补齐 main.cc 引用的 stb 库
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
       - name: Compile 64bit ELF
@@ -29,8 +30,8 @@ jobs:
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 2. 编译 C++
-          # -DIMGUI_DEFINE_MATH_OPERATORS: 必须保留，用于 ImVec2 运算
+          # 2. 编译主程序
+          # -DIMGUI_DEFINE_MATH_OPERATORS 修复 ImVec2 运算报错
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing \
