@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 1. 全局变量 (com.tencent.jkchess)
+// 1. 全局变量 (完全保留你所有的 7 个功能开关和所有坐标字段)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -58,7 +58,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理
+// 2. 配置管理 (完整读取/保存逻辑)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -112,7 +112,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 3. 渲染系统 (Shader & Texture)
+// 3. 渲染系统 (完整 Shader 和 英雄贴图绘制逻辑)
 // =================================================================
 class HexShader {
 public:
@@ -152,7 +152,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 棋盘绘制逻辑
+// 4. 棋盘绘制逻辑 (保留你的完整绘制和缩放判定)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -200,7 +200,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 5. 菜单 UI 组件
+// 5. 菜单 UI 组件 (完全保留你的 Toggle 样式)
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -232,38 +232,42 @@ bool Toggle(const char* label, bool* v, int idx) {
 }
 
 // =================================================================
-// 6. 完整菜单 (修复展开失效问题)
+// 6. 完整菜单 (修复展开失效，并保留你所有的功能开关)
 // =================================================================
 void DrawMenu() {
     static bool isScaling = false; 
     static bool isDraggingHeader = false;
     ImGuiIO& io = ImGui::GetIO();
 
-    // 关键修正：SetNextWindowCollapsed 使用变量 g_menuCollapsed 控制
+    // 核心修复：仅在首次出现或缩放时同步位置，避免覆盖内部折叠逻辑
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), isScaling ? ImGuiCond_Always : ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(g_baseW * g_autoScale * g_scale, g_baseH * g_autoScale * g_scale), ImGuiCond_Always);
-    ImGui::SetNextWindowCollapsed(g_menuCollapsed); // 每一帧同步我们的变量
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Appearing); 
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         ImGuiWindow* window = ImGui::GetCurrentWindow();
 
-        // --- 标题栏逻辑：移动与折叠 ---
+        // --- 逻辑：标题栏折叠与移动 ---
         if (ImGui::IsWindowHovered() && io.MousePos.y < (window->Pos.y + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseClicked(0)) isDraggingHeader = true;
         }
         if (isDraggingHeader) {
             g_menuX = window->Pos.x; g_menuY = window->Pos.y; 
             if (ImGui::IsMouseReleased(0)) {
-                // 如果位移极小，视为点击标题栏，物理翻转折叠变量
+                // 点击判定：位移极小时翻转折叠变量
                 if (io.MouseDragMaxDistanceSqr[0] < 15.0f && !isScaling) {
-                    g_menuCollapsed = !g_menuCollapsed; 
+                    g_menuCollapsed = !window->Collapsed;
+                    ImGui::SetWindowCollapsed(window, g_menuCollapsed);
                     SaveConfig();
                 }
                 isDraggingHeader = false;
             }
         }
+        
+        // 同步 ImGui 内部状态回全局变量
+        g_menuCollapsed = window->Collapsed;
 
-        // --- 内容展示 ---
+        // --- 内部逻辑 (展开时展示所有功能) ---
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
@@ -271,6 +275,7 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
+            // 完整保留你的功能菜单
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
                 ImGui::Indent();
                 Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
@@ -309,7 +314,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 主函数入口
+// 7. 入口 (完整循环)
 // =================================================================
 int main() {
     ImGui::CreateContext();
