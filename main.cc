@@ -209,7 +209,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制
+// 5. 棋盘绘制 (保留你的原始逻辑)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -268,7 +268,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (左侧三角与标题栏同步收起)
+// 6. 菜单 UI (逻辑定制：标题栏只收不展，三角只展不收)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -296,26 +296,34 @@ void DrawMenu() {
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
-    // 同步折叠状态给 ImGui 窗口系统
+    // 强制同步状态
     ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         
-        // --- 合并逻辑：点击标题栏或点击左侧三角都能切换折叠 ---
-        // 1. 检查内部折叠状态是否因点击三角被改变
-        if (ImGui::IsWindowCollapsed() != g_menuCollapsed) {
-            g_menuCollapsed = ImGui::IsWindowCollapsed();
+        // --- 核心逻辑定制 ---
+
+        // 逻辑 A：检测左侧小三角的点击 (ImGui 自带机制)
+        // 只有当内部状态从“收起”变为“展开”时，才同步变量。反之不操作。
+        if (g_menuCollapsed && !ImGui::IsWindowCollapsed()) {
+            g_menuCollapsed = false; // 点击三角 -> 只能展开
             SaveConfig();
         }
-        // 2. 检查标题栏空白区域点击
-        if (ImGui::IsItemClicked(0)) {
-            g_menuCollapsed = !g_menuCollapsed;
+        // 如果用户尝试通过三角收起，我们强制让它保持展开（除非点击标题栏）
+        else if (!g_menuCollapsed && ImGui::IsWindowCollapsed()) {
+             ImGui::SetWindowCollapsed(false); 
+        }
+
+        // 逻辑 B：点击标题栏空白处
+        // 只有当状态为“展开”时点击才起作用 -> 只能收起
+        if (!g_menuCollapsed && ImGui::IsItemClicked(0)) {
+            g_menuCollapsed = true; // 点击标题栏 -> 只能收起
             SaveConfig();
         }
 
-        // 拖拽逻辑保持不变
+        // 拖拽逻辑保持
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
