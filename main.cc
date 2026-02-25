@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 1. 全局变量 (com.tencent.jkchess) - 完整保留你的所有字段
+// 1. 全局变量 (com.tencent.jkchess)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -58,7 +58,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 - 修复了布尔值的读取逻辑
+// 2. 配置管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -131,8 +131,7 @@ public:
 bool g_HexShaderInited = false;
 
 GLuint LoadTextureFromFile(const char* filename) {
-    int w, h, c;
-    unsigned char* data = stbi_load(filename, &w, &h, &c, 4);
+    int w, h, c; unsigned char* data = stbi_load(filename, &w, &h, &c, 4);
     if (!data) return 0;
     GLuint tid; glGenTextures(1, &tid); glBindTexture(GL_TEXTURE_2D, tid);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -153,27 +152,23 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 棋盘绘制 (独立缩放逻辑)
+// 4. 棋盘绘制逻辑
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
-    ImDrawList* d = ImGui::GetForegroundDrawList();
-    ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* d = ImGui::GetForegroundDrawList(); ImGuiIO& io = ImGui::GetIO();
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
     float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
-
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
 
-    // 棋盘缩放标识
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
     ImVec2 p_top = ImVec2(lastCX + sz * cosf(a1), lastCY + sz * sinf(a1));
     ImVec2 p_bot = ImVec2(lastCX + sz * cosf(a2), lastCY + sz * sinf(a2));
     ImVec2 p_ext = ImVec2((p_top.x + p_bot.x) * 0.5f + sz * 0.6f, (p_top.y + p_bot.y) * 0.5f);
     d->AddTriangleFilled(p_top, p_bot, p_ext, IM_COL32(255, 215, 0, 200));
 
-    static bool isDraggingBoard = false, isScalingBoard = false;
-    static ImVec2 dragOffset;
+    static bool isDraggingBoard = false, isScalingBoard = false; static ImVec2 dragOffset;
     if (ImGui::IsMouseClicked(0)) {
         if (ImRect(p_top, p_ext).Contains(io.MousePos)) isScalingBoard = true;
         else if (ImRect(ImVec2(g_startX - sz, g_startY - sz), ImVec2(lastCX + sz, lastCY + sz)).Contains(io.MousePos)) {
@@ -191,18 +186,15 @@ void DrawBoard() {
         else { isDraggingBoard = false; SaveConfig(); }
     }
 
-    float time = (float)ImGui::GetTime();
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 7; c++) {
             float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0), cy = g_startY + r * yStep;
             if (g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), sz);
-            float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
-            float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
             ImVec2 pts[6]; for (int i = 0; i < 6; i++) {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
                 pts[i] = ImVec2(cx + sz * cosf(a), cy + sz * sinf(a));
             }
-            d->AddPolyline(pts, 6, IM_COL32(rf * 255, gf * 255, bf * 255, 255), ImDrawFlags_Closed, 3.0f * g_autoScale);
+            d->AddPolyline(pts, 6, IM_COL32(255, 255, 255, 150), ImDrawFlags_Closed, 2.0f * g_autoScale);
         }
     }
 }
@@ -218,25 +210,19 @@ void UpdateFontHD(bool force = false) {
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
-    ImFontConfig config; config.OversampleH = 1; config.PixelSnapH = true;
     const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
-    if (access(fontPath, R_OK) == 0) io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    if (access(fontPath, R_OK) == 0) io.Fonts->AddFontFromFileTTF(fontPath, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     io.Fonts->Build(); ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
 }
 
 bool Toggle(const char* label, bool* v, int idx) {
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const ImGuiID id = window->GetID(label);
-    const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
-    float h = ImGui::GetFrameHeight();
-    float w = h * 1.8f;
+    ImGuiWindow* window = ImGui::GetCurrentWindow(); const ImGuiStyle& style = ImGui::GetStyle();
+    const ImGuiID id = window->GetID(label); const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
+    float h = ImGui::GetFrameHeight(); float w = h * 1.8f;
     const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + style.ItemInnerSpacing.x + label_size.x, h));
-    ImGui::ItemSize(bb, style.FramePadding.y);
-    if (!ImGui::ItemAdd(bb, id)) return false;
-    bool hovered, held;
-    bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
+    ImGui::ItemSize(bb, style.FramePadding.y); if (!ImGui::ItemAdd(bb, id)) return false;
+    bool hovered, held; bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
     if (pressed) { *v = !(*v); SaveConfig(); }
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f;
     window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0, 0.45f, 0.9f, 0.8f), g_anim[idx])), h * 0.5f);
@@ -246,38 +232,38 @@ bool Toggle(const char* label, bool* v, int idx) {
 }
 
 // =================================================================
-// 6. 核心菜单 (完美修复标题栏与缩放的完全独立)
+// 6. 完整菜单 (修复展开失效问题)
 // =================================================================
 void DrawMenu() {
     static bool isScaling = false; 
     static bool isDraggingHeader = false;
     ImGuiIO& io = ImGui::GetIO();
 
-    // 强制窗口属性
+    // 关键修正：SetNextWindowCollapsed 使用变量 g_menuCollapsed 控制
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), isScaling ? ImGuiCond_Always : ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(g_baseW * g_autoScale * g_scale, g_baseH * g_autoScale * g_scale), ImGuiCond_Always);
-    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Always);
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed); // 每一帧同步我们的变量
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         ImGuiWindow* window = ImGui::GetCurrentWindow();
 
-        // --- 逻辑1：标题栏点击与拖拽分离 ---
+        // --- 标题栏逻辑：移动与折叠 ---
         if (ImGui::IsWindowHovered() && io.MousePos.y < (window->Pos.y + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseClicked(0)) isDraggingHeader = true;
         }
         if (isDraggingHeader) {
             g_menuX = window->Pos.x; g_menuY = window->Pos.y; 
             if (ImGui::IsMouseReleased(0)) {
-                // 如果位移极小，视为点击标题栏，切换折叠
+                // 如果位移极小，视为点击标题栏，物理翻转折叠变量
                 if (io.MouseDragMaxDistanceSqr[0] < 15.0f && !isScaling) {
-                    g_menuCollapsed = !g_menuCollapsed;
+                    g_menuCollapsed = !g_menuCollapsed; 
                     SaveConfig();
                 }
                 isDraggingHeader = false;
             }
         }
 
-        // --- 逻辑2：菜单内部内容 ---
+        // --- 内容展示 ---
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
@@ -285,7 +271,6 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            // 找回你的所有菜单项
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
                 ImGui::Indent();
                 Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
@@ -303,34 +288,28 @@ void DrawMenu() {
             Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6);
             Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
             
-            ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // --- 逻辑3：右下角独立缩放 ---
+            // --- 缩放逻辑 ---
             ImVec2 br = window->Pos + window->Size; 
-            float handleSize = 80.0f * g_autoScale;
-
+            float hSz = 80.0f * g_autoScale;
             if (!isDraggingHeader && ImGui::IsMouseClicked(0)) {
-                if (ImRect(br - ImVec2(handleSize, handleSize), br).Contains(io.MousePos)) isScaling = true;
+                if (ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) isScaling = true;
             }
             if (isScaling) {
                 if (ImGui::IsMouseDown(0)) {
-                    // 缩放计算基于稳定的锚点 g_menuX，绝不跳动
-                    float newScale = (io.MousePos.x - g_menuX) / (g_baseW * g_autoScale);
-                    g_scale = std::clamp(newScale, 0.4f, 4.0f);
-                } else {
-                    isScaling = false; g_needUpdateFontSafe = true; SaveConfig();
-                }
+                    float ns = (io.MousePos.x - g_menuX) / (g_baseW * g_autoScale);
+                    g_scale = std::clamp(ns, 0.4f, 4.0f);
+                } else { isScaling = false; g_needUpdateFontSafe = true; SaveConfig(); }
             }
-            // 绘制缩放三角标识
-            window->DrawList->AddTriangleFilled(br, br - ImVec2(handleSize*0.35f, 0), br - ImVec2(0, handleSize*0.35f), IM_COL32(0, 150, 255, 200));
+            window->DrawList->AddTriangleFilled(br, br - ImVec2(hSz*0.35f, 0), br - ImVec2(0, hSz*0.35f), IM_COL32(0, 150, 255, 200));
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 7. 主循环
+// 7. 主函数入口
 // =================================================================
 int main() {
     ImGui::CreateContext();
@@ -342,15 +321,12 @@ int main() {
     while (running) {
         if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
         imgui.BeginFrame(); 
-
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; 
         }
-
         DrawBoard(); 
         DrawMenu();
-
         imgui.EndFrame(); 
         std::this_thread::yield();
     }
