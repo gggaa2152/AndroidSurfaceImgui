@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 2. 全局状态变量 (com.tencent.jkchess)
+// 1. 全局变量与配置 (com.tencent.jkchess)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -33,8 +33,8 @@ bool g_instant = false;
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
 
-float g_scale = 1.0f;            
-float g_autoScale = 1.0f;        
+float g_scale = 1.0f;            // 菜单全局缩放比例
+float g_autoScale = 1.0f;        // 屏幕密度自动缩放
 float g_current_rendered_size = 0.0f; 
 
 float g_boardScale = 2.2f;       
@@ -50,7 +50,6 @@ float g_menuH = 500.0f;
 GLuint g_heroTexture = 0;           
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
-
 bool g_needUpdateFontSafe = false;
 
 int g_enemyBoard[4][7] = {
@@ -59,7 +58,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 配置管理
+// 2. 配置存取逻辑
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -76,9 +75,8 @@ void SaveConfig() {
         out << "manualScale=" << g_boardManualScale << "\n";
         out << "menuX=" << g_menuX << "\n";
         out << "menuY=" << g_menuY << "\n";
-        out << "menuW=" << g_menuW << "\n";
-        out << "menuH=" << g_menuH << "\n";
         out << "menuScale=" << g_scale << "\n";
+        out << "menuCollapsed=" << g_menuCollapsed << "\n";
         out.close();
     }
 }
@@ -104,9 +102,8 @@ void LoadConfig() {
                 else if (k == "manualScale") g_boardManualScale = std::stof(v);
                 else if (k == "menuX") g_menuX = std::stof(v);
                 else if (k == "menuY") g_menuY = std::stof(v);
-                else if (k == "menuW") g_menuW = std::stof(v);
-                else if (k == "menuH") g_menuH = std::stof(v);
                 else if (k == "menuScale") g_scale = std::stof(v);
+                else if (k == "menuCollapsed") g_menuCollapsed = (v == "1");
             } catch (...) {}
         }
         in.close();
@@ -115,12 +112,27 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助
+// 3. 渲染与字体系统
 // =================================================================
+void UpdateFontHD(bool force = false) {
+    ImGuiIO& io = ImGui::GetIO();
+    float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
+    g_autoScale = screenH / 1080.0f;
+    float baseSize = 18.0f * g_autoScale * g_scale;
+    float targetSize = std::clamp(baseSize, 12.0f, 120.0f);
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    io.Fonts->Clear();
+    ImFontConfig config; config.OversampleH = 1; config.PixelSnapH = true;
+    const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
+    if (access(fontPath, R_OK) == 0) io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    io.Fonts->Build(); ImGui_ImplOpenGL3_CreateFontsTexture();
+    g_current_rendered_size = targetSize;
+}
+
 class HexShader {
 public:
-    GLuint program = 0;
-    GLint resLoc = -1;
+    GLuint program = 0; GLint resLoc = -1;
     void Init() {
         const char* vs = "#version 300 es\nlayout(location=0) in vec2 Position;\nlayout(location=1) in vec2 UV;\nout vec2 Frag_UV;\nuniform vec2 u_Res;\nvoid main() {\n    Frag_UV = UV;\n    vec2 ndc = (Position / u_Res) * 2.0 - 1.0;\n    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n}";
         const char* fs = "#version 300 es\nprecision mediump float;\nuniform sampler2D Texture;\nin vec2 Frag_UV;\nout vec4 Out_Color;\nfloat sdHex(vec2 p, float r) {\n    vec3 k = vec3(-0.866025, 0.5, 0.57735);\n    p = abs(p);\n    p -= 2.0*min(dot(k.xy, p), 0.0)*k.xy;\n    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);\n    return length(p)*sign(p.y);\n}\nvoid main() {\n    vec2 p = (Frag_UV - 0.5) * 2.0;\n    vec2 rotated_p = vec2(p.y, p.x);\n    float d = sdHex(rotated_p, 0.92);\n    float w = fwidth(d);\n    float m = 1.0 - smoothstep(-w, w, d);\n    vec4 tex = texture(Texture, Frag_UV);\n    if(m <= 0.0) discard;\n    Out_Color = tex * m;\n}";
@@ -155,24 +167,8 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
-void UpdateFontHD(bool force = false) {
-    ImGuiIO& io = ImGui::GetIO();
-    float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
-    g_autoScale = screenH / 1080.0f;
-    float baseSize = 18.0f * g_autoScale * g_scale;
-    float targetSize = std::clamp(baseSize, 12.0f, 120.0f);
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
-    io.Fonts->Clear();
-    ImFontConfig config; config.OversampleH = 1; config.PixelSnapH = true;
-    const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
-    if (access(fontPath, R_OK) == 0) io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    io.Fonts->Build(); ImGui_ImplOpenGL3_CreateFontsTexture();
-    g_current_rendered_size = targetSize;
-}
-
 // =================================================================
-// 5. 棋盘绘制 (保持原始)
+// 4. 棋盘绘制逻辑
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -181,6 +177,8 @@ void DrawBoard() {
     float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
+    
+    // 绘制棋盘缩放手柄（三角）
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
     ImVec2 p_top = ImVec2(lastCX + sz * cosf(a1), lastCY + sz * sinf(a1)), p_bot = ImVec2(lastCX + sz * cosf(a2), lastCY + sz * sinf(a2));
     ImVec2 p_ext = ImVec2((p_top.x + p_bot.x) * 0.5f + sz * 0.6f, (p_top.y + p_bot.y) * 0.5f);
@@ -208,7 +206,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (修复缩放判定与坐标同步)
+// 5. 菜单 UI 组件
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow(); const ImGuiStyle& style = ImGui::GetStyle();
@@ -227,6 +225,7 @@ bool Toggle(const char* label, bool* v, int idx) {
 
 void DrawMenu() {
     static bool isScalingMenu = false; 
+    static ImVec2 scaleStartPos; 
     ImGuiIO& io = ImGui::GetIO();
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
 
@@ -234,15 +233,17 @@ void DrawMenu() {
     static bool stateInited = false;
     if (!stateInited) { ImGui::SetNextWindowCollapsed(g_menuCollapsed); stateInited = true; }
 
+    // 关键：缩放期间强制位置不变，非缩放期间使用 FirstUseEver 允许拖动
+    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), isScalingMenu ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(baseW * g_scale, baseH * g_scale), ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         ImGuiWindow* window = ImGui::GetCurrentWindow();
 
-        // 1. 标题栏点击/收起同步 (核心功能保持)
+        // --- 修复 1：标题栏点击判定 ---
         if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0) && !isScalingMenu) {
             if (window->TitleBarRect().Contains(io.MousePos)) {
+                // 如果没有点击在折叠三角的 ID 上，则手动切换折叠
                 if (ImGui::GetHoveredID() != window->GetID("#COLLAPSE")) {
                     ImGui::SetWindowCollapsed(window, !window->Collapsed);
                 }
@@ -250,14 +251,13 @@ void DrawMenu() {
         }
         if (g_menuCollapsed != window->Collapsed) { g_menuCollapsed = window->Collapsed; SaveConfig(); }
 
-        // 2. 坐标实时同步 (解决拖拽保存)
-        if (window->RootWindow->MoveId != 0 && window->RootWindow->MoveId == window->GetID("#MOVE")) {
+        // --- 修复 2：坐标保存（避开缩放冲突） ---
+        if (!isScalingMenu && window->RootWindow->MoveId != 0 && window->RootWindow->MoveId == window->GetID("#MOVE")) {
             g_menuX = window->Pos.x; g_menuY = window->Pos.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
 
         if (!window->Collapsed) {
-            // 设置字体缩放
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
             
@@ -275,53 +275,75 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // --- 修复后的缩放逻辑 ---
-            ImVec2 br = window->Pos + window->Size; // 真实的右下角
-            float hSz = 60.0f * g_autoScale; // 固定的手柄判定大小，不受 g_scale 影响
+            // --- 修复 3：锁定左上角的缩放逻辑 ---
+            ImVec2 br = window->Pos + window->Size; 
+            float hSz = 70.0f * g_autoScale; // 较大的缩放判定区域
 
-            // 判定是否开始缩放
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) {
                 isScalingMenu = true;
+                scaleStartPos = window->Pos; // 锁定起始坐标
             }
 
             if (isScalingMenu) {
                 if (ImGui::IsMouseDown(0)) {
-                    // 直接计算缩放比例 = (当前鼠标位置 - 窗口起点) / 基础宽度
-                    float newScale = (io.MousePos.x - window->Pos.x) / baseW;
-                    g_scale = std::clamp(newScale, 0.5f, 5.0f);
+                    // 以锁定的起点计算 scale，解决跳动
+                    float newScale = (io.MousePos.x - scaleStartPos.x) / baseW;
+                    g_scale = std::clamp(newScale, 0.4f, 4.0f);
                 } else {
                     isScalingMenu = false;
-                    g_needUpdateFontSafe = true; // 释放鼠标后重构高清字体
+                    g_needUpdateFontSafe = true; // 释放后重绘高清字体
                     SaveConfig();
                 }
             }
-
-            // 绘制缩放三角
-            window->DrawList->AddTriangleFilled(br, br - ImVec2(hSz * 0.4f, 0), br - ImVec2(0, hSz * 0.4f), IM_COL32(0, 120, 215, 200));
+            // 绘制缩放标识三角
+            window->DrawList->AddTriangleFilled(br, br - ImVec2(hSz*0.4f, 0), br - ImVec2(0, hSz*0.4f), IM_COL32(0, 120, 215, 200));
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 7. 程序入口
+// 6. 程序主入口
 // =================================================================
 int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    LoadConfig(); UpdateFontHD(true);  
+    
+    LoadConfig(); 
+    UpdateFontHD(true);  
+
     static bool running = true; 
-    std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
+    std::thread it([&] { 
+        while(running) { 
+            imgui.ProcessInputEvent(); 
+            std::this_thread::yield(); 
+        } 
+    });
 
     while (running) {
-        if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
+        if (g_needUpdateFontSafe) { 
+            UpdateFontHD(true); 
+            g_needUpdateFontSafe = false; 
+        }
+
         imgui.BeginFrame(); 
-        if (!g_resLoaded) { g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; }
-        DrawBoard(); DrawMenu();
+        
+        // 资源加载
+        if (!g_resLoaded) { 
+            g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
+            g_textureLoaded = (g_heroTexture != 0); 
+            g_resLoaded = true; 
+        }
+
+        DrawBoard(); 
+        DrawMenu();
+
         imgui.EndFrame(); 
         std::this_thread::yield();
     }
-    running = false; if (it.joinable()) it.join(); 
+
+    running = false; 
+    if (it.joinable()) it.join(); 
     return 0;
 }
