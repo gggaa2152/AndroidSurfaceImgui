@@ -339,7 +339,7 @@ void DrawMenu() {
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar;
     if (g_menuCollapsed) flags |= ImGuiWindowFlags_NoScrollWithMouse;
     
-    if (ImGui::Begin(u8"金铲铲助手", NULL, flags)) {
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, flags)) {
         // 标题栏点击切换折叠
         if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && 
             io.MousePos.y < g_menuY + ImGui::GetFrameHeight()) {
@@ -357,22 +357,22 @@ void DrawMenu() {
             ImGui::Text("FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            if (ImGui::CollapsingHeader(u8"预测功能", ImGuiTreeNodeFlags_DefaultOpen)) {
-                Toggle(u8"预测对手分布", &g_predict_enemy, 1);
-                Toggle(u8"海克斯强化预测", &g_predict_hex, 2);
+            if (ImGui::CollapsingHeader((const char*)u8"预测功能", ImGuiTreeNodeFlags_DefaultOpen)) {
+                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
+                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2);
             }
             
-            if (ImGui::CollapsingHeader(u8"透视功能", ImGuiTreeNodeFlags_DefaultOpen)) {
-                Toggle(u8"对手棋盘透视", &g_esp_board, 3);
-                Toggle(u8"对手备战席透视", &g_esp_bench, 4);
-                Toggle(u8"对手商店透视", &g_esp_shop, 5);
+            if (ImGui::CollapsingHeader((const char*)u8"透视功能", ImGuiTreeNodeFlags_DefaultOpen)) {
+                Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3);
+                Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4);
+                Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5);
             }
             
             ImGui::Separator();
-            Toggle(u8"全自动拿牌", &g_auto_buy, 6);
-            Toggle(u8"极速秒退助手", &g_instant, 7);
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6);
+            Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
             
-            if (ImGui::Button(u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) {
+            if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) {
                 SaveConfig();
             }
             
