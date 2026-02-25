@@ -115,7 +115,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助 (Shader & Texture)
+// 4. 渲染辅助
 // =================================================================
 class HexShader {
 public:
@@ -209,7 +209,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (保留原始位移与缩放逻辑)
+// 5. 棋盘绘制
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -268,7 +268,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (修复收起逻辑)
+// 6. 菜单 UI (左侧三角与标题栏同步收起)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -296,18 +296,26 @@ void DrawMenu() {
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
+    // 同步折叠状态给 ImGui 窗口系统
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         
-        // --- 修复点：点击标题栏收起/展开 (使用 IsItemClicked 更准确) ---
+        // --- 合并逻辑：点击标题栏或点击左侧三角都能切换折叠 ---
+        // 1. 检查内部折叠状态是否因点击三角被改变
+        if (ImGui::IsWindowCollapsed() != g_menuCollapsed) {
+            g_menuCollapsed = ImGui::IsWindowCollapsed();
+            SaveConfig();
+        }
+        // 2. 检查标题栏空白区域点击
         if (ImGui::IsItemClicked(0)) {
             g_menuCollapsed = !g_menuCollapsed;
             SaveConfig();
         }
 
-        // --- 拖拽逻辑保持不变 ---
+        // 拖拽逻辑保持不变
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
