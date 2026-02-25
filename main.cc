@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 2. 全局状态变量 (保持你原始所有变量名)
+// 2. 全局状态变量 (com.tencent.jkchess)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -51,7 +51,6 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
-// 标记：仅用于解决 BeginFrame 锁死问题，不改动业务逻辑
 bool g_needUpdateFontSafe = false;
 
 int g_enemyBoard[4][7] = {
@@ -60,7 +59,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 配置管理 (完整保留你的stof解析逻辑)
+// 3. 配置管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -116,7 +115,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助 (完全保留你的 HexShader 算法)
+// 4. 渲染辅助 (Shader & Texture)
 // =================================================================
 class HexShader {
 public:
@@ -242,16 +241,12 @@ void DrawBoard() {
             float curW = io.MousePos.x - g_startX;
             float baseW = (6.5f * 1.73205f + 1.0f) * 38.0f * g_boardScale * g_autoScale;
             g_boardManualScale = std::max(curW / baseW, 0.1f); 
-        } else {
-            isScalingBoard = false; SaveConfig(); 
-        }
+        } else { isScalingBoard = false; SaveConfig(); }
     }
     if (isDraggingBoard && !isScalingBoard) {
         if (ImGui::IsMouseDown(0)) {
             g_startX = io.MousePos.x - dragOffset.x; g_startY = io.MousePos.y - dragOffset.y;
-        } else {
-            isDraggingBoard = false; SaveConfig(); 
-        }
+        } else { isDraggingBoard = false; SaveConfig(); }
     }
 
     float time = (float)ImGui::GetTime();
@@ -273,7 +268,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (完整保留原始动画与补偿逻辑)
+// 6. 菜单 UI (修复收起逻辑)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -305,13 +300,19 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
-            if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
+        
+        // --- 修复点：点击标题栏收起/展开 (使用 IsItemClicked 更准确) ---
+        if (ImGui::IsItemClicked(0)) {
+            g_menuCollapsed = !g_menuCollapsed;
+            SaveConfig();
         }
+
+        // --- 拖拽逻辑保持不变 ---
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
+
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
@@ -344,7 +345,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 程序入口 (无 TLS 版本)
+// 7. 程序入口
 // =================================================================
 int main() {
     ImGui::CreateContext();
