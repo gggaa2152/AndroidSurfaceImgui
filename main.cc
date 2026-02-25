@@ -115,7 +115,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助 (Shader & Texture)
+// 4. 渲染辅助
 // =================================================================
 class HexShader {
 public:
@@ -268,7 +268,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (重写点击折叠逻辑)
+// 6. 菜单 UI (恢复三角并同步点击)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -294,19 +294,25 @@ void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO(); 
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
-    
-    // 手动控制窗口高度实现收起，避免触发 ImGui 内部 Collapsed 导致的判定失效
-    float titleHeight = ImGui::GetFrameHeight();
-    float currentH = g_menuCollapsed ? titleHeight : (baseH * g_scale);
+    float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
+    // 【关键】强制同步变量到 ImGui 内部状态，这样三角箭头的方向才会正确
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
-    // 禁用自带折叠，改由我们接管
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse)) {
+    // 移除 NoCollapse，让三角箭头回来
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         
-        // 核心修复：监听整个窗口 Item（即标题栏）的点击
-        // 这样点击标题栏左边三角、标题文字、标题栏空白处，都能触发逻辑
+        // 【关键修复】同步双向点击
+        // 1. 监听 ImGui 内部状态变化（点击三角时触发）
+        if (ImGui::IsWindowCollapsed() != g_menuCollapsed) {
+            g_menuCollapsed = ImGui::IsWindowCollapsed();
+            SaveConfig();
+        }
+        
+        // 2. 监听标题栏整体点击（点击文字或空白处触发）
+        // 在 Begin 之后立刻调用，判定范围为标题栏
         if (ImGui::IsItemClicked(0)) {
             g_menuCollapsed = !g_menuCollapsed;
             SaveConfig();
@@ -314,7 +320,7 @@ void DrawMenu() {
 
         // 拖拽逻辑 (仅在标题栏区域触发)
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
-            if (io.MousePos.y < g_menuY + titleHeight) {
+            if (io.MousePos.y < g_menuY + ImGui::GetFrameHeight()) {
                 g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
                 if (ImGui::IsMouseReleased(0)) SaveConfig();
             }
