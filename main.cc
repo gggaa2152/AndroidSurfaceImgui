@@ -1,6 +1,12 @@
 // =================================================================
-// 1. 头文件 (必须置顶)
+// 1. 系统适配与头文件 (TLS 内存对齐防止部分机型崩溃)
 // =================================================================
+#ifdef __aarch64__
+__attribute__((tls_model("initial-exec"))) 
+__attribute__((aligned(64))) 
+static thread_local char _tls_align_fix[64] = {0}; 
+#endif
+
 #include "Global.h"
 #include "AImGui.h"
 #include "imgui_internal.h"
@@ -19,7 +25,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 2. 全局状态变量 (com.tencent.jkchess 专用)
+// 2. 全局状态变量 (com.tencent.jkchess)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini";
 
@@ -30,13 +36,12 @@ bool g_auto_buy = false, g_instant = false;
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
 
-// 全局缩放因子
 float g_scale = 1.0f, g_autoScale = 1.0f, g_current_rendered_size = 0.0f; 
 float g_boardScale = 2.2f, g_boardManualScale = 1.0f; 
 float g_startX = 400.0f, g_startY = 400.0f;    
 
 ImVec2 g_menuPos = {100.0f, 100.0f}; 
-bool g_needUpdateFont = false;
+bool g_needUpdateFont = false; // 核心标记位：用于安全更新字体
 
 GLuint g_heroTexture = 0;           
 bool g_textureLoaded = false;    
@@ -47,7 +52,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 配置持久化：保存与读取
+// 3. 配置持久化
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -77,7 +82,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 六边形 Shader 裁剪逻辑 (从你上传的文件提取)
+// 4. 六边形 Shader 裁剪 (完全保留)
 // =================================================================
 class HexShader {
 public:
@@ -131,7 +136,7 @@ public:
 bool g_HexShaderInited = false;
 
 // =================================================================
-// 5. 全局缩放适配与样式更新
+// 5. 安全的全局缩放适配 (修复 Error 134)
 // =================================================================
 void UpdateGlobalScale(bool forceFont = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -139,7 +144,7 @@ void UpdateGlobalScale(bool forceFont = false) {
     g_autoScale = screenH / 1080.0f;
     float finalScale = g_autoScale * g_scale;
 
-    // 更新字体
+    // 1. 字体更新：仅在非渲染期间调用
     float targetSize = std::max(10.0f, 18.0f * finalScale); 
     if (forceFont || std::abs(targetSize - g_current_rendered_size) > 0.5f) {
         ImGui_ImplOpenGL3_DestroyFontsTexture();
@@ -153,23 +158,23 @@ void UpdateGlobalScale(bool forceFont = false) {
         g_current_rendered_size = targetSize;
     }
 
-    // 更新全局样式实现“全方位缩放”
+    // 2. 样式更新：全方位缩放
     ImGuiStyle& style = ImGui::GetStyle();
-    ImGuiStyle defaultStyle; 
-    style = defaultStyle; // 先重置
-    style.WindowPadding    *= finalScale;
-    style.WindowRounding   *= finalScale;
-    style.FramePadding     *= finalScale;
-    style.FrameRounding    *= finalScale;
-    style.ItemSpacing      *= finalScale;
+    ImGuiStyle def; 
+    style = def; 
+    style.WindowPadding *= finalScale;
+    style.WindowRounding *= finalScale;
+    style.FramePadding *= finalScale;
+    style.FrameRounding *= finalScale;
+    style.ItemSpacing *= finalScale;
     style.ItemInnerSpacing *= finalScale;
-    style.IndentSpacing    *= finalScale;
-    style.ScrollbarSize    *= finalScale;
-    style.GrabMinSize      *= finalScale;
+    style.IndentSpacing *= finalScale;
+    style.ScrollbarSize *= finalScale;
+    style.GrabMinSize *= finalScale;
 }
 
 // =================================================================
-// 6. 功能绘制组件
+// 6. 绘图与功能组件
 // =================================================================
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
@@ -213,7 +218,7 @@ GLuint LoadTextureFromFile(const char* filename) {
 }
 
 // =================================================================
-// 7. 棋盘绘制 (修正了 Expand 链式调用报错)
+// 7. 棋盘绘制 (带交互判断修正)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -233,9 +238,8 @@ void DrawBoard() {
     ImVec2 p_ext = ImVec2((p_top.x + p_bot.x) * 0.5f + sz * 0.6f, (p_top.y + p_bot.y) * 0.5f);
     d->AddTriangleFilled(p_top, p_bot, p_ext, IM_COL32(255, 215, 0, 240));
 
-    // 交互判定
     if (ImGui::IsMouseClicked(0)) {
-        ImRect scaleRect(p_top, p_ext); scaleRect.Expand(40.0f); // 分开写避免报错
+        ImRect scaleRect(p_top, p_ext); scaleRect.Expand(40.0f); 
         if (scaleRect.Contains(io.MousePos)) {
             isScalingB = true;
         } else {
@@ -274,7 +278,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 8. 菜单 UI (全局缩放版)
+// 8. 菜单 UI
 // =================================================================
 void DrawMenu() {
     static bool isScalingM = false, isDraggingM = false;
@@ -302,17 +306,13 @@ void DrawMenu() {
             ImGui::Separator();
             
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
-                ImGui::Indent(); 
-                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
-                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); 
-                ImGui::Unindent();
+                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
+                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
             }
             if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
-                ImGui::Indent(); 
-                Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3);
+                ImGui::Indent(); Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3);
                 Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4);
-                Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); 
-                ImGui::Unindent();
+                Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); ImGui::Unindent();
             }
             ImGui::Separator();
             Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6);
@@ -326,9 +326,12 @@ void DrawMenu() {
             if (isScalingM && ImGui::IsMouseDown(0)) {
                 float delta = std::max((io.MousePos.x - sMP.x) / (baseW * g_autoScale), (io.MousePos.y - sMP.y) / (baseH * g_autoScale));
                 g_scale = std::clamp(sMS + delta, 0.5f, 3.0f);
-                UpdateGlobalScale(); 
-            } else if (isScalingM) { isScalingM = false; g_needUpdateFont = true; SaveConfig(); }
-            
+                // 重点修复：缩放期间不直接更新 Style 里的字体，只在松开后通过标记位更新
+            } else if (isScalingM) { 
+                isScalingM = false; 
+                g_needUpdateFont = true; // 标记：在渲染循环开始前安全更新
+                SaveConfig(); 
+            }
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz * 0.4f, 0), br - ImVec2(0, hSz * 0.4f), IM_COL32(0, 120, 215, 200));
         }
     }
@@ -336,9 +339,10 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 9. 程序主入口
+// 9. 程序循环入口 (修正核心逻辑)
 // =================================================================
 int main() {
+    _tls_align_fix[0] = 1; // 激活 TLS 补丁
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     
@@ -349,8 +353,13 @@ int main() {
     std::thread([&]{ while(running){ imgui.ProcessInputEvent(); std::this_thread::yield(); } }).detach();
 
     while (running) {
-        if (g_needUpdateFont) { UpdateGlobalScale(true); g_needUpdateFont = false; }
-        imgui.BeginFrame();
+        // --- 核心修复点：字体更新必须在 BeginFrame 之前！ ---
+        if (g_needUpdateFont) { 
+            UpdateGlobalScale(true); 
+            g_needUpdateFont = false; 
+        }
+
+        imgui.BeginFrame(); // 在这里之后，ImFontAtlas 就会被锁定
         
         if(!g_textureLoaded) {
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png");
@@ -359,6 +368,7 @@ int main() {
 
         DrawBoard(); 
         DrawMenu();
+        
         imgui.EndFrame();
         std::this_thread::yield();
     }
