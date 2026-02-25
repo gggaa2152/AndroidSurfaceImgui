@@ -1,12 +1,3 @@
-// =================================================================
-// 1. 系统适配与预处理 (TLS 内存对齐)
-// =================================================================
-#ifdef __aarch64__
-__attribute__((tls_model("initial-exec"))) 
-__attribute__((aligned(64))) 
-static thread_local char _tls_align_fix[64] = {0}; 
-#endif
-
 #include <stdarg.h>
 #include "Global.h"
 #include "AImGui.h"
