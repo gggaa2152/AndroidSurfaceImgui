@@ -21,7 +21,7 @@
 // =================================================================
 // 2. 全局状态变量
 // =================================================================
-const char* g_configPath = "/sdcard/jkchess_config.ini";  // 改为SD卡，避免权限问题
+const char* g_configPath = "/sdcard/jkchess_config.ini";
 
 bool g_predict_enemy = false;
 bool g_predict_hex = false;
@@ -52,12 +52,19 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 
 bool g_needUpdateFontSafe = false;
-float g_lastFontUpdateTime = 0.0f;  // 上次字体更新时间
+float g_lastFontUpdateTime = 0.0f;
 
+// 棋盘数据
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
     {0, 0, 0, 0, 0, 1, 0}, {1, 0, 1, 0, 1, 0, 1}
 };
+
+// 六边形顶点缓存
+struct HexPoints {
+    ImVec2 pts[6];
+    bool valid = false;
+} g_hexPoints;
 
 // =================================================================
 // 3. 配置管理
@@ -81,6 +88,7 @@ void SaveConfig() {
             << "menuH=" << g_menuH << "\n"
             << "menuScale=" << g_scale << "\n";
         out.close();
+        __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "配置已保存");
     }
 }
 
@@ -169,28 +177,42 @@ public:
         
         resLoc = glGetUniformLocation(program, "u_Res");
         glDeleteShader(v); glDeleteShader(f);
+        
+        __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "HexShader初始化完成");
     }
 } g_HexShader;
 
 bool g_HexShaderInited = false;
 
 GLuint LoadTextureFromFile(const char* filename) {
+    __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "尝试加载纹理: %s", filename);
+    
     int w, h, c;
     unsigned char* data = stbi_load(filename, &w, &h, &c, 4);
-    if (!data) return 0;
+    if (!data) {
+        __android_log_print(ANDROID_LOG_ERROR, "JKChess", "纹理加载失败: %s", filename);
+        return 0;
+    }
     
     GLuint tid;
     glGenTextures(1, &tid);
     glBindTexture(GL_TEXTURE_2D, tid);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    
     stbi_image_free(data);
+    __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "纹理加载成功: %d x %d", w, h);
     return tid;
 }
 
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
-    if (!g_textureLoaded) return;
-    if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
+    if (!g_textureLoaded || g_heroTexture == 0) return;
+    
+    if (!g_HexShaderInited) { 
+        g_HexShader.Init(); 
+        g_HexShaderInited = true; 
+    }
     
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
@@ -198,34 +220,40 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
         glUniform2f(g_HexShader.resLoc, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
     }, (void*)(intptr_t)g_heroTexture);
     
-    drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, 
-        center - ImVec2(size, size), center + ImVec2(size, size));
+    drawList->AddImage((void*)(intptr_t)g_heroTexture, 
+        ImVec2(center.x - size, center.y - size), 
+        ImVec2(center.x + size, center.y + size));
+    
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
-    float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
+    if (io.DisplaySize.y <= 0) return;
+    
+    float screenH = io.DisplaySize.y;
     g_autoScale = screenH / 1080.0f;
     
     float targetSize = std::min(20.0f * g_autoScale * g_scale, 140.0f);
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 2.0f) return;
     
-    // 限制字体更新频率（最多每秒2次）
+    // 限制字体更新频率
     float currentTime = ImGui::GetTime();
-    if (!force && currentTime - g_lastFontUpdateTime < 0.5f) return;
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 3.0f) return;
+    if (!force && currentTime - g_lastFontUpdateTime < 1.0f) return;
+    
     g_lastFontUpdateTime = currentTime;
     
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     
     ImFontConfig config;
-    config.OversampleH = 2;
-    config.PixelSnapH = false;
+    config.OversampleH = 1;
+    config.PixelSnapH = true;
     
-    if (access("/system/fonts/SysSans-Hans-Regular.ttf", R_OK) == 0) {
-        io.Fonts->AddFontFromFileTTF("/system/fonts/SysSans-Hans-Regular.ttf", 
-            targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
+    if (access(fontPath, R_OK) == 0) {
+        io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, 
+            io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     }
     
     io.Fonts->Build();
@@ -236,24 +264,19 @@ void UpdateFontHD(bool force = false) {
 // =================================================================
 // 5. 棋盘绘制（优化版）
 // =================================================================
-struct HexGridCache {
-    ImVec2 points[6];  // 单位向量
-    bool valid = false;
-} g_hexCache;
-
 void DrawBoard() {
     if (!g_esp_board) return;
     
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
-    // 预计算六边形顶点（只计算一次）
-    if (!g_hexCache.valid) {
+    // 预计算六边形顶点
+    if (!g_hexPoints.valid) {
         for(int i=0; i<6; i++) {
             float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-            g_hexCache.points[i] = ImVec2(cosf(a), sinf(a));
+            g_hexPoints.pts[i] = ImVec2(cosf(a), sinf(a));
         }
-        g_hexCache.valid = true;
+        g_hexPoints.valid = true;
     }
     
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
@@ -315,19 +338,22 @@ void DrawBoard() {
             float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0);
             float cy = g_startY + r * yStep;
             
-            if(g_enemyBoard[r][c] && g_textureLoaded) 
+            // 绘制英雄纹理
+            if(g_enemyBoard[r][c] && g_textureLoaded && g_heroTexture != 0) {
                 DrawHero(d, ImVec2(cx, cy), sz);
+            }
             
+            // 彩色边框
             float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
             float rf, gf, bf;
             ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
             
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
-                pts[i] = ImVec2(cx + sz * g_hexCache.points[i].x, 
-                               cy + sz * g_hexCache.points[i].y);
+                pts[i] = ImVec2(cx + sz * g_hexPoints.pts[i].x, 
+                               cy + sz * g_hexPoints.pts[i].y);
             }
-            d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 255), 
+            d->AddPolyline(pts, 6, IM_COL32((int)(rf*255), (int)(gf*255), (int)(bf*255), 255), 
                 ImDrawFlags_Closed, 4.0f * g_autoScale);
         }
     }
@@ -342,8 +368,8 @@ bool ToggleSwitch(const char* label, bool* v) {
     
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImGuiID id = window->GetID(label);
-    const float w = 52.0f * g_scale;
-    const float h = 30.0f * g_scale;
+    const float w = 52.0f;
+    const float h = 30.0f;
     const float radius = h * 0.5f;
     
     ImVec2 pos = window->DC.CursorPos;
@@ -380,22 +406,25 @@ bool ToggleSwitch(const char* label, bool* v) {
 // =================================================================
 void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
-    float baseW = 320.0f * g_autoScale;
-    float baseH = 500.0f * g_autoScale;
+    float baseW = 320.0f;
+    float baseH = 500.0f;
     
     // 窗口大小
     float windowW = baseW * g_scale;
-    float windowH = g_menuCollapsed ? 40.0f * g_scale : baseH * g_scale;
+    float windowH = g_menuCollapsed ? 40.0f : baseH * g_scale;
     
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(windowW, windowH), ImGuiCond_Always);
     
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar;
     
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, flags)) {
+    char windowTitle[256];
+    sprintf(windowTitle, "%s", (const char*)u8"金铲铲助手");
+    
+    if (ImGui::Begin(windowTitle, NULL, flags)) {
         ImVec2 windowPos = ImGui::GetWindowPos();
         ImVec2 windowSize = ImGui::GetWindowSize();
-        float titleBarHeight = 35.0f * g_scale;
+        float titleBarHeight = 35.0f;
         
         // 标题栏区域
         ImRect titleBarRect(windowPos, ImVec2(windowPos.x + windowSize.x, windowPos.y + titleBarHeight));
@@ -410,7 +439,7 @@ void DrawMenu() {
         drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), title);
         
         // 缩放控制（右下角）
-        float handleSize = 40.0f * g_scale;
+        float handleSize = 40.0f;
         ImVec2 br(windowPos.x + windowSize.x, windowPos.y + windowSize.y);
         ImRect scaleHandle(br - ImVec2(handleSize, handleSize), br);
         
@@ -422,7 +451,7 @@ void DrawMenu() {
             ImVec2(br.x - 10, br.y - 10),
             handleHovered ? IM_COL32(0, 150, 255, 255) : IM_COL32(100, 100, 100, 200));
         
-        // 缩放交互（优化：使用乘法而不是加法，更线性）
+        // 缩放交互
         static bool isScaling = false;
         static float startScale = 1.0f;
         static float startMouseX = 0;
@@ -435,12 +464,10 @@ void DrawMenu() {
         
         if (isScaling) {
             if (ImGui::IsMouseDown(0)) {
-                // 使用乘法缩放，更自然
-                float ratio = 1.0f + (io.MousePos.x - startMouseX) / 500.0f;
-                float newScale = std::clamp(startScale * ratio, 0.5f, 2.5f);
+                float delta = (io.MousePos.x - startMouseX) * 0.005f;
+                float newScale = std::clamp(startScale + delta, 0.5f, 2.5f);
                 
-                // 减少字体更新频率
-                if (std::abs(newScale - g_scale) > 0.02f) {
+                if (std::abs(newScale - g_scale) > 0.01f) {
                     g_scale = newScale;
                     g_needUpdateFontSafe = true;
                 }
@@ -451,14 +478,14 @@ void DrawMenu() {
         }
         
         // 标题栏点击切换折叠
-        if (titleBarRect.Contains(io.MousePos) && 
-            !scaleHandle.Contains(io.MousePos) && 
-            ImGui::IsMouseReleased(0)) {
-            g_menuCollapsed = !g_menuCollapsed;
-            SaveConfig();
+        if (titleBarRect.Contains(io.MousePos) && !scaleHandle.Contains(io.MousePos)) {
+            if (ImGui::IsMouseReleased(0)) {
+                g_menuCollapsed = !g_menuCollapsed;
+                SaveConfig();
+            }
         }
         
-        // 窗口拖动（标题栏区域）
+        // 窗口拖动
         static bool isDragging = false;
         if (titleBarRect.Contains(io.MousePos) && !scaleHandle.Contains(io.MousePos)) {
             if (ImGui::IsMouseClicked(0)) {
@@ -480,42 +507,37 @@ void DrawMenu() {
         if (!g_menuCollapsed) {
             ImGui::SetCursorPosY(titleBarHeight + 10);
             
-            // 设置字体（限制缩放时的更新频率）
-            float fontSize = 18.0f * g_scale;
-            if (std::abs(fontSize / g_current_rendered_size - 1.0f) > 0.1f) {
-                ImGui::SetWindowFontScale(fontSize / g_current_rendered_size);
-            }
+            // 设置字体
+            float fontSize = 18.0f;
+            ImGui::SetWindowFontScale(fontSize / g_current_rendered_size);
             
-            // FPS显示
             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
             // 预测功能
             if (ImGui::CollapsingHeader((const char*)u8"📊 预测功能", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::Indent(15.0f * g_scale);
+                ImGui::Indent(15.0f);
                 ToggleSwitch((const char*)u8"预测对手分布", &g_predict_enemy);
                 ToggleSwitch((const char*)u8"海克斯强化预测", &g_predict_hex);
-                ImGui::Unindent(15.0f * g_scale);
+                ImGui::Unindent(15.0f);
             }
             
             // 透视功能
             if (ImGui::CollapsingHeader((const char*)u8"👁️ 透视功能", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::Indent(15.0f * g_scale);
+                ImGui::Indent(15.0f);
                 ToggleSwitch((const char*)u8"对手棋盘透视", &g_esp_board);
                 ToggleSwitch((const char*)u8"对手备战席透视", &g_esp_bench);
                 ToggleSwitch((const char*)u8"对手商店透视", &g_esp_shop);
-                ImGui::Unindent(15.0f * g_scale);
+                ImGui::Unindent(15.0f);
             }
             
             ImGui::Separator();
             
-            // 其他功能
             ToggleSwitch((const char*)u8"⚡ 全自动拿牌", &g_auto_buy);
             ToggleSwitch((const char*)u8"⏱️ 极速秒退助手", &g_instant);
             ImGui::Spacing();
             
-            // 保存按钮
-            if (ImGui::Button((const char*)u8"💾 保存设置", ImVec2(-1, 45 * g_scale))) {
+            if (ImGui::Button((const char*)u8"💾 保存设置", ImVec2(-1, 45.0f))) {
                 SaveConfig();
             }
         }
@@ -527,6 +549,8 @@ void DrawMenu() {
 // 8. 程序入口
 // =================================================================
 int main() {
+    __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "程序启动");
+    
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     eglSwapInterval(eglGetCurrentDisplay(), 1);
@@ -534,25 +558,34 @@ int main() {
     LoadConfig();
     UpdateFontHD(true);
     
+    // 加载纹理
+    const char* texturePath = "/sdcard/heroes/FUX/aurora.png";
+    g_heroTexture = LoadTextureFromFile(texturePath);
+    g_textureLoaded = (g_heroTexture != 0);
+    g_resLoaded = true;
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "纹理加载状态: %d", g_textureLoaded);
+    
     std::thread inputThread([&] {
         while (true) { 
             imgui.ProcessInputEvent(); 
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));  // 减少CPU占用
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     });
     
-    int frameCount = 0;
     auto lastTime = std::chrono::steady_clock::now();
+    int frameCount = 0;
     
     while (true) {
         auto currentTime = std::chrono::steady_clock::now();
         float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
-        lastTime = currentTime;
         
-        // 限制帧率，避免CPU过载
-        if (deltaTime < 0.016f) {  // 约60fps
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // 限制帧率到60fps
+        if (deltaTime < 0.016f) {
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
+            continue;
         }
+        lastTime = currentTime;
         
         if (g_needUpdateFontSafe) {
             UpdateFontHD(true);
@@ -560,12 +593,6 @@ int main() {
         }
         
         imgui.BeginFrame();
-        
-        if (!g_resLoaded) {
-            g_heroTexture = LoadTextureFromFile("/sdcard/heroes/FUX/aurora.png");  // 改为SD卡路径
-            g_textureLoaded = (g_heroTexture != 0);
-            g_resLoaded = true;
-        }
         
         DrawBoard();
         DrawMenu();
