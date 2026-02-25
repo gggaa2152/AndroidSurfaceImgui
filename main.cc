@@ -160,7 +160,7 @@ void UpdateFontHD(bool force = false) {
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     float baseSize = 18.0f * g_autoScale * g_scale;
-    float targetSize = (baseSize > 120.0f) ? 120.0f : baseSize; 
+    float targetSize = std::clamp(baseSize, 12.0f, 120.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
@@ -172,7 +172,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制
+// 5. 棋盘绘制 (保持原始)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -208,7 +208,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (解决收缩/展开判定问题)
+// 6. 菜单 UI (修复缩放判定与坐标同步)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow(); const ImGuiStyle& style = ImGui::GetStyle();
@@ -226,70 +226,79 @@ bool Toggle(const char* label, bool* v, int idx) {
 }
 
 void DrawMenu() {
-    static bool isScalingMenu = false; static float startMS = 1.0f; static ImVec2 startMP;
+    static bool isScalingMenu = false; 
     ImGuiIO& io = ImGui::GetIO();
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
 
-    // 只有在第一次运行或配置加载时同步一次状态，不使用 Cond_Always
+    // 状态初始化
     static bool stateInited = false;
     if (!stateInited) { ImGui::SetNextWindowCollapsed(g_menuCollapsed); stateInited = true; }
 
-    ImGui::SetNextWindowSize(ImVec2(baseW * g_scale, baseH * g_scale), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(baseW * g_scale, baseH * g_scale), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
 
-    // 开启窗口
-    bool isOpen = ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar);
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
 
-    // 【核心修复逻辑】
-    // 1. 手动判定标题栏点击（即使收起状态也能判定）
-    if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
-        if (window->TitleBarRect().Contains(io.MousePos)) {
-            // 如果点击的不是左侧的原生三角 ID，则手动切换
-            if (ImGui::GetHoveredID() != window->GetID("#COLLAPSE")) {
-                ImGui::SetWindowCollapsed(window, !window->Collapsed);
+        // 1. 标题栏点击/收起同步 (核心功能保持)
+        if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0) && !isScalingMenu) {
+            if (window->TitleBarRect().Contains(io.MousePos)) {
+                if (ImGui::GetHoveredID() != window->GetID("#COLLAPSE")) {
+                    ImGui::SetWindowCollapsed(window, !window->Collapsed);
+                }
             }
         }
-    }
+        if (g_menuCollapsed != window->Collapsed) { g_menuCollapsed = window->Collapsed; SaveConfig(); }
 
-    // 2. 实时同步变量（不论是点三角还是点标题栏触发的，都保存）
-    if (g_menuCollapsed != window->Collapsed) {
-        g_menuCollapsed = window->Collapsed;
-        SaveConfig();
-    }
-
-    // 3. 拖拽坐标同步（修复收起后无法保存位置的问题）
-    if (window->RootWindow->MoveId != 0 && window->RootWindow->MoveId == window->GetID("#MOVE")) {
-        g_menuX = window->Pos.x; g_menuY = window->Pos.y;
-        if (ImGui::IsMouseReleased(0)) SaveConfig();
-    }
-
-    if (isOpen) {
-        float expectedSize = 18.0f * g_autoScale * g_scale;
-        ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
-        ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
-        ImGui::Separator();
-        if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
-            ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
+        // 2. 坐标实时同步 (解决拖拽保存)
+        if (window->RootWindow->MoveId != 0 && window->RootWindow->MoveId == window->GetID("#MOVE")) {
+            g_menuX = window->Pos.x; g_menuY = window->Pos.y;
+            if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
-        if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
-            ImGui::Indent(); Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4); Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); ImGui::Unindent();
-        }
-        ImGui::Separator();
-        Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
-        ImGui::Spacing();
-        if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-        // 缩放逻辑
-        ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize(); float hSz = 50.0f * g_autoScale * g_scale; 
-        if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
-        if (isScalingMenu) { 
-            if (ImGui::IsMouseDown(0)) {
-                float oldS = g_scale; g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
-                g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
-            } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
+        if (!window->Collapsed) {
+            // 设置字体缩放
+            float expectedSize = 18.0f * g_autoScale * g_scale;
+            ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
+            
+            // 菜单内容
+            ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
+            ImGui::Separator();
+            if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
+                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
+            }
+            if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
+                ImGui::Indent(); Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4); Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); ImGui::Unindent();
+            }
+            ImGui::Separator();
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
+            ImGui::Spacing();
+            if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
+
+            // --- 修复后的缩放逻辑 ---
+            ImVec2 br = window->Pos + window->Size; // 真实的右下角
+            float hSz = 60.0f * g_autoScale; // 固定的手柄判定大小，不受 g_scale 影响
+
+            // 判定是否开始缩放
+            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) {
+                isScalingMenu = true;
+            }
+
+            if (isScalingMenu) {
+                if (ImGui::IsMouseDown(0)) {
+                    // 直接计算缩放比例 = (当前鼠标位置 - 窗口起点) / 基础宽度
+                    float newScale = (io.MousePos.x - window->Pos.x) / baseW;
+                    g_scale = std::clamp(newScale, 0.5f, 5.0f);
+                } else {
+                    isScalingMenu = false;
+                    g_needUpdateFontSafe = true; // 释放鼠标后重构高清字体
+                    SaveConfig();
+                }
+            }
+
+            // 绘制缩放三角
+            window->DrawList->AddTriangleFilled(br, br - ImVec2(hSz * 0.4f, 0), br - ImVec2(0, hSz * 0.4f), IM_COL32(0, 120, 215, 200));
         }
-        ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
     }
     ImGui::End();
 }
