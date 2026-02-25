@@ -1,27 +1,27 @@
 // =================================================================
-// 1. 头文件 (必须置顶，包含所有必要工具)
+// 1. 头文件 (必须置顶)
 // =================================================================
-#include "Global.h"             // 全局定义
-#include "AImGui.h"             // Android ImGui 框架
-#include "imgui_internal.h"      // 内部 API，用于处理 ImRect 交互判断
-#include "imgui_impl_opengl3.h"  // OpenGL3 渲染后端实现
+#include "Global.h"
+#include "AImGui.h"
+#include "imgui_internal.h"
+#include "imgui_impl_opengl3.h"
 
-#define STB_IMAGE_IMPLEMENTATION // 启用图片解码实现（用于加载英雄头像）
-#include "stb_image.h"           
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h" 
 
-#include <thread>      // 多线程支持
-#include <cmath>       // 数学函数
-#include <fstream>     // 文件流操作（保存/读取配置的关键）
-#include <string>      // 字符串处理
-#include <GLES3/gl3.h> // OpenGL ES 3.0 接口
-#include <EGL/egl.h>   // 底层显示环境接口
-#include <algorithm>   // 算法库（如 std::clamp）
-#include <unistd.h>    // 系统调用（如 access 检查文件）
+#include <thread>      
+#include <cmath>       
+#include <fstream>      
+#include <string>
+#include <GLES3/gl3.h>
+#include <EGL/egl.h>    
+#include <algorithm>
+#include <unistd.h>
 
 // =================================================================
-// 2. 全局状态变量 (com.tencent.jkchess 专用字段)
+// 2. 全局状态变量 (com.tencent.jkchess 专用)
 // =================================================================
-const char* g_configPath = "/data/jkchess_config.ini"; // 配置文件存储路径
+const char* g_configPath = "/data/jkchess_config.ini";
 
 bool g_predict_enemy = false, g_predict_hex = false;
 bool g_esp_board = true, g_esp_bench = false, g_esp_shop = false;  
@@ -30,6 +30,7 @@ bool g_auto_buy = false, g_instant = false;
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
 
+// 全局缩放因子
 float g_scale = 1.0f, g_autoScale = 1.0f, g_current_rendered_size = 0.0f; 
 float g_boardScale = 2.2f, g_boardManualScale = 1.0f; 
 float g_startX = 400.0f, g_startY = 400.0f;    
@@ -46,10 +47,8 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 配置持久化：保存与读取逻辑 (一个都不能少)
+// 3. 配置持久化：保存与读取
 // =================================================================
-
-// 保存配置到本地文件
 void SaveConfig() {
     std::ofstream out(g_configPath);
     if (out.is_open()) {
@@ -63,7 +62,6 @@ void SaveConfig() {
     }
 }
 
-// 从本地文件读取配置
 void LoadConfig() {
     std::ifstream in(g_configPath);
     if (in.is_open()) {
@@ -74,12 +72,12 @@ void LoadConfig() {
         in >> g_startX >> g_startY;
         in >> g_menuPos.x >> g_menuPos.y;
         in.close();
-        g_needUpdateFont = true; // 读取配置后标记需要重绘字体
+        g_needUpdateFont = true; 
     }
 }
 
 // =================================================================
-// 4. 渲染逻辑：六边形 Shader 与 英雄绘制
+// 4. 六边形 Shader 裁剪逻辑 (从你上传的文件提取)
 // =================================================================
 class HexShader {
 public:
@@ -132,6 +130,47 @@ public:
 
 bool g_HexShaderInited = false;
 
+// =================================================================
+// 5. 全局缩放适配与样式更新
+// =================================================================
+void UpdateGlobalScale(bool forceFont = false) {
+    ImGuiIO& io = ImGui::GetIO();
+    float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
+    g_autoScale = screenH / 1080.0f;
+    float finalScale = g_autoScale * g_scale;
+
+    // 更新字体
+    float targetSize = std::max(10.0f, 18.0f * finalScale); 
+    if (forceFont || std::abs(targetSize - g_current_rendered_size) > 0.5f) {
+        ImGui_ImplOpenGL3_DestroyFontsTexture();
+        io.Fonts->Clear();
+        const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
+        if (access(fontPath, R_OK) == 0) {
+            io.Fonts->AddFontFromFileTTF(fontPath, targetSize, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+        }
+        io.Fonts->Build();
+        ImGui_ImplOpenGL3_CreateFontsTexture();
+        g_current_rendered_size = targetSize;
+    }
+
+    // 更新全局样式实现“全方位缩放”
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImGuiStyle defaultStyle; 
+    style = defaultStyle; // 先重置
+    style.WindowPadding    *= finalScale;
+    style.WindowRounding   *= finalScale;
+    style.FramePadding     *= finalScale;
+    style.FrameRounding    *= finalScale;
+    style.ItemSpacing      *= finalScale;
+    style.ItemInnerSpacing *= finalScale;
+    style.IndentSpacing    *= finalScale;
+    style.ScrollbarSize    *= finalScale;
+    style.GrabMinSize      *= finalScale;
+}
+
+// =================================================================
+// 6. 功能绘制组件
+// =================================================================
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
     if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
@@ -144,25 +183,20 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
-// =================================================================
-// 5. 功能组件 (字体、贴图、Toggle)
-// =================================================================
-void UpdateFontHD(bool force = false) {
-    ImGuiIO& io = ImGui::GetIO();
-    float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
-    g_autoScale = screenH / 1080.0f;
-    float targetSize = std::max(10.0f, 18.0f * g_autoScale * g_scale); 
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
-    
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
-    io.Fonts->Clear();
-    const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
-    if (access(fontPath, R_OK) == 0) {
-        io.Fonts->AddFontFromFileTTF(fontPath, targetSize, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    }
-    io.Fonts->Build();
-    ImGui_ImplOpenGL3_CreateFontsTexture();
-    g_current_rendered_size = targetSize;
+bool Toggle(const char* label, bool* v, int idx) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
+    float h = ImGui::GetFrameHeight(), w = h * 1.8f;
+    const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + ImGui::GetStyle().ItemInnerSpacing.x + label_size.x, h));
+    ImGui::ItemSize(bb, ImGui::GetStyle().FramePadding.y);
+    if (!ImGui::ItemAdd(bb, window->GetID(label))) return false;
+    bool hovered, held, pressed = ImGui::ButtonBehavior(bb, window->GetID(label), &hovered, &held);
+    if (pressed) { *v = !(*v); SaveConfig(); }
+    g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.25f;
+    window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0, 0.45f, 0.9f, 0.8f), g_anim[idx])), h*0.5f);
+    window->DrawList->AddCircleFilled(bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f), h*0.5f - 2.5f * (g_autoScale * g_scale), IM_COL32_WHITE);
+    ImGui::RenderText(ImVec2(bb.Min.x + w + ImGui::GetStyle().ItemInnerSpacing.x, bb.Min.y + ImGui::GetStyle().FramePadding.y), label);
+    return pressed;
 }
 
 GLuint LoadTextureFromFile(const char* filename) {
@@ -178,24 +212,8 @@ GLuint LoadTextureFromFile(const char* filename) {
     return tid;
 }
 
-bool Toggle(const char* label, bool* v, int idx) {
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
-    float h = ImGui::GetFrameHeight(), w = h * 1.8f;
-    const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + ImGui::GetStyle().ItemInnerSpacing.x + label_size.x, h));
-    ImGui::ItemSize(bb, ImGui::GetStyle().FramePadding.y);
-    if (!ImGui::ItemAdd(bb, window->GetID(label))) return false;
-    bool hovered, held, pressed = ImGui::ButtonBehavior(bb, window->GetID(label), &hovered, &held);
-    if (pressed) { *v = !(*v); SaveConfig(); } // 只要开关变动，立即保存配置
-    g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.25f;
-    window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0, 0.45f, 0.9f, 0.8f), g_anim[idx])), h*0.5f);
-    window->DrawList->AddCircleFilled(bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f), h*0.5f - 2.5f, IM_COL32_WHITE);
-    ImGui::RenderText(ImVec2(bb.Min.x + w + ImGui::GetStyle().ItemInnerSpacing.x, bb.Min.y + ImGui::GetStyle().FramePadding.y), label);
-    return pressed;
-}
-
 // =================================================================
-// 6. 棋盘绘制 (带交互与实时保存)
+// 7. 棋盘绘制 (修正了 Expand 链式调用报错)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -215,9 +233,9 @@ void DrawBoard() {
     ImVec2 p_ext = ImVec2((p_top.x + p_bot.x) * 0.5f + sz * 0.6f, (p_top.y + p_bot.y) * 0.5f);
     d->AddTriangleFilled(p_top, p_bot, p_ext, IM_COL32(255, 215, 0, 240));
 
-    // 交互逻辑 (修正后的分步 Expand)
+    // 交互判定
     if (ImGui::IsMouseClicked(0)) {
-        ImRect scaleRect(p_top, p_ext); scaleRect.Expand(40.0f); 
+        ImRect scaleRect(p_top, p_ext); scaleRect.Expand(40.0f); // 分开写避免报错
         if (scaleRect.Contains(io.MousePos)) {
             isScalingB = true;
         } else {
@@ -231,11 +249,11 @@ void DrawBoard() {
     if (isScalingB && ImGui::IsMouseDown(0)) {
         float baseW = (6.5f * 1.73205f + 1.0f) * 38.0f * g_boardScale * g_autoScale;
         g_boardManualScale = std::max((io.MousePos.x - g_startX) / baseW, 0.1f);
-    } else if (isScalingB) { isScalingB = false; SaveConfig(); } // 松开时保存
+    } else if (isScalingB) { isScalingB = false; SaveConfig(); }
 
     if (isDraggingB && !isScalingB && ImGui::IsMouseDown(0)) {
         g_startX = io.MousePos.x - dragOff.x; g_startY = io.MousePos.y - dragOff.y;
-    } else if (isDraggingB) { isDraggingB = false; SaveConfig(); } // 松开时保存
+    } else if (isDraggingB) { isDraggingB = false; SaveConfig(); }
 
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
@@ -256,15 +274,16 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 7. 菜单 UI
+// 8. 菜单 UI (全局缩放版)
 // =================================================================
 void DrawMenu() {
     static bool isScalingM = false, isDraggingM = false;
     static ImVec2 sMP, sPos; static float sMS;
     ImGuiIO& io = ImGui::GetIO();
-    float bW = 320 * g_autoScale, bH = 500 * g_autoScale;
+    float baseW = 320.0f, baseH = 500.0f;
+    float curS = g_autoScale * g_scale;
 
-    ImGui::SetNextWindowSize({bW * g_scale, g_menuCollapsed ? ImGui::GetFrameHeight() : bH * g_scale});
+    ImGui::SetNextWindowSize({baseW * curS, g_menuCollapsed ? ImGui::GetFrameHeight() : baseH * curS});
     ImGui::SetNextWindowPos(g_menuPos);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
@@ -279,54 +298,58 @@ void DrawMenu() {
             g_menuCollapsed = !g_menuCollapsed;
 
         if (!g_menuCollapsed) {
-            ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
             ImGui::TextColored(ImVec4(0,1,0.5,1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
-                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
-                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
+                ImGui::Indent(); 
+                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
+                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); 
+                ImGui::Unindent();
             }
             if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
-                ImGui::Indent(); Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3);
+                ImGui::Indent(); 
+                Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3);
                 Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4);
-                Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); ImGui::Unindent();
+                Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); 
+                ImGui::Unindent();
             }
             ImGui::Separator();
             Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6);
             Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
 
             ImVec2 br = g_menuPos + ImGui::GetWindowSize();
-            float hSz = 60.0f * g_autoScale * g_scale;
-            if (ImGui::IsMouseClicked(0) && ImRect(br-ImVec2(hSz,hSz), br).Contains(io.MousePos)) {
+            float hSz = 60.0f * curS;
+            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) {
                 isScalingM = true; sMS = g_scale; sMP = io.MousePos;
             }
             if (isScalingM && ImGui::IsMouseDown(0)) {
-                g_scale = std::clamp(sMS + std::max((io.MousePos.x-sMP.x)/bW, (io.MousePos.y-sMP.y)/bH), 0.4f, 4.0f);
+                float delta = std::max((io.MousePos.x - sMP.x) / (baseW * g_autoScale), (io.MousePos.y - sMP.y) / (baseH * g_autoScale));
+                g_scale = std::clamp(sMS + delta, 0.5f, 3.0f);
+                UpdateGlobalScale(); 
             } else if (isScalingM) { isScalingM = false; g_needUpdateFont = true; SaveConfig(); }
             
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br-ImVec2(hSz*0.4f,0), br-ImVec2(0,hSz*0.4f), IM_COL32(0,120,215,200));
+            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz * 0.4f, 0), br - ImVec2(0, hSz * 0.4f), IM_COL32(0, 120, 215, 200));
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 8. 程序主循环
+// 9. 程序主入口
 // =================================================================
 int main() {
     ImGui::CreateContext();
-    ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true; 
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     
-    LoadConfig();       // 启动时优先加载上次保存的配置
-    UpdateFontHD(true); 
+    LoadConfig();       
+    UpdateGlobalScale(true); 
     
     static bool running = true;
     std::thread([&]{ while(running){ imgui.ProcessInputEvent(); std::this_thread::yield(); } }).detach();
 
     while (running) {
-        if (g_needUpdateFont) { UpdateFontHD(true); g_needUpdateFont = false; }
+        if (g_needUpdateFont) { UpdateGlobalScale(true); g_needUpdateFont = false; }
         imgui.BeginFrame();
         
         if(!g_textureLoaded) {
@@ -336,7 +359,6 @@ int main() {
 
         DrawBoard(); 
         DrawMenu();
-        
         imgui.EndFrame();
         std::this_thread::yield();
     }
