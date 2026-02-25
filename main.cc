@@ -1,13 +1,13 @@
 // =================================================================
-// 1. 头文件 (必须置顶)
+// 1. 头文件与宏定义 (必须置顶)
 // =================================================================
-#include "Global.h"
-#include "AImGui.h"
-#include "imgui_internal.h"
-#include "imgui_impl_opengl3.h"
+#include "Global.h"             // 全局定义
+#include "AImGui.h"             // Android ImGui 框架
+#include "imgui_internal.h"      // 内部 API，用于 ImRect 交互
+#include "imgui_impl_opengl3.h"  // OpenGL3 渲染后端
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h" 
+#define STB_IMAGE_IMPLEMENTATION // 启用图片解码实现
+#include "stb_image.h"           
 
 #include <thread>      
 #include <cmath>       
@@ -19,7 +19,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 2. 全局状态变量 (com.tencent.jkchess 专用)
+// 2. 全局状态变量 (保留 com.tencent.jkchess 原始字段名)
 // =================================================================
 bool g_predict_enemy = false, g_predict_hex = false;
 bool g_esp_board = true, g_esp_bench = false, g_esp_shop = false;  
@@ -44,13 +44,14 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 渲染辅助：六边形 Shader 裁剪逻辑 (从你上传的文件提取)
+// 3. 渲染辅助：六边形 Shader 裁剪 (核心绘图逻辑)
 // =================================================================
 class HexShader {
 public:
     GLuint program = 0;
     GLint resLoc = -1;
     void Init() {
+        // 顶点着色器：处理坐标转换
         const char* vs = "#version 300 es\n"
                          "layout(location=0) in vec2 Position;\n"
                          "layout(location=1) in vec2 UV;\n"
@@ -61,6 +62,7 @@ public:
                          "    vec2 ndc = (Position / u_Res) * 2.0 - 1.0;\n"
                          "    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n"
                          "}";
+        // 片元着色器：实现六边形裁剪算法
         const char* fs = "#version 300 es\n"
                          "precision mediump float;\n"
                          "uniform sampler2D Texture;\n"
@@ -97,6 +99,7 @@ public:
 
 bool g_HexShaderInited = false;
 
+// 绘制英雄头像函数
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
     if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
@@ -110,12 +113,13 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 通用工具函数 (字体与加载)
+// 4. 工具函数：字体更新与贴图加载
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
+    // 确保字体大小不为 0
     float targetSize = std::max(10.0f, 18.0f * g_autoScale * g_scale); 
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     
@@ -160,7 +164,7 @@ bool Toggle(const char* label, bool* v, int idx) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (采用你要求的 Shader 裁剪逻辑)
+// 5. 棋盘绘制 (已修复 Expand 报错)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -174,19 +178,30 @@ void DrawBoard() {
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
     
-    // 缩放手柄逻辑 (使用你文件里的三角形位置)
+    // 计算缩放手柄位置
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
     ImVec2 p_top = ImVec2(lastCX + sz * cosf(a1), lastCY + sz * sinf(a1));
     ImVec2 p_bot = ImVec2(lastCX + sz * cosf(a2), lastCY + sz * sinf(a2));
     ImVec2 p_ext = ImVec2((p_top.x + p_bot.x) * 0.5f + sz * 0.6f, (p_top.y + p_bot.y) * 0.5f);
     d->AddTriangleFilled(p_top, p_bot, p_ext, IM_COL32(255, 215, 0, 240));
 
+    // --- 交互判断逻辑 (修复报错点) ---
     if (ImGui::IsMouseClicked(0)) {
-        if (ImRect(p_top, p_ext).Expand(40.0f).Contains(io.MousePos)) isScalingB = true;
-        else if (ImRect(ImVec2(g_startX-sz, g_startY-sz), ImVec2(lastCX+sz, lastCY+sz)).Contains(io.MousePos)) {
-            isDraggingB = true; dragOff = io.MousePos - ImVec2(g_startX, g_startY);
+        // 修正：将 Expand 分步调用，避免链式引用 void
+        ImRect scaleRect(p_top, p_ext);
+        scaleRect.Expand(40.0f); 
+        
+        if (scaleRect.Contains(io.MousePos)) {
+            isScalingB = true;
+        } else {
+            ImRect dragRect(ImVec2(g_startX - sz, g_startY - sz), ImVec2(lastCX + sz, lastCY + sz));
+            if (dragRect.Contains(io.MousePos)) {
+                isDraggingB = true; 
+                dragOff = io.MousePos - ImVec2(g_startX, g_startY);
+            }
         }
     }
+
     if (isScalingB && ImGui::IsMouseDown(0)) {
         float baseW = (6.5f * 1.73205f + 1.0f) * 38.0f * g_boardScale * g_autoScale;
         g_boardManualScale = std::max((io.MousePos.x - g_startX) / baseW, 0.1f);
@@ -196,15 +211,13 @@ void DrawBoard() {
         g_startX = io.MousePos.x - dragOff.x; g_startY = io.MousePos.y - dragOff.y;
     } else { isDraggingB = false; }
 
+    // 绘制棋盘格
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
             float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0);
             float cy = g_startY + r * yStep;
-            
-            // 使用 Shader 裁剪绘制英雄
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), sz); 
             
-            // 炫彩六边形外框
             float rf, gf, bf;
             ImGui::ColorConvertHSVtoRGB(fmodf((float)ImGui::GetTime() * 0.5f + (cx+cy)*0.001f, 1.0f), 0.8f, 1.0f, rf, gf, bf);
             ImVec2 pts[6];
@@ -218,7 +231,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (全功能跟手版)
+// 6. 菜单 UI
 // =================================================================
 void DrawMenu() {
     static bool isScalingM = false, isDraggingM = false;
@@ -272,7 +285,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 主程序
+// 7. 程序主入口
 // =================================================================
 int main() {
     ImGui::CreateContext();
@@ -281,6 +294,7 @@ int main() {
     
     UpdateFontHD(true); 
     static bool running = true;
+    // 分离线程处理输入
     std::thread([&]{ while(running){ imgui.ProcessInputEvent(); std::this_thread::yield(); } }).detach();
 
     while (running) {
