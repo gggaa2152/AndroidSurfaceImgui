@@ -395,7 +395,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 程序入口
+// 7. 程序入口 (修正版)
 // =================================================================
 int main() {
     _tls_align_fix[0] = 1; 
@@ -403,16 +403,17 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     LoadConfig();        
-    UpdateFontHD(true);  // 初始加载
+    UpdateFontHD(true);  // 初始加载：此时未进入循环，安全
     
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
-        // --- 核心修复：更新字体必须在 BeginFrame 之前 ---
+        // --- 核心修复：更新字体必须在 BeginFrame 之前调用 ---
+        // 这样在执行 io.Fonts->Clear() 时，字体集尚未被锁定
         UpdateFontHD(); 
 
-        imgui.BeginFrame(); // 此时 ImFontAtlas 锁定
+        imgui.BeginFrame(); // 进入锁定状态
         
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
@@ -422,7 +423,7 @@ int main() {
         DrawBoard(); 
         DrawMenu();
         
-        imgui.EndFrame(); // 渲染结束，ImFontAtlas 解锁
+        imgui.EndFrame(); // 渲染完成，解除锁定
     }
     
     running = false; 
