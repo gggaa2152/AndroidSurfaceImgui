@@ -9,7 +9,12 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: recursive # 自动拉取你降级后的子模块
+          submodules: recursive
+
+      - name: Download missing headers
+        run: |
+          # 自动下载代码中缺少的 stb_image.h 到根目录
+          curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
       - name: Compile 64bit ELF
         run: |
@@ -19,7 +24,7 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 2. 编译 zstd 静态库组件 (使用 C 编译器，避开窄化转换报错)
+          # 2. 编译 zstd
           $CC -O3 -c \
             -I./third_party/zstd/lib \
             third_party/zstd/lib/common/*.c \
@@ -27,7 +32,6 @@ jobs:
             third_party/zstd/lib/decompress/*.c
 
           # 3. 编译 C++ 源码并链接
-          # -I./third_party 确保 <imgui/imgui.h> 映射到 third_party/imgui/imgui.h
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -Wno-error=narrowing \
             -I. \
