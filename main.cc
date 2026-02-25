@@ -206,19 +206,23 @@ void UpdateFontHD(bool force = false) {
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     
-    float targetSize = std::min(18.0f * g_autoScale * g_scale, 120.0f);
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
+    // 增大字体基础大小
+    float targetSize = std::min(24.0f * g_autoScale * g_scale, 160.0f);
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 1.0f) return;
     
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     
     ImFontConfig config;
-    config.OversampleH = 1;
-    config.PixelSnapH = true;
+    config.OversampleH = 2;
+    config.PixelSnapH = false;
+    config.SizePixels = targetSize;
     
     if (access("/system/fonts/SysSans-Hans-Regular.ttf", R_OK) == 0) {
         io.Fonts->AddFontFromFileTTF("/system/fonts/SysSans-Hans-Regular.ttf", 
             targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    } else {
+        io.Fonts->AddFontDefault(&config);
     }
     
     io.Fonts->Build();
@@ -287,6 +291,17 @@ void DrawBoard() {
         }
     }
     
+    // 预计算六边形顶点（缓存）
+    static ImVec2 hexPoints[6];
+    static bool pointsCached = false;
+    if (!pointsCached) {
+        for(int i=0; i<6; i++) {
+            float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
+            hexPoints[i] = ImVec2(cosf(a), sinf(a));
+        }
+        pointsCached = true;
+    }
+    
     // 绘制六边形网格
     float time = (float)ImGui::GetTime();
     for(int r=0; r<4; r++) {
@@ -304,8 +319,7 @@ void DrawBoard() {
             
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
-                float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-                pts[i] = ImVec2(cx + sz * cosf(a), cy + sz * sinf(a));
+                pts[i] = ImVec2(cx + sz * hexPoints[i].x, cy + sz * hexPoints[i].y);
             }
             d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 255), 
                 ImDrawFlags_Closed, 4.0f * g_autoScale);
@@ -322,12 +336,13 @@ bool ToggleSwitch(const char* label, bool* v) {
     
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImGuiID id = window->GetID(label);
-    const float w = 50.0f * g_scale;
-    const float h = 28.0f * g_scale;
+    const float w = 52.0f * g_scale;
+    const float h = 30.0f * g_scale;
     const float radius = h * 0.5f;
     
     ImVec2 pos = window->DC.CursorPos;
-    ImRect total_bb(pos, ImVec2(pos.x + w + style.ItemInnerSpacing.x + ImGui::CalcTextSize(label).x, pos.y + h));
+    float textWidth = ImGui::CalcTextSize(label).x;
+    ImRect total_bb(pos, ImVec2(pos.x + w + style.ItemInnerSpacing.x + textWidth, pos.y + h));
     ImRect switch_bb(pos, ImVec2(pos.x + w, pos.y + h));
     
     ImGui::ItemSize(total_bb, style.FramePadding.y);
@@ -342,12 +357,12 @@ bool ToggleSwitch(const char* label, bool* v) {
     
     // 绘制背景
     float t = *v ? 1.0f : 0.0f;
-    ImU32 bg_col = ImGui::GetColorU32(*v ? ImVec4(0.1f, 0.5f, 1.0f, 1.0f) : ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
+    ImU32 bg_col = ImGui::GetColorU32(*v ? ImVec4(0.0f, 0.6f, 1.0f, 1.0f) : ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
     window->DrawList->AddRectFilled(switch_bb.Min, switch_bb.Max, bg_col, radius);
     
     // 绘制滑块
-    float circle_pos = *v ? switch_bb.Max.x - radius - 3 : switch_bb.Min.x + radius + 3;
-    window->DrawList->AddCircleFilled(ImVec2(circle_pos, pos.y + radius), radius - 5, IM_COL32_WHITE);
+    float circle_pos = *v ? switch_bb.Max.x - radius - 2 : switch_bb.Min.x + radius + 2;
+    window->DrawList->AddCircleFilled(ImVec2(circle_pos, pos.y + radius), radius - 4, IM_COL32_WHITE);
     
     // 绘制文字
     ImGui::RenderText(ImVec2(switch_bb.Max.x + style.ItemInnerSpacing.x, pos.y + (h - ImGui::GetTextLineHeight()) * 0.5f), label);
@@ -363,39 +378,59 @@ void DrawMenu() {
     float baseW = 320.0f * g_autoScale;
     float baseH = 500.0f * g_autoScale;
     
-    // 固定窗口位置，只缩放右下角
-    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(baseW * g_scale, baseH * g_scale), ImGuiCond_Always);
+    // 窗口大小
+    float windowW = baseW * g_scale;
+    float windowH = g_menuCollapsed ? ImGui::GetFrameHeight() + 10 : baseH * g_scale;
     
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar;
+    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(windowW, windowH), ImGuiCond_Always);
+    
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar;
     
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, flags)) {
-        // 全局缩放控制（右下角）
         ImVec2 windowPos = ImGui::GetWindowPos();
         ImVec2 windowSize = ImGui::GetWindowSize();
-        ImVec2 br(windowPos.x + windowSize.x, windowPos.y + windowSize.y);
-        float handleSize = 40.0f * g_scale;
+        float titleBarHeight = ImGui::GetFrameHeight();
         
-        // 缩放手柄
-        static bool isScaling = false;
+        // 标题栏区域
+        ImRect titleBarRect(windowPos, ImVec2(windowPos.x + windowSize.x, windowPos.y + titleBarHeight));
+        
+        // 绘制标题栏
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(titleBarRect.Min, titleBarRect.Max, IM_COL32(40, 40, 50, 240), 5.0f, ImDrawFlags_RoundCornersTop);
+        
+        // 标题文字
+        const char* title = g_menuCollapsed ? (const char*)u8"金铲铲助手 [▼]" : (const char*)u8"金铲铲助手 [▲]";
+        ImVec2 textPos = ImVec2(windowPos.x + 10, windowPos.y + (titleBarHeight - ImGui::GetTextLineHeight()) * 0.5f);
+        drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), title);
+        
+        // 缩放控制（右下角）
+        float handleSize = 40.0f * g_scale;
+        ImVec2 br(windowPos.x + windowSize.x, windowPos.y + windowSize.y);
         ImRect scaleHandle(br - ImVec2(handleSize, handleSize), br);
         
         // 绘制缩放手柄
-        ImGui::GetWindowDrawList()->AddTriangleFilled(
-            ImVec2(br.x - 5, br.y - handleSize + 5),
-            ImVec2(br.x - handleSize + 5, br.y - 5),
-            ImVec2(br.x - 5, br.y - 5),
-            IM_COL32(100, 100, 100, 200));
+        drawList->AddTriangleFilled(
+            ImVec2(br.x - 10, br.y - handleSize + 10),
+            ImVec2(br.x - handleSize + 10, br.y - 10),
+            ImVec2(br.x - 10, br.y - 10),
+            scaleHandle.Contains(io.MousePos) ? IM_COL32(100, 150, 255, 255) : IM_COL32(100, 100, 100, 200));
         
-        // 缩放交互（只在右下角）
-        if (scaleHandle.Contains(io.MousePos) && ImGui::IsMouseDragging(0)) {
+        // 缩放交互
+        static bool isScaling = false;
+        static float startScale = 1.0f;
+        static float startMouseX = 0;
+        
+        if (scaleHandle.Contains(io.MousePos) && ImGui::IsMouseClicked(0)) {
             isScaling = true;
+            startScale = g_scale;
+            startMouseX = io.MousePos.x;
         }
         
         if (isScaling) {
             if (ImGui::IsMouseDown(0)) {
-                float delta = io.MouseDelta.x / 100.0f;
-                g_scale = std::clamp(g_scale + delta, 0.5f, 3.0f);
+                float delta = (io.MousePos.x - startMouseX) / 200.0f;
+                g_scale = std::clamp(startScale + delta, 0.5f, 2.5f);
                 g_needUpdateFontSafe = true;
             } else {
                 isScaling = false;
@@ -403,43 +438,57 @@ void DrawMenu() {
             }
         }
         
-        // 窗口拖动（除了右下角区域）
-        if (!isScaling && ImGui::IsWindowHovered() && 
-            !scaleHandle.Contains(io.MousePos) && 
-            ImGui::IsMouseDragging(0)) {
-            g_menuX += io.MouseDelta.x;
-            g_menuY += io.MouseDelta.y;
-            if (ImGui::IsMouseReleased(0)) SaveConfig();
-        }
-        
         // 标题栏点击切换折叠
-        if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && 
-            io.MousePos.y < g_menuY + ImGui::GetFrameHeight() &&
-            !scaleHandle.Contains(io.MousePos)) {
+        if (titleBarRect.Contains(io.MousePos) && 
+            !scaleHandle.Contains(io.MousePos) && 
+            ImGui::IsMouseReleased(0)) {
             g_menuCollapsed = !g_menuCollapsed;
             SaveConfig();
         }
         
+        // 窗口拖动（标题栏区域）
+        static bool isDragging = false;
+        if (titleBarRect.Contains(io.MousePos) && !scaleHandle.Contains(io.MousePos)) {
+            if (ImGui::IsMouseClicked(0)) {
+                isDragging = true;
+            }
+        }
+        
+        if (isDragging) {
+            if (ImGui::IsMouseDown(0)) {
+                g_menuX += io.MouseDelta.x;
+                g_menuY += io.MouseDelta.y;
+            } else {
+                isDragging = false;
+                SaveConfig();
+            }
+        }
+        
+        // 窗口内容
         if (!g_menuCollapsed) {
-            ImGui::SetWindowFontScale(18.0f * g_autoScale * g_scale / g_current_rendered_size);
+            ImGui::SetCursorPosY(titleBarHeight + 10);
+            
+            // 增大字体
+            float fontSize = 20.0f * g_autoScale * g_scale;
+            ImGui::SetWindowFontScale(fontSize / g_current_rendered_size);
             
             ImGui::Text("FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
             // 使用滑动开关
             if (ImGui::CollapsingHeader((const char*)u8"预测功能", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::Indent();
+                ImGui::Indent(10.0f * g_scale);
                 ToggleSwitch((const char*)u8"预测对手分布", &g_predict_enemy);
                 ToggleSwitch((const char*)u8"海克斯强化预测", &g_predict_hex);
-                ImGui::Unindent();
+                ImGui::Unindent(10.0f * g_scale);
             }
             
             if (ImGui::CollapsingHeader((const char*)u8"透视功能", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::Indent();
+                ImGui::Indent(10.0f * g_scale);
                 ToggleSwitch((const char*)u8"对手棋盘透视", &g_esp_board);
                 ToggleSwitch((const char*)u8"对手备战席透视", &g_esp_bench);
                 ToggleSwitch((const char*)u8"对手商店透视", &g_esp_shop);
-                ImGui::Unindent();
+                ImGui::Unindent(10.0f * g_scale);
             }
             
             ImGui::Separator();
