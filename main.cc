@@ -209,7 +209,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (保留你的原始逻辑)
+// 5. 棋盘绘制 (保持原样)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -268,7 +268,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (逻辑定制：标题栏只收不展，三角只展不收)
+// 6. 菜单 UI (修复点击逻辑)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -296,34 +296,28 @@ void DrawMenu() {
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
-    // 强制同步状态
+    // 【关键修复 1】：强制将变量同步给 ImGui 窗口系统，实现“点击三角展开”有效
     ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         
-        // --- 核心逻辑定制 ---
-
-        // 逻辑 A：检测左侧小三角的点击 (ImGui 自带机制)
-        // 只有当内部状态从“收起”变为“展开”时，才同步变量。反之不操作。
-        if (g_menuCollapsed && !ImGui::IsWindowCollapsed()) {
-            g_menuCollapsed = false; // 点击三角 -> 只能展开
-            SaveConfig();
-        }
-        // 如果用户尝试通过三角收起，我们强制让它保持展开（除非点击标题栏）
-        else if (!g_menuCollapsed && ImGui::IsWindowCollapsed()) {
-             ImGui::SetWindowCollapsed(false); 
-        }
-
-        // 逻辑 B：点击标题栏空白处
-        // 只有当状态为“展开”时点击才起作用 -> 只能收起
-        if (!g_menuCollapsed && ImGui::IsItemClicked(0)) {
-            g_menuCollapsed = true; // 点击标题栏 -> 只能收起
+        // 【关键修复 2】：统一逻辑。检查 ImGui 内部状态是否被“三角”点击改变了
+        if (ImGui::IsWindowCollapsed() != g_menuCollapsed) {
+            g_menuCollapsed = ImGui::IsWindowCollapsed();
             SaveConfig();
         }
 
-        // 拖拽逻辑保持
+        // 【关键修复 3】：点击标题栏空白区域触发切换。
+        // 注意：IsItemClicked(0) 在 Begin() 后代表标题栏。
+        // 我们需要排除掉正在“缩放菜单”的情况。
+        if (ImGui::IsItemClicked(0) && !isScalingMenu) {
+            g_menuCollapsed = !g_menuCollapsed;
+            SaveConfig();
+        }
+
+        // 拖拽逻辑 (保持不动)
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
@@ -345,6 +339,7 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
+            // 缩放逻辑 (保持不动)
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
