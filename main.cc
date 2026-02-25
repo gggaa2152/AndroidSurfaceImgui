@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 2. 全局状态变量 (com.tencent.jkchess)
+// 2. 全局状态变量 (保持你原始所有变量名)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -51,7 +51,7 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
-// 增加一个标记，用于在 BeginFrame 之前安全更新字体
+// 标记：仅用于解决 BeginFrame 锁死问题，不改动业务逻辑
 bool g_needUpdateFontSafe = false;
 
 int g_enemyBoard[4][7] = {
@@ -60,7 +60,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 配置管理 (完整保留你的解析逻辑)
+// 3. 配置管理 (完整保留你的stof解析逻辑)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -111,12 +111,12 @@ void LoadConfig() {
             } catch (...) {}
         }
         in.close();
-        g_needUpdateFontSafe = true; // 加载后标记更新
+        g_needUpdateFontSafe = true; 
     }
 }
 
 // =================================================================
-// 4. 渲染辅助
+// 4. 渲染辅助 (完全保留你的 HexShader 算法)
 // =================================================================
 class HexShader {
 public:
@@ -157,17 +157,12 @@ public:
                          "}";
         program = glCreateProgram();
         GLuint v = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(v, 1, &vs, NULL);
-        glCompileShader(v);
+        glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
         GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(f, 1, &fs, NULL);
-        glCompileShader(f);
-        glAttachShader(program, v);
-        glAttachShader(program, f);
-        glLinkProgram(program);
+        glShaderSource(f, 1, &fs, NULL); glCompileShader(f);
+        glAttachShader(program, v); glAttachShader(program, f); glLinkProgram(program);
         resLoc = glGetUniformLocation(program, "u_Res");
-        glDeleteShader(v);
-        glDeleteShader(f);
+        glDeleteShader(v); glDeleteShader(f);
     }
 } g_HexShader;
 bool g_HexShaderInited = false;
@@ -176,13 +171,10 @@ GLuint LoadTextureFromFile(const char* filename) {
     int w, h, c;
     unsigned char* data = stbi_load(filename, &w, &h, &c, 4);
     if (!data) return 0;
-    GLuint tid;
-    glGenTextures(1, &tid);
-    glBindTexture(GL_TEXTURE_2D, tid);
+    GLuint tid; glGenTextures(1, &tid); glBindTexture(GL_TEXTURE_2D, tid);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    stbi_image_free(data);
-    return tid;
+    stbi_image_free(data); return tid;
 }
 
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
@@ -204,13 +196,10 @@ void UpdateFontHD(bool force = false) {
     float baseSize = 18.0f * g_autoScale * g_scale;
     float targetSize = (baseSize > 120.0f) ? 120.0f : baseSize; 
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
-    
-    // 关键修正：此时必须确保 BeginFrame 尚未调用或 Atlas 未被锁定
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     ImFontConfig config;
-    config.OversampleH = 1;
-    config.PixelSnapH = true;
+    config.OversampleH = 1; config.PixelSnapH = true;
     const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
     if (access(fontPath, R_OK) == 0) {
         io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
@@ -221,15 +210,14 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (完整保留你的逻辑)
+// 5. 棋盘绘制 (保留原始位移与缩放逻辑)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
-    float xStep = sz * 1.73205f;
-    float yStep = sz * 1.5f;
+    float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
@@ -255,17 +243,14 @@ void DrawBoard() {
             float baseW = (6.5f * 1.73205f + 1.0f) * 38.0f * g_boardScale * g_autoScale;
             g_boardManualScale = std::max(curW / baseW, 0.1f); 
         } else {
-            isScalingBoard = false;
-            SaveConfig(); // 释放时保存
+            isScalingBoard = false; SaveConfig(); 
         }
     }
     if (isDraggingBoard && !isScalingBoard) {
         if (ImGui::IsMouseDown(0)) {
-            g_startX = io.MousePos.x - dragOffset.x;
-            g_startY = io.MousePos.y - dragOffset.y;
+            g_startX = io.MousePos.x - dragOffset.x; g_startY = io.MousePos.y - dragOffset.y;
         } else {
-            isDraggingBoard = false;
-            SaveConfig(); // 释放时保存
+            isDraggingBoard = false; SaveConfig(); 
         }
     }
 
@@ -276,8 +261,7 @@ void DrawBoard() {
             float cy = g_startY + r * yStep;
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), sz); 
             float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
-            float rf, gf, bf;
-            ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
+            float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
@@ -289,24 +273,20 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (完整保留你的缩放补偿逻辑)
+// 6. 菜单 UI (完整保留原始动画与补偿逻辑)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImGuiID id = window->GetID(label);
     const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
-    float h = ImGui::GetFrameHeight();
-    float w = h * 1.8f;
+    float h = ImGui::GetFrameHeight(); float w = h * 1.8f;
     const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + style.ItemInnerSpacing.x + label_size.x, h));
     ImGui::ItemSize(bb, style.FramePadding.y);
     if (!ImGui::ItemAdd(bb, id)) return false;
     bool hovered, held;
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    if (pressed) {
-        *v = !(*v);
-        SaveConfig();
-    }
+    if (pressed) { *v = !(*v); SaveConfig(); }
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f;
     window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0, 0.45f, 0.9f, 0.8f), g_anim[idx])), h*0.5f);
     window->DrawList->AddCircleFilled(bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f), h*0.5f - 2.5f, IM_COL32_WHITE);
@@ -315,86 +295,47 @@ bool Toggle(const char* label, bool* v, int idx) {
 }
 
 void DrawMenu() {
-    static bool isScalingMenu = false; 
-    static float startMS = 1.0f; 
-    static ImVec2 startMP;
-    
+    static bool isScalingMenu = false; static float startMS = 1.0f; static ImVec2 startMP;
     ImGuiIO& io = ImGui::GetIO(); 
-    float baseW = 320.0f * g_autoScale;
-    float baseH = 500.0f * g_autoScale;
-
+    float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar;
-
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, flags)) {
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
-            if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
-                g_menuCollapsed = !g_menuCollapsed;
-                SaveConfig();
-            }
+            if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
         }
-
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
-            g_menuX += io.MouseDelta.x;
-            g_menuY += io.MouseDelta.y;
+            g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
-
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
-            float renderScale = expectedSize / g_current_rendered_size;
-            ImGui::SetWindowFontScale(renderScale);
-
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "FPS: %.1f", io.Framerate);
+            ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
+            ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
-
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
-                ImGui::Indent();
-                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1);
-                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2);
-                ImGui::Unindent();
+                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
             }
-
             if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
-                ImGui::Indent();
-                Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3);
-                Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4);
-                Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5);
-                ImGui::Unindent();
+                ImGui::Indent(); Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4); Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); ImGui::Unindent();
             }
-
             ImGui::Separator();
-            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6);
-            Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
-
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
-            ImRect handleRect(br - ImVec2(hSz, hSz), br);
-
-            if (ImGui::IsMouseClicked(0) && handleRect.Contains(io.MousePos)) { 
-                isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; 
-            }
+            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    float oldScale = g_scale;
-                    g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
-                    float diffW = (baseW * g_scale) - (baseW * oldScale);
-                    float diffH = (baseH * g_scale) - (baseH * oldScale);
-                    g_menuX -= diffW * 0.5f; 
-                    g_menuY -= diffH * 0.5f;
-                } else { 
-                    isScalingMenu = false; 
-                    g_needUpdateFontSafe = true; // 标记需要更新字体
-                    SaveConfig();
-                } 
+                    float oldS = g_scale; g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
+                    g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
+                } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
         }
@@ -403,43 +344,27 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 程序入口 (严格修正执行顺序)
+// 7. 程序入口 (无 TLS 版本)
 // =================================================================
 int main() {
-    _tls_align_fix[0] = 1; 
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    
-    LoadConfig();        
-    UpdateFontHD(true);  
-    
+    LoadConfig(); UpdateFontHD(true);  
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
-        // --- 核心修复：更新字体必须在 BeginFrame 之前，此时 Atlas 未锁定 ---
-        if (g_needUpdateFontSafe) {
-            UpdateFontHD(true);
-            g_needUpdateFontSafe = false;
-        }
-
+        if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
         imgui.BeginFrame(); 
-        
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
-            g_textureLoaded = (g_heroTexture != 0); 
-            g_resLoaded = true; 
+            g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; 
         }
-
-        DrawBoard(); 
-        DrawMenu();
-
+        DrawBoard(); DrawMenu();
         imgui.EndFrame(); 
         std::this_thread::yield();
     }
-
-    running = false; 
-    if (it.joinable()) it.join(); 
+    running = false; if (it.joinable()) it.join(); 
     return 0;
 }
