@@ -60,7 +60,7 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
-// [修复点1] 定义标志位，用于延迟更新字体
+// [修复崩溃] 定义标志位，用于延迟更新字体
 bool g_needUpdateFont = false;
 
 int g_enemyBoard[4][7] = {
@@ -228,12 +228,13 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制
+// 5. 棋盘绘制 (保持独立缩放)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
+    // 棋盘大小只受 g_boardScale(全局固定), g_autoScale(屏幕适配), g_boardManualScale(棋盘手调) 影响
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
     float xStep = sz * 1.73205f;
     float yStep = sz * 1.5f;
@@ -290,7 +291,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI
+// 6. 菜单 UI (右下角全方位全局缩放)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -370,8 +371,9 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
+            // 右下角缩放核心逻辑
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
-            float hSz = 50.0f * g_autoScale * g_scale; 
+            float hSz = 60.0f * g_autoScale * g_scale; 
             ImRect handleRect(br - ImVec2(hSz, hSz), br);
 
             if (ImGui::IsMouseClicked(0) && handleRect.Contains(io.MousePos)) { 
@@ -379,19 +381,18 @@ void DrawMenu() {
             }
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    float oldScale = g_scale;
-                    g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
-                    float diffW = (baseW * g_scale) - (baseW * oldScale);
-                    float diffH = (baseH * g_scale) - (baseH * oldScale);
-                    lockedPos.x -= diffW * 0.5f; 
-                    lockedPos.y -= diffH * 0.5f;
+                    // 全方位缩放计算：取 X 和 Y 轴偏移的最大值，实现斜向拉伸感
+                    float dx = (io.MousePos.x - startMP.x) / baseW;
+                    float dy = (io.MousePos.y - startMP.y) / baseH;
+                    float delta = (std::abs(dx) > std::abs(dy)) ? dx : dy;
+                    
+                    g_scale = std::clamp(startMS + delta, 0.4f, 4.0f);
                 } else { 
                     isScalingMenu = false; 
-                    // [修复点2] 缩放结束时不直接更新字体，而是设置标志位
-                    g_needUpdateFont = true; 
+                    g_needUpdateFont = true; // 延迟到主循环更新字体，防止崩溃
                 } 
             }
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
+            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.4f, 0), br - ImVec2(0, hSz*0.4f), IM_COL32(0, 120, 215, 200));
         }
     }
     ImGui::End();
@@ -412,15 +413,14 @@ int main() {
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
-        // [修复点3] 在 BeginFrame 之前处理字体更新请求
-        // 此时 ImFontAtlas 处于 Unlocked 状态，可以安全操作
+        // [核心修复] 在 BeginFrame 之前处理字体更新
         if (g_needUpdateFont) {
             UpdateFontHD(true);
             g_needUpdateFont = false;
         }
-        UpdateFontHD(); // 自动适配屏幕缩放的检查
+        UpdateFontHD(); 
 
-        imgui.BeginFrame(); // [此处开始锁定]
+        imgui.BeginFrame();
         
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
@@ -430,7 +430,7 @@ int main() {
         DrawBoard(); 
         DrawMenu();
         
-        imgui.EndFrame(); // [此处解锁]
+        imgui.EndFrame(); 
     }
     
     running = false; 
