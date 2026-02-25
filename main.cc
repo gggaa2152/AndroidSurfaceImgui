@@ -272,95 +272,213 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (保留你的动画与所有功能开关)
+// 6. 菜单 UI (重写标题栏和缩放控制)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImGuiID id = window->GetID(label);
     const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
-    float h = ImGui::GetFrameHeight(); float w = h * 1.8f;
+    float h = ImGui::GetFrameHeight(); 
+    float w = h * 1.8f;
     const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + style.ItemInnerSpacing.x + label_size.x, h));
     ImGui::ItemSize(bb, style.FramePadding.y);
     if (!ImGui::ItemAdd(bb, id)) return false;
+    
     bool hovered, held;
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
     if (pressed) { *v = !(*v); SaveConfig(); }
+    
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f;
-    window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0, 0.45f, 0.9f, 0.8f), g_anim[idx])), h*0.5f);
-    window->DrawList->AddCircleFilled(bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f), h*0.5f - 2.5f, IM_COL32_WHITE);
+    
+    // 背景
+    window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), 
+        ImGui::GetColorU32(ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), 
+        ImVec4(0, 0.45f, 0.9f, 0.8f), g_anim[idx])), h*0.5f);
+    
+    // 滑块
+    window->DrawList->AddCircleFilled(bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f), 
+        h*0.5f - 2.5f, IM_COL32_WHITE);
+    
     ImGui::RenderText(ImVec2(bb.Min.x + w + style.ItemInnerSpacing.x, bb.Min.y + style.FramePadding.y), label);
     return pressed;
 }
 
 void DrawMenu() {
-    static bool isScalingMenu = false; static float startMS = 1.0f; static ImVec2 startMP;
+    static bool isScalingMenu = false; 
+    static float startMS = 1.0f; 
+    static ImVec2 startMP;
+    static bool isDraggingMenu = false;
+    
     ImGuiIO& io = ImGui::GetIO(); 
-    float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
+    float baseW = 320.0f * g_autoScale; 
+    float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        // 修正：点击标题栏判定。只有在非拖拽状态下释放鼠标才切换折叠
-        if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
-            if (ImGui::IsMouseReleased(0) && io.MouseDragMaxDistanceSqr[0] < 10.0f) { 
-                g_menuCollapsed = !g_menuCollapsed; SaveConfig(); 
+    // 窗口标志：允许拖动标题栏，但禁止调整大小
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar;
+    
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, flags)) {
+        // 获取标题栏区域（窗口顶部）
+        float titleBarHeight = ImGui::GetFrameHeight();
+        ImVec2 windowPos = ImGui::GetWindowPos();
+        ImVec2 windowSize = ImGui::GetWindowSize();
+        ImRect titleBarRect(windowPos, ImVec2(windowPos.x + windowSize.x, windowPos.y + titleBarHeight));
+        
+        // 缩放控制按钮位置（右上角）
+        float scaleBtnSize = titleBarHeight * 0.8f;
+        ImRect scaleBtnRect(
+            ImVec2(windowPos.x + windowSize.x - scaleBtnSize - 5, windowPos.y + 5),
+            ImVec2(windowPos.x + windowSize.x - 5, windowPos.y + titleBarHeight - 5)
+        );
+        
+        // 展开/收起按钮位置（在缩放按钮左边）
+        ImRect collapseBtnRect(
+            ImVec2(scaleBtnRect.Min.x - scaleBtnSize - 5, scaleBtnRect.Min.y),
+            ImVec2(scaleBtnRect.Min.x - 5, scaleBtnRect.Max.y)
+        );
+        
+        // 绘制自定义标题栏背景
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(titleBarRect.Min, titleBarRect.Max, 
+            IM_COL32(30, 30, 40, 240), 5.0f, ImDrawFlags_RoundCornersTop);
+        
+        // 绘制标题文字
+        std::string title = g_menuCollapsed ? u8"金铲铲助手 [▼]" : u8"金铲铲助手 [▲]";
+        ImVec2 textPos = ImVec2(windowPos.x + 10, windowPos.y + (titleBarHeight - ImGui::GetTextLineHeight()) * 0.5f);
+        drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), title.c_str());
+        
+        // 绘制展开/收起按钮
+        ImU32 collapseBtnColor = collapseBtnRect.Contains(io.MousePos) ? 
+            IM_COL32(100, 100, 120, 255) : IM_COL32(60, 60, 80, 255);
+        drawList->AddRectFilled(collapseBtnRect.Min, collapseBtnRect.Max, collapseBtnColor, 3.0f);
+        
+        // 绘制三角形（向上或向下）
+        ImVec2 center = collapseBtnRect.GetCenter();
+        if (g_menuCollapsed) {
+            // 向下箭头
+            drawList->AddTriangleFilled(
+                ImVec2(center.x - 8, center.y - 4),
+                ImVec2(center.x + 8, center.y - 4),
+                ImVec2(center.x, center.y + 6),
+                IM_COL32(255, 255, 255, 255)
+            );
+        } else {
+            // 向上箭头
+            drawList->AddTriangleFilled(
+                ImVec2(center.x - 8, center.y + 4),
+                ImVec2(center.x + 8, center.y + 4),
+                ImVec2(center.x, center.y - 6),
+                IM_COL32(255, 255, 255, 255)
+            );
+        }
+        
+        // 绘制缩放按钮
+        ImU32 scaleBtnColor = scaleBtnRect.Contains(io.MousePos) ? 
+            IM_COL32(100, 100, 120, 255) : IM_COL32(60, 60, 80, 255);
+        drawList->AddRectFilled(scaleBtnRect.Min, scaleBtnRect.Max, scaleBtnColor, 3.0f);
+        
+        // 绘制缩放图标（三角形）
+        drawList->AddTriangleFilled(
+            ImVec2(scaleBtnRect.Max.x - 12, scaleBtnRect.Min.y + 6),
+            ImVec2(scaleBtnRect.Max.x - 4, scaleBtnRect.Max.y - 6),
+            ImVec2(scaleBtnRect.Max.x - 4, scaleBtnRect.Min.y + 6),
+            IM_COL32(255, 255, 255, 255)
+        );
+        
+        // ========== 交互逻辑 ==========
+        
+        // 点击展开/收起按钮
+        if (collapseBtnRect.Contains(io.MousePos) && ImGui::IsMouseReleased(0)) {
+            g_menuCollapsed = !g_menuCollapsed;
+            SaveConfig();
+        }
+        
+        // 点击缩放按钮（开始缩放）
+        if (scaleBtnRect.Contains(io.MousePos) && ImGui::IsMouseClicked(0) && !isScalingMenu) {
+            isScalingMenu = true;
+            startMS = g_scale;
+            startMP = io.MousePos;
+        }
+        
+        // 缩放处理
+        if (isScalingMenu) {
+            if (ImGui::IsMouseDown(0)) {
+                float oldS = g_scale; 
+                g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
+                // 补偿位移，让缩放时中心点不动
+                g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; 
+                g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
+            } else { 
+                isScalingMenu = false; 
+                g_needUpdateFontSafe = true; 
+                SaveConfig(); 
             }
         }
         
-        // 拖拽窗口逻辑 (仅在非缩放时生效)
-        if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
-            g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
-            if (ImGui::IsMouseReleased(0)) SaveConfig();
+        // 拖动窗口逻辑（仅在标题栏且不在按钮上）
+        if (!isScalingMenu) {
+            if (titleBarRect.Contains(io.MousePos) && 
+                !collapseBtnRect.Contains(io.MousePos) && 
+                !scaleBtnRect.Contains(io.MousePos)) {
+                
+                if (ImGui::IsMouseClicked(0)) {
+                    isDraggingMenu = true;
+                }
+            }
+            
+            if (isDraggingMenu) {
+                if (ImGui::IsMouseDown(0)) {
+                    g_menuX += io.MouseDelta.x;
+                    g_menuY += io.MouseDelta.y;
+                } else {
+                    isDraggingMenu = false;
+                    SaveConfig();
+                }
+            }
         }
-
+        
+        // 窗口内容（仅在未折叠时显示）
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
+            
+            // 留出标题栏的空间
+            ImGui::Dummy(ImVec2(0, titleBarHeight));
+            ImGui::Separator();
+            
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            // 以下保留你所有的 CollapsingHeader 和 Toggle 开关
-            if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
+            // 预测功能
+            if (ImGui::CollapsingHeader((const char*)u8"预测功能", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
                 Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); 
                 Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); 
                 ImGui::Unindent();
             }
-            if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
+            
+            // 透视功能
+            if (ImGui::CollapsingHeader((const char*)u8"透视功能", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
                 Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4); 
                 Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); 
                 ImGui::Unindent();
             }
+            
             ImGui::Separator();
             Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); 
             Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
             ImGui::Spacing();
-            if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
-
-            // 缩放控制逻辑
-            ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
-            float hSz = 50.0f * g_autoScale * g_scale; 
-            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { 
-                isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; 
+            
+            if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) {
+                SaveConfig();
             }
-            if (isScalingMenu) { 
-                if (ImGui::IsMouseDown(0)) {
-                    float oldS = g_scale; 
-                    g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
-                    // 补偿位移，让缩放时中心点不动 (保留你的逻辑)
-                    g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; 
-                    g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
-                } else { 
-                    isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); 
-                } 
-            }
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
         }
     }
     ImGui::End();
