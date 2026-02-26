@@ -39,8 +39,6 @@ float g_anim[15] = {0.0f};
 
 float g_scale = 1.0f;            
 float g_autoScale = 1.0f;        
-float g_current_rendered_size = 0.0f; 
-bool g_needUpdateFontSafe = false;
 
 float g_boardScale = 2.2f;       
 float g_boardManualScale = 1.0f; 
@@ -189,34 +187,26 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 动态字体锐化刷新 (重新编译字体方案)
+// 4. 静态字体加载 (稳定性最高版本)
 // =================================================================
-void UpdateFontHD(bool force = false) {
+void InitFont() {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     
-    // 计算目标字号
-    float targetSize = 18.0f * g_scale * g_autoScale;
+    // 加载一个较大的基础字号，缩放时才不容易糊
+    float baseSize = 24.0f * g_autoScale;
 
-    // 如果字号变化微小且不是强制刷新，则跳过
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 1.0f) return;
-
-    io.Fonts->Clear();
     ImFontConfig config;
-    config.OversampleH = 1; 
-    config.OversampleV = 1; 
+    config.OversampleH = 2; 
+    config.OversampleV = 2; 
     config.PixelSnapH = true;
 
     const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
     if (access(fontPath, R_OK) != 0) fontPath = "/system/fonts/DroidSansFallback.ttf";
     
-    io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    io.Fonts->AddFontFromFileTTF(fontPath, baseSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     io.Fonts->Build();
-    
-    // 重新创建纹理并同步到 GPU
-    ImGui_ImplOpenGL3_CreateFontsTexture();
-    g_current_rendered_size = targetSize;
 }
 
 // =================================================================
@@ -349,24 +339,15 @@ void DrawMenu() {
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
         
-        // --- 修正编译错误的逻辑部分 ---
         ImVec2 currentSize = ImGui::GetWindowSize();
-        // 如果当前尺寸与记录尺寸不符，说明正在被缩放
         if (std::abs(currentSize.x - g_menuW) > 0.1f || std::abs(currentSize.y - g_menuH) > 0.1f) {
             g_menuW = currentSize.x;
             g_menuH = currentSize.y;
-            // 实时更新缩放系数
             g_scale = g_menuW / (350.0f * g_autoScale);
         }
 
-        // 当手指松开且缩放系数发生明显偏移时，标记需要执行 UpdateFontHD
-        if (!ImGui::IsMouseDown(0)) {
-            float targetSize = 18.0f * g_scale * g_autoScale;
-            if (std::abs(targetSize - g_current_rendered_size) > 1.5f) {
-                g_needUpdateFontSafe = true;
-            }
-        }
-        // ---------------------------
+        // 使用 SetWindowFontScale 实时缩放，绝对流畅不崩溃
+        ImGui::SetWindowFontScale(g_scale);
 
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
@@ -408,11 +389,12 @@ int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
-    // 设置为 1 开启 VSYNC 垂直同步，渲染帧率将与屏幕刷新率完全一致
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     
     LoadConfig(); 
-    UpdateFontHD(true);  
+    
+    // 初始化时构建一次字体，不要在循环里构建
+    InitFont();
     
     static bool running = true; 
     std::thread it([&] { 
@@ -423,12 +405,6 @@ int main() {
     });
 
     while (running) {
-        // 在 BeginFrame 之前安全地重构字体纹理
-        if (g_needUpdateFontSafe) { 
-            UpdateFontHD(true); 
-            g_needUpdateFontSafe = false; 
-        }
-        
         imgui.BeginFrame(); 
         
         if (!g_resLoaded) { 
