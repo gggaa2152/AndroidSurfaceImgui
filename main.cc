@@ -26,8 +26,6 @@
 // =================================================================
 // 2. 全局状态变量 (保持你原始所有变量名)
 // =================================================================
-// 修复建议：在 Android 上，/data 目录通常需要 root 权限才能写入。
-// 建议将配置文件存储在应用程序的私有数据目录中。
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
 bool g_predict_enemy = false;
@@ -89,8 +87,6 @@ void SaveConfig() {
         out << "menuH=" << g_menuH << "\n";
         out << "menuScale=" << g_scale << "\n";
         out.close();
-    } else {
-        __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Failed to open config file for writing: %s", g_configPath);
     }
 }
 
@@ -118,16 +114,10 @@ void LoadConfig() {
                 else if (k == "menuW") g_menuW = std::stof(v);
                 else if (k == "menuH") g_menuH = std::stof(v);
                 else if (k == "menuScale") g_scale = std::stof(v);
-            } catch (const std::exception& e) {
-                __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Failed to parse config value for key '%s' with value '%s': %s", k.c_str(), v.c_str(), e.what());
-            } catch (...) {
-                __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Unknown error parsing config value for key '%s' with value '%s'", k.c_str(), v.c_str());
-            }
+            } catch (...) {}
         }
         in.close();
         g_needUpdateFontSafe = true; 
-    } else {
-        __android_log_print(ANDROID_LOG_INFO, "JKChess", "Config file not found or failed to open for reading: %s", g_configPath);
     }
 }
 
@@ -174,30 +164,9 @@ public:
         program = glCreateProgram();
         GLuint v = glCreateShader(GL_VERTEX_SHADER);
         glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
-        
-        GLint success;
-        GLchar infoLog[512];
-        glGetShaderiv(v, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            glGetShaderInfoLog(v, 512, NULL, infoLog);
-            __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Vertex shader compilation failed: %s", infoLog);
-        }
-
         GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
         glShaderSource(f, 1, &fs, NULL); glCompileShader(f);
-        glGetShaderiv(f, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            glGetShaderInfoLog(f, 512, NULL, infoLog);
-            __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Fragment shader compilation failed: %s", infoLog);
-        }
-
         glAttachShader(program, v); glAttachShader(program, f); glLinkProgram(program);
-        glGetProgramiv(program, GL_LINK_STATUS, &success);
-        if (!success) {
-            glGetProgramInfoLog(program, 512, NULL, infoLog);
-            __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Shader program linking failed: %s", infoLog);
-        }
-
         resLoc = glGetUniformLocation(program, "u_Res");
         glDeleteShader(v); glDeleteShader(f);
     }
@@ -207,10 +176,7 @@ bool g_HexShaderInited = false;
 GLuint LoadTextureFromFile(const char* filename) {
     int w, h, c;
     unsigned char* data = stbi_load(filename, &w, &h, &c, 4);
-    if (!data) {
-        __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Failed to load image: %s", filename);
-        return 0;
-    }
+    if (!data) return 0;
     GLuint tid; glGenTextures(1, &tid); glBindTexture(GL_TEXTURE_2D, tid);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
@@ -220,12 +186,17 @@ GLuint LoadTextureFromFile(const char* filename) {
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
     if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
+    
+    // 修复：优化回调逻辑，确保在绘制前设置状态，绘制后重置状态
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
         glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
         glUniform2f(g_HexShader.resLoc, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
     }, (void*)(intptr_t)g_heroTexture);
+    
     drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, center - ImVec2(size, size), center + ImVec2(size, size));
+    
+    // 修复：必须重置渲染状态，否则后续的 ImGui 绘制（如菜单）会受到着色器影响
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
@@ -243,9 +214,6 @@ void UpdateFontHD(bool force = false) {
     const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
     if (access(fontPath, R_OK) == 0) {
         io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    } else {
-        __android_log_print(ANDROID_LOG_WARN, "JKChess", "Font file not found or not readable: %s. Using default font.", fontPath);
-        io.Fonts->AddFontDefault(&config);
     }
     io.Fonts->Build();
     ImGui_ImplOpenGL3_CreateFontsTexture();
@@ -259,13 +227,8 @@ void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
-    const float HEX_SIZE_BASE = 38.0f;
-    const float HEX_X_MULTIPLIER = 1.73205f; 
-    const float HEX_Y_MULTIPLIER = 1.5f;
-
-    float sz = HEX_SIZE_BASE * g_boardScale * g_autoScale * g_boardManualScale;
-    float xStep = sz * HEX_X_MULTIPLIER; 
-    float yStep = sz * HEX_Y_MULTIPLIER;
+    float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
+    float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
@@ -273,6 +236,8 @@ void DrawBoard() {
     ImVec2 p_bot = ImVec2(lastCX + sz * cosf(a2), lastCY + sz * sinf(a2));
     float hOffset = sz * 0.6f; 
     ImVec2 p_ext = ImVec2((p_top.x + p_bot.x) * 0.5f + hOffset, (p_top.y + p_bot.y) * 0.5f);
+    
+    // 绘制棋盘缩放手柄
     d->AddTriangleFilled(p_top, p_bot, p_ext, IM_COL32(255, 215, 0, 240));
     
     static bool isDraggingBoard = false, isScalingBoard = false;
@@ -288,7 +253,7 @@ void DrawBoard() {
     if (isScalingBoard) {
         if (ImGui::IsMouseDown(0)) {
             float curW = io.MousePos.x - g_startX;
-            float baseW = (6.5f * HEX_X_MULTIPLIER + 1.0f) * HEX_SIZE_BASE * g_boardScale * g_autoScale;
+            float baseW = (6.5f * 1.73205f + 1.0f) * 38.0f * g_boardScale * g_autoScale;
             g_boardManualScale = std::max(curW / baseW, 0.1f); 
         } else {
             isScalingBoard = false; SaveConfig(); 
@@ -348,37 +313,35 @@ void DrawMenu() {
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
     
-    // 修复：折叠逻辑。我们使用 NoTitleBar 来完全接管标题栏，这样可以实现全标题栏点击折叠。
     float titleBarHeight = ImGui::GetFrameHeight();
     float currentH = g_menuCollapsed ? titleBarHeight : (baseH * g_scale);
 
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
-    // 修复：使用 NoTitleBar，因为我们要手动绘制标题栏以支持全区域点击折叠
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar)) {
         
         ImVec2 windowPos = ImGui::GetWindowPos();
         ImRect titleBarRect(windowPos, windowPos + ImVec2(currentW, titleBarHeight));
         bool isHoveringTitle = titleBarRect.Contains(io.MousePos);
 
-        // 修复：全标题栏点击折叠逻辑
+        // 折叠/展开逻辑
         if (isHoveringTitle && ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
             g_menuCollapsed = !g_menuCollapsed;
             SaveConfig();
         }
 
-        // 修复：拖动逻辑。通过同步窗口位置到全局变量来解决拖动失效问题。
+        // 拖动逻辑
         if (!isScalingMenu && isHoveringTitle && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x;
             g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
 
-        // 绘制标题栏背景（模拟原生风格）
+        // 绘制标题栏背景
         ImGui::GetWindowDrawList()->AddRectFilled(titleBarRect.Min, titleBarRect.Max, ImGui::GetColorU32(ImGuiCol_TitleBgActive));
 
-        // 绘制折叠三角图标（模拟原生风格）
+        // 绘制折叠三角图标
         float arrowSize = titleBarHeight * 0.4f;
         ImVec2 arrowPos = windowPos + ImVec2(ImGui::GetStyle().FramePadding.x + arrowSize * 0.5f, titleBarHeight * 0.5f);
         ImGui::RenderArrow(ImGui::GetWindowDrawList(), arrowPos - ImVec2(arrowSize * 0.5f, arrowSize * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), g_menuCollapsed ? ImGuiDir_Right : ImGuiDir_Down, arrowSize);
@@ -404,6 +367,7 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
+            // 修复：菜单缩放手柄绘制逻辑
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
@@ -413,6 +377,7 @@ void DrawMenu() {
                     g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
                 } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
+            // 绘制菜单缩放手柄（蓝色小三角）
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
         }
     }
@@ -441,21 +406,6 @@ int main() {
         imgui.EndFrame(); 
         std::this_thread::yield();
     }
-    running = false; 
-    if (it.joinable()) it.join(); 
-
-    // 修复：在程序退出前释放 OpenGL 资源
-    if (g_heroTexture != 0) {
-        glDeleteTextures(1, &g_heroTexture);
-        g_heroTexture = 0;
-    }
-    if (g_HexShader.program != 0) {
-        glDeleteProgram(g_HexShader.program);
-        g_HexShader.program = 0;
-    }
-
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui::DestroyContext();
-
+    running = false; if (it.joinable()) it.join(); 
     return 0;
 }
