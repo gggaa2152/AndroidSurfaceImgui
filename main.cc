@@ -19,7 +19,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 1. 全局配置与动画状态 (完全保留你的变量名)
+// 1. 全局配置与动画状态
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -32,7 +32,7 @@ bool g_auto_buy = false;
 bool g_instant = false;
 
 bool g_menuCollapsed = false; 
-float g_anim[15] = {0.0f}; // 记录 15 个组件的动画进度
+float g_anim[15] = {0.0f}; 
 
 float g_scale = 1.0f;            
 float g_autoScale = 1.0f;        
@@ -94,6 +94,8 @@ void LoadConfig() {
                 else if (k == "startX") g_startX = std::stof(v);
                 else if (k == "startY") g_startY = std::stof(v);
                 else if (k == "manualScale") g_boardManualScale = std::stof(v);
+                else if (k == "menuX") g_menuX = std::stof(v);
+                else if (k == "menuY") g_menuY = std::stof(v);
                 else if (k == "menuW") g_menuW = std::stof(v);
                 else if (k == "menuScale") g_scale = std::stof(v);
             } catch (...) {}
@@ -104,7 +106,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 3. 增强版 Hex 裁剪着色器
+// 3. 高级 Hex Shader (边缘抗锯齿版)
 // =================================================================
 class HexShader {
 public:
@@ -174,7 +176,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 多路径高清字体加载
+// 4. 高清字体加载
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -211,53 +213,72 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 增强交互棋盘绘制
+// 5. 修复跳变与重影的棋盘绘制
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
-    float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
-    float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
-    
-    float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
-    float lastCY = g_startY + 3 * yStep;
-    ImVec2 p_handle = ImVec2(lastCX + sz, lastCY + sz * 0.5f);
-    
-    d->AddCircleFilled(p_handle, 12.0f * g_autoScale, IM_COL32(255, 215, 0, 200));
-    d->AddCircle(p_handle, (12.0f + 4.0f * sinf(ImGui::GetTime()*4)) * g_autoScale, IM_COL32(255, 215, 0, 100), 24, 2.0f);
 
+    // 1. 基础尺寸计算 (不随 manualScale 改变，作为缩放基准)
+    float baseSz = 38.0f * g_boardScale * g_autoScale;
+    float baseXStep = baseSz * 1.73205f;
+    float baseYStep = baseSz * 1.5f;
+
+    // 2. 当前帧实际尺寸 (用于绘制)
+    float curSz = baseSz * g_boardManualScale;
+    float curXStep = baseXStep * g_boardManualScale;
+    float curYStep = baseYStep * g_boardManualScale;
+
+    // 3. 计算交互手柄位置 (基于当前缩放)
+    float lastCX = g_startX + 6 * curXStep + (3 % 2 == 1 ? curXStep * 0.5f : 0);
+    float lastCY = g_startY + 3 * curYStep;
+    ImVec2 p_handle = ImVec2(lastCX + curSz, lastCY + curSz * 0.5f);
+
+    // 4. 交互逻辑处理 (放在绘制之前，确保一帧内数据同步)
     static bool isDraggingBoard = false, isScalingBoard = false;
     static ImVec2 dragOffset;
 
     if (ImGui::IsMouseClicked(0)) {
-        if (ImLengthSqr(io.MousePos - p_handle) < 1600.0f * g_autoScale) {
+        float distSq = ImLengthSqr(io.MousePos - p_handle);
+        if (distSq < (1600.0f * g_autoScale)) { // 40px 半径判定
             isScalingBoard = true;
-        } else if (ImRect(ImVec2(g_startX-sz, g_startY-sz), ImVec2(lastCX+sz, lastCY+sz)).Contains(io.MousePos)) {
-            isDraggingBoard = true; 
-            dragOffset = io.MousePos - ImVec2(g_startX, g_startY);
+        } else {
+            ImRect boardArea(ImVec2(g_startX - curSz, g_startY - curSz), ImVec2(lastCX + curSz, lastCY + curSz));
+            if (boardArea.Contains(io.MousePos)) {
+                isDraggingBoard = true; 
+                dragOffset = io.MousePos - ImVec2(g_startX, g_startY);
+            }
         }
     }
     
     if (isScalingBoard) {
         if (ImGui::IsMouseDown(0)) {
-            g_boardManualScale = std::max((io.MousePos.x - g_startX) / (xStep * 7.0f), 0.2f);
+            // 修复逻辑：缩放比例 = (当前距离) / (基础跨度)。不再使用变化的 curXStep 计算。
+            float totalSpan = baseXStep * 7.0f; 
+            g_boardManualScale = std::max((io.MousePos.x - g_startX) / totalSpan, 0.2f);
         } else { isScalingBoard = false; SaveConfig(); }
     }
     
     if (isDraggingBoard && !isScalingBoard) {
         if (ImGui::IsMouseDown(0)) {
-            g_startX = io.MousePos.x - dragOffset.x; g_startY = io.MousePos.y - dragOffset.y;
+            g_startX = io.MousePos.x - dragOffset.x; 
+            g_startY = io.MousePos.y - dragOffset.y;
         } else { isDraggingBoard = false; SaveConfig(); }
     }
+
+    // 5. 开始正式渲染 (使用当前确定的变量，防止重影)
+    // 渲染手柄反馈
+    d->AddCircleFilled(p_handle, 12.0f * g_autoScale, IM_COL32(255, 215, 0, 200));
+    d->AddCircle(p_handle, (12.0f + 4.0f * sinf(ImGui::GetTime()*6)) * g_autoScale, IM_COL32(255, 215, 0, 100), 24, 2.0f);
 
     float time = (float)ImGui::GetTime();
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
-            float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0);
-            float cy = g_startY + r * yStep;
+            float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
+            float cy = g_startY + r * curYStep;
             
-            if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), sz * 0.95f); 
+            if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
             
             float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
             float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.7f, 1.0f, rf, gf, bf);
@@ -265,7 +286,7 @@ void DrawBoard() {
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-                pts[i] = ImVec2(cx + sz * cosf(a), cy + sz * sinf(a));
+                pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
             d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 220), ImDrawFlags_Closed, 3.0f * g_autoScale);
         }
@@ -273,7 +294,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 现代风格菜单 (强制转换字符类型修复)
+// 6. 现代风格菜单 (精装修版)
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -292,7 +313,7 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
     if (pressed) { *v = !(*v); SaveConfig(); }
 
-    g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.15f;
+    g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.22f; // 加快动画响应
     
     ImVec4 col_bg = ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0.12f, 0.65f, 0.45f, 1.0f), g_anim[idx]);
     window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(col_bg), h*0.5f);
@@ -315,8 +336,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    // 添加 (const char*) 强转以适配 C++20 编译器
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.1", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.2", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
