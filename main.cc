@@ -50,7 +50,10 @@ float g_menuW = 350.0f, g_menuH = 550.0f;
 GLuint g_heroTexture = 0;           
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
+
+// 字体更新防抖变量
 bool g_needUpdateFontSafe = false;
+float g_fontUpdateTimer = -1.0f; 
 
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
@@ -58,12 +61,11 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 (核心：此处保存所有参数)
+// 2. 配置管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
     if (out.is_open()) {
-        // 功能开关
         out << "predictEnemy=" << (g_predict_enemy ? "1" : "0") << "\n";
         out << "predictHex=" << (g_predict_hex ? "1" : "0") << "\n";
         out << "espBoard=" << (g_esp_board ? "1" : "0") << "\n";
@@ -72,19 +74,14 @@ void SaveConfig() {
         out << "autoBuy=" << (g_auto_buy ? "1" : "0") << "\n";
         out << "instant=" << (g_instant ? "1" : "0") << "\n";
         out << "boardLocked=" << (g_boardLocked ? "1" : "0") << "\n";
-
-        // 棋盘位置与缩放
         out << "startX=" << g_startX << "\n";
         out << "startY=" << g_startY << "\n";
         out << "manualScale=" << g_boardManualScale << "\n";
-
-        // 菜单状态 (坐标、宽高、整体缩放)
         out << "menuX=" << g_menuX << "\n";
         out << "menuY=" << g_menuY << "\n";
         out << "menuW=" << g_menuW << "\n";
         out << "menuH=" << g_menuH << "\n";
         out << "menuScale=" << g_scale << "\n";
-        
         out.close();
     }
 }
@@ -117,7 +114,7 @@ void LoadConfig() {
             } catch (...) {}
         }
         in.close();
-        g_needUpdateFontSafe = true; 
+        g_needUpdateFontSafe = true; // 加载后标记更新
     }
 }
 
@@ -202,10 +199,14 @@ void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
+    
+    // 计算目标字体大小
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
+    // 如果偏差极小且不是强制更新，则跳过耗时操作
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
+    // 销毁旧纹理并重构
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     
@@ -296,7 +297,6 @@ void DrawBoard() {
                 p_handle = CalcHandlePos(g_startX, g_startY, g_boardManualScale);
             }
         } else {
-            // 此处移除 SaveConfig() 调用
             isScaling = false;
             isDragging = false;
         }
@@ -338,7 +338,7 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     if (!ImGui::ItemAdd(bb, id)) return false;
     bool hovered, held;
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    if (pressed) { *v = !(*v); /* 此处移除 SaveConfig() */ }
+    if (pressed) { *v = !(*v); }
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.25f; 
     ImVec4 col_bg = ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0.15f, 0.70f, 0.45f, 1.0f), g_anim[idx]);
     window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(col_bg), h*0.5f);
@@ -360,23 +360,26 @@ void DrawMenu() {
 
     if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.4", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
-        // 实时更新变量供保存使用
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
         float curW = ImGui::GetWindowSize().x;
         float curH = ImGui::GetWindowSize().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        if (ImGui::IsMouseReleased(0) && (std::abs(curW - g_menuW) > 5.0f || std::abs(curH - g_menuH) > 5.0f)) {
+        // 当用户正在调整窗口大小时
+        if (ImGui::IsWindowResizing()) {
             g_menuW = curW; 
             g_menuH = curH;
+            // 实时更新缩放系数
             g_scale = curW / (350.0f * g_autoScale);
-            g_needUpdateFontSafe = true; 
-            // 此处移除自动保存
+            // 启动防抖计时器：用户停止操作后 0.5 秒再执行昂贵的字体生成
+            g_fontUpdateTimer = 0.5f; 
         }
 
         if (!g_menuCollapsed) {
+            // 重要：在真正重绘字体前，使用 SetWindowFontScale 进行平滑的视觉缩放，解决卡顿
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
+            
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"· VSYNC 同步中 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
@@ -399,7 +402,6 @@ void DrawMenu() {
             ModernToggle((const char*)u8"极速退房", &g_instant, 7);
             
             ImGui::Spacing();
-            // 唯一保存入口：点击此处保存所有配置（含位置、大小、开关等）
             if (ImGui::Button((const char*)u8"保存当前配置", ImVec2(-1, 55 * g_autoScale))) {
                 SaveConfig();
             }
@@ -424,11 +426,27 @@ int main() {
             std::this_thread::yield(); 
         } 
     });
+    
+    auto lastFrameTime = std::chrono::high_resolution_clock::now();
+
     while (running) {
+        auto now = std::chrono::high_resolution_clock::now();
+        float deltaTime = std::chrono::duration<float>(now - lastFrameTime).count();
+        lastFrameTime = now;
+
+        // 处理字体更新防抖逻辑
+        if (g_fontUpdateTimer > 0.0f) {
+            g_fontUpdateTimer -= deltaTime;
+            if (g_fontUpdateTimer <= 0.0f) {
+                g_needUpdateFontSafe = true;
+            }
+        }
+
         if (g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false; 
         }
+        
         imgui.BeginFrame(); 
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
