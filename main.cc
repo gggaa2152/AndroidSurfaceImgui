@@ -203,8 +203,11 @@ void UpdateFontHD(bool force = false) {
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
-    // 销毁旧纹理
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    // 如果还没构建过，不要销毁纹理，防止后端报错
+    if (io.Fonts->IsBuilt()) {
+        ImGui_ImplOpenGL3_DestroyFontsTexture();
+    }
+    
     io.Fonts->Clear();
     
     ImFontConfig config;
@@ -233,7 +236,7 @@ void UpdateFontHD(bool force = false) {
     if(!loaded) io.Fonts->AddFontDefault();
 
     io.Fonts->Build();
-    // 重新创建纹理
+    // 只有在 OpenGL 上下文准备好时调用
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
 }
@@ -443,12 +446,17 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // 核心修改：将所有可能导致 Atlas 锁定的操作放在 BeginFrame 之前
-        // 但要注意 AImGui 的 BeginFrame 会调用渲染后端的 NewFrame，
-        // 而后端的 NewFrame 往往会触发 IsBuilt() 的断言。
+        // 核心修复逻辑：
+        // AImGui::BeginFrame 会调用 ImGui_ImplOpenGL3_NewFrame
+        // 该函数内部会检查 Fonts->IsBuilt()。
+        // 如果我们还没构建过字体，必须在此之前强行构建一次。
+        if (!ImGui::GetIO().Fonts->IsBuilt()) {
+             UpdateFontHD(true); 
+             g_needUpdateFontSafe = false;
+        }
         
-        // 尝试：在真正绘制任何东西前，确保字体已构建
-        if (g_needUpdateFontSafe || !ImGui::GetIO().Fonts->IsBuilt()) {
+        // 如果有配置更新或缩放需求
+        if (g_needUpdateFontSafe) {
              UpdateFontHD(true);
              g_needUpdateFontSafe = false;
         }
