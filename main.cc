@@ -188,16 +188,14 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体初始化 (一步到位版)
+// 4. 字体初始化 (优化断言修复版)
 // =================================================================
 void InitFontOnce() {
     ImGuiIO& io = ImGui::GetIO();
     
-    // 获取屏幕分辨率进行适配 (假设大部分 Android 高端机为 2400+ 高度)
+    // 强制适配屏幕高度
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
-    
-    // 计算一次固定的基础字体大小
     float targetSize = 18.0f * g_autoScale;
     
     io.Fonts->Clear(); 
@@ -222,9 +220,9 @@ void InitFontOnce() {
     
     if(!loaded) io.Fonts->AddFontDefault();
 
-    // 这一步是关键！手动触发构建，让 IsBuilt() 变为 true
-    unsigned char* pixels; int width, height;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); 
+    // 不要在这里手动构建，而是通过设置 Flags 标记，让渲染器在 NewFrame 时去构建
+    // 这样能避开 ImGui 内部的逻辑顺序检查
+    io.Fonts->Flags |= ImFontAtlasFlags_NoMouseCursors; 
     
     g_current_rendered_size = targetSize;
 }
@@ -340,12 +338,9 @@ void DrawMenu() {
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
         if (!g_menuCollapsed) {
-            // 这里我们不再动态调字号，而是用缩放，避免重建 Atlas
             ImGui::SetWindowFontScale(g_scale);
-            
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"· FPS: %.1f", io.Framerate);
             ImGui::Separator();
-            
             if (ImGui::CollapsingHeader((const char*)u8" 智能功能 ", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
                 ModernToggle((const char*)u8"对手预测", &g_predict_enemy, 1); 
@@ -374,22 +369,24 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     LoadConfig(); 
     
-    // 2. 核心解决：在循环开始前一次性构建好字体图集
+    // 2. 初始化字体配置（仅 AddFont，不 Build）
     InitFontOnce();
 
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
-        imgui.BeginFrame(); 
-
-        // 3. 只有在上下文准备好时上传一次纹理
         ImGuiIO& io = ImGui::GetIO();
-        if (io.Fonts->IsBuilt() && io.Fonts->TexID == 0 && eglGetCurrentContext() != EGL_NO_CONTEXT) {
+
+        // 核心修复点：如果字体还没构建，手动触发后端接口同步
+        // 这会在 BeginFrame 内部调用 io.Fonts->GetTexDataAsRGBA32，从而设置 IsBuilt = true
+        if (!io.Fonts->IsBuilt()) {
             ImGui_ImplOpenGL3_CreateFontsTexture();
         }
 
-        if (!g_resLoaded) { 
+        imgui.BeginFrame(); 
+
+        if (io.Fonts->TexID != 0 && !g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
