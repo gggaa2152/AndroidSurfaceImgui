@@ -418,10 +418,8 @@ int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
-    // 1. 先加载配置
     LoadConfig(); 
     
-    // 2. 启动输入处理线程
     static bool running = true; 
     std::thread it([&] { 
         while(running) { 
@@ -430,7 +428,6 @@ int main() {
         } 
     });
     
-    // 3. 进入循环后再初始化字体，确保环境已完全建立
     bool firstFrame = true;
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
 
@@ -445,15 +442,16 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        imgui.BeginFrame(); 
-        
-        // 关键修复：在 BeginFrame 之后检查字体构建状态
+        // 关键修复：在 BeginFrame 之前处理字体更新
+        // 这样可以确保 ImFontAtlas 没有被锁定
         if (firstFrame || g_needUpdateFontSafe) {
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false;
             firstFrame = false;
         }
 
+        imgui.BeginFrame(); 
+        
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
