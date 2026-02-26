@@ -190,11 +190,12 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体与显示适配 (彻底修复构建状态与上下文同步)
+// 4. 字体与显示适配 (修复断言锁定)
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     
+    // 如果在帧内，延迟更新
     if (ImGui::GetCurrentContext() && ImGui::GetCurrentContext()->WithinFrameScope) {
         g_needUpdateFontSafe = true;
         return;
@@ -206,7 +207,7 @@ void UpdateFontHD(bool force = false) {
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
-    // 如果已有旧纹理，先销毁
+    // 销毁旧纹理
     if (g_current_rendered_size > 0.1f && eglGetCurrentContext() != EGL_NO_CONTEXT) {
         ImGui_ImplOpenGL3_DestroyFontsTexture();
     }
@@ -234,17 +235,15 @@ void UpdateFontHD(bool force = false) {
     
     if(!loaded) io.Fonts->AddFontDefault();
 
-    // 关键修复：必须强制 Build()，此时会生成位图，io.Fonts->IsBuilt() 会变为 true
-    unsigned char* pixels; int width, height;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); 
+    // 关键修复：强制 Build 以同步 IsBuilt 状态
+    io.Fonts->Build();
     
-    // 只有在上下文可用时才上传
     if (eglGetCurrentContext() != EGL_NO_CONTEXT) {
         ImGui_ImplOpenGL3_CreateFontsTexture();
     }
     
     g_current_rendered_size = targetSize;
-    __android_log_print(ANDROID_LOG_INFO, "AImGui_Helper", "Font Build Completed. Size: %.2f", targetSize);
+    __android_log_print(ANDROID_LOG_INFO, "AImGui_Helper", "Font Build Success: %.2f", targetSize);
 }
 
 // =================================================================
@@ -392,9 +391,14 @@ void DrawMenu() {
 // 7. 主循环 (彻底修复锁定断言)
 // =================================================================
 int main() {
+    // 1. 初始化框架
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     LoadConfig(); 
     
+    // 2. 强制初始字体构建（必须在 BeginFrame 之前且 io 准备好后）
+    // 这样在 imgui.BeginFrame() 调用时 IsBuilt() 已经为 true
+    UpdateFontHD(true); 
+
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
     
@@ -410,18 +414,17 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // --- 核心修复：在 NewFrame 之前处理字体 ---
-        if (g_current_rendered_size < 1.0f || g_needUpdateFontSafe) {
+        // 处理运行时的字体更新需求
+        if (g_needUpdateFontSafe) {
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false;
         }
 
         imgui.BeginFrame(); 
 
-        // 额外的安全检查：如果在 BeginFrame 后发现纹理还没上传，强制补传
-        // 应对冷启动时上下文获取延迟的情况
+        // 此时如果是在第一次运行或切换了上下文，确保纹理已上传
         ImGuiIO& io = ImGui::GetIO();
-        if (io.Fonts->IsBuilt() && io.Fonts->TexID == 0) {
+        if (io.Fonts->IsBuilt() && io.Fonts->TexID == 0 && eglGetCurrentContext() != EGL_NO_CONTEXT) {
             ImGui_ImplOpenGL3_CreateFontsTexture();
         }
 
