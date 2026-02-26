@@ -369,8 +369,6 @@ void DrawMenu() {
         float curH = ImGui::GetWindowSize().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        // 更加通用的方式检测窗口缩放行为
-        // 当窗口被激活且处于拖拽状态，且缩放手柄 ID 处于 Active 状态时
         ImGuiWindow* window = ImGui::GetCurrentWindow();
         ImGuiID resizeId = window->GetID("##Resize");
         if (ImGui::GetActiveID() == resizeId && ImGui::IsMouseDragging(0)) {
@@ -419,9 +417,11 @@ void DrawMenu() {
 int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
-    eglSwapInterval(eglGetCurrentDisplay(), 1); 
+    
+    // 1. 先加载配置
     LoadConfig(); 
-    UpdateFontHD(true);  
+    
+    // 2. 启动输入处理线程
     static bool running = true; 
     std::thread it([&] { 
         while(running) { 
@@ -430,6 +430,8 @@ int main() {
         } 
     });
     
+    // 3. 进入循环后再初始化字体，确保环境已完全建立
+    bool firstFrame = true;
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
 
     while (running) {
@@ -437,28 +439,33 @@ int main() {
         float deltaTime = std::chrono::duration<float>(now - lastFrameTime).count();
         lastFrameTime = now;
 
+        // 防抖计时
         if (g_fontUpdateTimer > 0.0f) {
             g_fontUpdateTimer -= deltaTime;
-            if (g_fontUpdateTimer <= 0.0f) {
-                g_needUpdateFontSafe = true;
-            }
+            if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        if (g_needUpdateFontSafe) { 
-            UpdateFontHD(true); 
-            g_needUpdateFontSafe = false; 
-        }
-        
         imgui.BeginFrame(); 
+        
+        // 关键修复：在 BeginFrame 之后检查字体构建状态
+        if (firstFrame || g_needUpdateFontSafe) {
+            UpdateFontHD(true); 
+            g_needUpdateFontSafe = false;
+            firstFrame = false;
+        }
+
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
         }
+
         DrawBoard(); 
         DrawMenu();
+        
         imgui.EndFrame(); 
     }
+
     g_HexShader.Cleanup();
     running = false; 
     if (it.joinable()) it.join(); 
