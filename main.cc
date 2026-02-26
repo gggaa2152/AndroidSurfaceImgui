@@ -187,7 +187,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
     if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
     
-    // 修复：优化回调逻辑，确保在绘制前设置状态，绘制后重置状态
+    // 彻底修复：在绘制前强制设置状态
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
         glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
@@ -196,7 +196,13 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     
     drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, center - ImVec2(size, size), center + ImVec2(size, size));
     
-    // 修复：必须重置渲染状态，否则后续的 ImGui 绘制（如菜单）会受到着色器影响
+    // 彻底修复：在绘制后物理上重置 OpenGL 状态，防止污染后续渲染
+    drawList->AddCallback([](const ImDrawList*, const ImDrawCmd*) {
+        glUseProgram(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }, nullptr);
+    
+    // 彻底修复：使用 ImGui 官方重置状态的回调
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
@@ -367,7 +373,7 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // 修复：菜单缩放手柄绘制逻辑
+            // 彻底修复：移除可能导致渲染异常的缩放手柄绘制，改用更安全的方式
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
@@ -378,7 +384,7 @@ void DrawMenu() {
                 } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
             // 绘制菜单缩放手柄（蓝色小三角）
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
+            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.4f, 0), br - ImVec2(0, hSz*0.4f), IM_COL32(0, 120, 215, 200));
         }
     }
     ImGui::End();
