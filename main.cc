@@ -188,12 +188,10 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体初始化 (安全版：仅准备数据，由渲染循环触发 Build)
+// 4. 字体初始化 (优化版)
 // =================================================================
 void SetupFonts() {
     ImGuiIO& io = ImGui::GetIO();
-    
-    // 基础缩放计算
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     float targetSize = 18.0f * g_autoScale;
@@ -217,12 +215,11 @@ void SetupFonts() {
             }
         }
     }
-    
     if(!loaded) io.Fonts->AddFontDefault();
     
-    // 注意：这里不调用 GetTexData，也不手动 Build。
-    // 我们让渲染器后端在 NewFrame 时由于发现字体没有纹理而自动调用。
-    g_current_rendered_size = targetSize;
+    // 关键：预先生成像素数据，这会标记 IsBuilt = true
+    unsigned char* p; int w, h;
+    io.Fonts->GetTexDataAsRGBA32(&p, &w, &h);
 }
 
 // =================================================================
@@ -360,28 +357,36 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 主循环 (初始化 -> 渲染)
+// 7. 主循环
 // =================================================================
 int main() {
-    // 1. 初始化 AImGui
-    // 在构造时 AImGui 会创建全局 ImGuiContext
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     LoadConfig(); 
     
-    // 2. 仅准备字体数据
-    SetupFonts();
-
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
-    bool fontBuilt = false;
+    bool initialized = false;
 
     while (running) {
         ImGuiIO& io = ImGui::GetIO();
 
-        // 3. 关键点：在 BeginFrame 之前，如果发现还没 Build，进行最后一次尝试
-        // 但是最好的做法是让 ImGui_ImplOpenGL3_NewFrame 自动处理。
-        // 为了防止断言，我们在 NewFrame 前手动把像素吐出来，这会标记 IsBuilt 为真。
+        // 强行满足断言检查：
+        // 1. 如果没有上下文，不进行任何操作
+        if (eglGetCurrentContext() == EGL_NO_CONTEXT) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        // 2. 第一次进入时加载字体并强制生成纹理
+        if (!initialized) {
+            SetupFonts();
+            // 在 BeginFrame 之前，必须显式调用这个
+            ImGui_ImplOpenGL3_CreateFontsTexture();
+            initialized = true;
+        }
+
+        // 3. 再次确保 IsBuilt 为真 (防御性编程)
         if (!io.Fonts->IsBuilt()) {
             unsigned char* p; int w, h;
             io.Fonts->GetTexDataAsRGBA32(&p, &w, &h);
@@ -389,7 +394,6 @@ int main() {
 
         imgui.BeginFrame(); 
 
-        // 只有在字体纹理上传到 GPU 后才加载其他资源
         if (io.Fonts->TexID != 0 && !g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
