@@ -190,22 +190,27 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体与显示适配 (核心修复: 与 AImGui 后端同步)
+// 4. 字体与显示适配 (修复断言锁定问题)
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
+    
+    // 如果已经在渲染帧内，严禁修改字体 atlas
+    if (ImGui::GetCurrentContext() && ImGui::GetCurrentContext()->WithinFrameScope) {
+        g_needUpdateFontSafe = true; // 标记稍后更新
+        return;
+    }
+
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
-    // 如果已经存在纹理，销毁并重置
     if (g_current_rendered_size > 0.1f) {
         ImGui_ImplOpenGL3_DestroyFontsTexture();
     }
     
-    // 清除 AImGui::InitEnvironment 中默认加载的 22px 字体
     io.Fonts->Clear(); 
     
     ImFontConfig config;
@@ -229,9 +234,12 @@ void UpdateFontHD(bool force = false) {
     
     if(!loaded) io.Fonts->AddFontDefault();
 
-    // 重新构建图集并手动上传到当前 OpenGL 上下文
     io.Fonts->Build();
-    ImGui_ImplOpenGL3_CreateFontsTexture();
+    
+    // 只有在 OpenGL 环境可用时才上传纹理
+    if (glGetCurrentContext() != nullptr) {
+        ImGui_ImplOpenGL3_CreateFontsTexture();
+    }
     
     g_current_rendered_size = targetSize;
     __android_log_print(ANDROID_LOG_INFO, "AImGui_Helper", "Font Updated to: %.2f", targetSize);
@@ -379,15 +387,12 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 主循环 (与 AImGui 源码深度集成)
+// 7. 主循环 (彻底修复锁定断言)
 // =================================================================
 int main() {
-    // 关键点：不要在此手动创建 ImGui Context，AImGui 构造函数内部会创建。
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
-    
     LoadConfig(); 
     
-    // 开启输入处理线程
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
     
@@ -403,27 +408,23 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // AImGui::BeginFrame 会检查 Surface 状态并调用 ImGui::NewFrame()
-        imgui.BeginFrame(); 
-
-        // 首次运行或缩放改变时，重新加载字体并更新纹理
+        // --- 核心修复：在 NewFrame 之前处理字体 ---
         if (g_current_rendered_size < 1.0f || g_needUpdateFontSafe) {
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false;
         }
 
-        // 加载必要的纹理
+        imgui.BeginFrame(); 
+
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
         }
 
-        // 渲染 UI
         DrawBoard(); 
         DrawMenu();
         
-        // AImGui::EndFrame 会执行渲染指令提交并交换缓冲区
         imgui.EndFrame(); 
     }
 
