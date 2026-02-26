@@ -54,7 +54,6 @@ bool g_resLoaded = false;
 bool g_needUpdateFontSafe = false;
 float g_lastFontUpdateTime = 0.0f;
 
-// 棋盘数据
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
     {0, 0, 0, 0, 0, 1, 0}, {1, 0, 1, 0, 1, 0, 1}
@@ -63,7 +62,7 @@ int g_enemyBoard[4][7] = {
 // 六边形顶点缓存
 struct HexPoints {
     ImVec2 pts[6];
-    bool valid = false;
+    float lastSz = 0.0f;
 } g_hexPoints;
 
 // =================================================================
@@ -125,106 +124,28 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助
+// 4. 纹理加载与字体更新
 // =================================================================
-class HexShader {
-public:
-    GLuint program = 0;
-    GLint resLoc = -1;
-    
-    void Init() {
-        const char* vs = "#version 300 es\n"
-            "layout(location=0) in vec2 Position;\n"
-            "layout(location=1) in vec2 UV;\n"
-            "out vec2 Frag_UV;\n"
-            "uniform vec2 u_Res;\n"
-            "void main() {\n"
-            "    Frag_UV = UV;\n"
-            "    vec2 ndc = (Position / u_Res) * 2.0 - 1.0;\n"
-            "    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n"
-            "}";
-            
-        const char* fs = "#version 300 es\n"
-            "precision mediump float;\n"
-            "uniform sampler2D Texture;\n"
-            "in vec2 Frag_UV;\n"
-            "out vec4 Out_Color;\n"
-            "float sdHex(vec2 p, float r) {\n"
-            "    vec3 k = vec3(-0.866025, 0.5, 0.57735);\n"
-            "    p = abs(p);\n"
-            "    p -= 2.0*min(dot(k.xy, p), 0.0)*k.xy;\n"
-            "    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);\n"
-            "    return length(p)*sign(p.y);\n"
-            "}\n"
-            "void main() {\n"
-            "    vec2 p = (Frag_UV - 0.5) * 2.0;\n"
-            "    vec2 rotated_p = vec2(p.y, p.x);\n"
-            "    float d = sdHex(rotated_p, 0.92);\n"
-            "    float w = fwidth(d);\n"
-            "    float m = 1.0 - smoothstep(-w, w, d);\n"
-            "    vec4 tex = texture(Texture, Frag_UV);\n"
-            "    if(m <= 0.0) discard;\n"
-            "    Out_Color = tex * m;\n"
-            "}";
-            
-        program = glCreateProgram();
-        GLuint v = glCreateShader(GL_VERTEX_SHADER);
-        GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
-        
-        glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
-        glShaderSource(f, 1, &fs, NULL); glCompileShader(f);
-        glAttachShader(program, v); glAttachShader(program, f); glLinkProgram(program);
-        
-        resLoc = glGetUniformLocation(program, "u_Res");
-        glDeleteShader(v); glDeleteShader(f);
-        
-        __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "HexShader初始化完成");
-    }
-} g_HexShader;
-
-bool g_HexShaderInited = false;
-
 GLuint LoadTextureFromFile(const char* filename) {
     __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "尝试加载纹理: %s", filename);
     
-    int w, h, c;
-    unsigned char* data = stbi_load(filename, &w, &h, &c, 4);
+    int w, h, channels;
+    unsigned char* data = stbi_load(filename, &w, &h, &channels, 4);
     if (!data) {
         __android_log_print(ANDROID_LOG_ERROR, "JKChess", "纹理加载失败: %s", filename);
         return 0;
     }
     
-    GLuint tid;
-    glGenTextures(1, &tid);
-    glBindTexture(GL_TEXTURE_2D, tid);
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
     
     stbi_image_free(data);
     __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "纹理加载成功: %d x %d", w, h);
-    return tid;
-}
-
-void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
-    if (!g_textureLoaded || g_heroTexture == 0) return;
-    
-    if (!g_HexShaderInited) { 
-        g_HexShader.Init(); 
-        g_HexShaderInited = true; 
-    }
-    
-    drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
-        glUseProgram(g_HexShader.program);
-        glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
-        glUniform2f(g_HexShader.resLoc, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
-    }, (void*)(intptr_t)g_heroTexture);
-    
-    drawList->AddImage((void*)(intptr_t)g_heroTexture, 
-        ImVec2(center.x - size, center.y - size), 
-        ImVec2(center.x + size, center.y + size));
-    
-    drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+    return texture;
 }
 
 void UpdateFontHD(bool force = false) {
@@ -236,9 +157,11 @@ void UpdateFontHD(bool force = false) {
     
     float targetSize = std::min(20.0f * g_autoScale * g_scale, 140.0f);
     
-    // 限制字体更新频率
+    // 限制字体更新频率：缩放变化超过10% 且 距离上次更新超过1秒 才更新
+    float changeRatio = std::abs(targetSize - g_current_rendered_size) / (g_current_rendered_size + 0.1f);
     float currentTime = ImGui::GetTime();
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 3.0f) return;
+    
+    if (!force && changeRatio < 0.1f) return;
     if (!force && currentTime - g_lastFontUpdateTime < 1.0f) return;
     
     g_lastFontUpdateTime = currentTime;
@@ -259,25 +182,26 @@ void UpdateFontHD(bool force = false) {
     io.Fonts->Build();
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "字体更新: size=%.1f", targetSize);
 }
 
 // =================================================================
-// 5. 棋盘绘制（优化版）
+// 5. 棋盘绘制（简化纹理绘制，缓存六边形顶点）
 // =================================================================
+void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
+    if (!g_textureLoaded || g_heroTexture == 0) return;
+    // 直接使用 AddImage，不使用自定义 Shader 回调，确保图片显示
+    drawList->AddImage((void*)(intptr_t)g_heroTexture,
+        ImVec2(center.x - size, center.y - size),
+        ImVec2(center.x + size, center.y + size));
+}
+
 void DrawBoard() {
     if (!g_esp_board) return;
     
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
-    
-    // 预计算六边形顶点
-    if (!g_hexPoints.valid) {
-        for(int i=0; i<6; i++) {
-            float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-            g_hexPoints.pts[i] = ImVec2(cosf(a), sinf(a));
-        }
-        g_hexPoints.valid = true;
-    }
     
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
     float xStep = sz * 1.73205f;
@@ -331,15 +255,24 @@ void DrawBoard() {
         }
     }
     
+    // 缓存六边形顶点（当格子大小变化时重新计算）
+    if (std::abs(sz - g_hexPoints.lastSz) > 0.1f) {
+        for (int i = 0; i < 6; i++) {
+            float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
+            g_hexPoints.pts[i] = ImVec2(cosf(a) * sz, sinf(a) * sz);
+        }
+        g_hexPoints.lastSz = sz;
+    }
+    
     // 绘制六边形网格
     float time = (float)ImGui::GetTime();
-    for(int r=0; r<4; r++) {
-        for(int c=0; c<7; c++) {
+    for(int r = 0; r < 4; r++) {
+        for(int c = 0; c < 7; c++) {
             float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0);
             float cy = g_startY + r * yStep;
             
             // 绘制英雄纹理
-            if(g_enemyBoard[r][c] && g_textureLoaded && g_heroTexture != 0) {
+            if (g_enemyBoard[r][c] && g_textureLoaded) {
                 DrawHero(d, ImVec2(cx, cy), sz);
             }
             
@@ -349,9 +282,8 @@ void DrawBoard() {
             ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
             
             ImVec2 pts[6];
-            for(int i=0; i<6; i++) {
-                pts[i] = ImVec2(cx + sz * g_hexPoints.pts[i].x, 
-                               cy + sz * g_hexPoints.pts[i].y);
+            for (int i = 0; i < 6; i++) {
+                pts[i] = ImVec2(cx + g_hexPoints.pts[i].x, cy + g_hexPoints.pts[i].y);
             }
             d->AddPolyline(pts, 6, IM_COL32((int)(rf*255), (int)(gf*255), (int)(bf*255), 255), 
                 ImDrawFlags_Closed, 4.0f * g_autoScale);
@@ -402,14 +334,13 @@ bool ToggleSwitch(const char* label, bool* v) {
 }
 
 // =================================================================
-// 7. 菜单UI（优化版）
+// 7. 菜单UI（优化缩放逻辑：结束时更新字体）
 // =================================================================
 void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
     float baseW = 320.0f;
     float baseH = 500.0f;
     
-    // 窗口大小
     float windowW = baseW * g_scale;
     float windowH = g_menuCollapsed ? 40.0f : baseH * g_scale;
     
@@ -418,10 +349,7 @@ void DrawMenu() {
     
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar;
     
-    char windowTitle[256];
-    sprintf(windowTitle, "%s", (const char*)u8"金铲铲助手");
-    
-    if (ImGui::Begin(windowTitle, NULL, flags)) {
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, flags)) {
         ImVec2 windowPos = ImGui::GetWindowPos();
         ImVec2 windowSize = ImGui::GetWindowSize();
         float titleBarHeight = 35.0f;
@@ -433,7 +361,6 @@ void DrawMenu() {
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         drawList->AddRectFilled(titleBarRect.Min, titleBarRect.Max, IM_COL32(40, 40, 50, 240), 8.0f, ImDrawFlags_RoundCornersTop);
         
-        // 标题文字
         const char* title = g_menuCollapsed ? (const char*)u8"🔍 金铲铲助手 ▼" : (const char*)u8"🔍 金铲铲助手 ▲";
         ImVec2 textPos = ImVec2(windowPos.x + 15, windowPos.y + (titleBarHeight - ImGui::GetTextLineHeight()) * 0.5f);
         drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), title);
@@ -443,7 +370,6 @@ void DrawMenu() {
         ImVec2 br(windowPos.x + windowSize.x, windowPos.y + windowSize.y);
         ImRect scaleHandle(br - ImVec2(handleSize, handleSize), br);
         
-        // 绘制缩放手柄
         bool handleHovered = scaleHandle.Contains(io.MousePos);
         drawList->AddTriangleFilled(
             ImVec2(br.x - 10, br.y - handleSize + 10),
@@ -451,28 +377,30 @@ void DrawMenu() {
             ImVec2(br.x - 10, br.y - 10),
             handleHovered ? IM_COL32(0, 150, 255, 255) : IM_COL32(100, 100, 100, 200));
         
-        // 缩放交互
+        // 缩放交互（结束时更新字体）
         static bool isScaling = false;
         static float startScale = 1.0f;
         static float startMouseX = 0;
+        static float targetScale = 1.0f;
         
         if (handleHovered && ImGui::IsMouseClicked(0)) {
             isScaling = true;
             startScale = g_scale;
             startMouseX = io.MousePos.x;
+            targetScale = g_scale;
         }
         
         if (isScaling) {
             if (ImGui::IsMouseDown(0)) {
-                float delta = (io.MousePos.x - startMouseX) * 0.005f;
-                float newScale = std::clamp(startScale + delta, 0.5f, 2.5f);
-                
-                if (std::abs(newScale - g_scale) > 0.01f) {
-                    g_scale = newScale;
-                    g_needUpdateFontSafe = true;
-                }
+                float delta = (io.MousePos.x - startMouseX) * 0.002f;
+                targetScale = std::clamp(startScale + delta, 0.5f, 2.5f);
+                // 实时更新 g_scale 以提供视觉反馈，但不触发字体更新
+                g_scale = targetScale;
             } else {
                 isScaling = false;
+                // 缩放结束，确保最终值一致，并触发字体更新
+                g_scale = targetScale;
+                g_needUpdateFontSafe = true;  // 只在结束时更新字体
                 SaveConfig();
             }
         }
@@ -492,7 +420,6 @@ void DrawMenu() {
                 isDragging = true;
             }
         }
-        
         if (isDragging) {
             if (ImGui::IsMouseDown(0)) {
                 g_menuX += io.MouseDelta.x;
@@ -507,9 +434,14 @@ void DrawMenu() {
         if (!g_menuCollapsed) {
             ImGui::SetCursorPosY(titleBarHeight + 10);
             
-            // 设置字体
+            // 只在需要时设置字体缩放（避免每帧调用）
+            static float lastFontScale = 0;
             float fontSize = 18.0f;
-            ImGui::SetWindowFontScale(fontSize / g_current_rendered_size);
+            float fontScale = fontSize / g_current_rendered_size;
+            if (std::abs(fontScale - lastFontScale) > 0.01f) {
+                ImGui::SetWindowFontScale(fontScale);
+                lastFontScale = fontScale;
+            }
             
             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
@@ -532,7 +464,6 @@ void DrawMenu() {
             }
             
             ImGui::Separator();
-            
             ToggleSwitch((const char*)u8"⚡ 全自动拿牌", &g_auto_buy);
             ToggleSwitch((const char*)u8"⏱️ 极速秒退助手", &g_instant);
             ImGui::Spacing();
@@ -566,6 +497,7 @@ int main() {
     
     __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "纹理加载状态: %d", g_textureLoaded);
     
+    // 输入线程
     std::thread inputThread([&] {
         while (true) { 
             imgui.ProcessInputEvent(); 
@@ -573,20 +505,8 @@ int main() {
         }
     });
     
-    auto lastTime = std::chrono::steady_clock::now();
-    int frameCount = 0;
-    
+    // 主循环（无帧率限制）
     while (true) {
-        auto currentTime = std::chrono::steady_clock::now();
-        float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
-        
-        // 限制帧率到60fps
-        if (deltaTime < 0.016f) {
-            std::this_thread::sleep_for(std::chrono::microseconds(1));
-            continue;
-        }
-        lastTime = currentTime;
-        
         if (g_needUpdateFontSafe) {
             UpdateFontHD(true);
             g_needUpdateFontSafe = false;
@@ -599,7 +519,8 @@ int main() {
         
         imgui.EndFrame();
         
-        frameCount++;
+        // 简单让步，避免CPU100%
+        std::this_thread::yield();
     }
     
     inputThread.detach();
