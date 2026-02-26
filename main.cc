@@ -114,7 +114,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 3. 渲染辅助 (Shader & Texture)
+// 3. 渲染辅助
 // =================================================================
 class HexShader {
 public:
@@ -227,7 +227,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 5. 菜单 UI (完整版 + 向右无限缩放逻辑)
+// 5. 菜单 UI
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -251,7 +251,6 @@ bool Toggle(const char* label, bool* v, int idx) {
 void DrawMenu() {
     static bool isScalingMenu = false; 
     ImGuiIO& io = ImGui::GetIO(); 
-    
     float baseW = 320.0f * g_autoScale; 
     float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
@@ -261,11 +260,9 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        // 标题栏
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
         }
-        // 移动
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
@@ -273,39 +270,26 @@ void DrawMenu() {
 
         if (!g_menuCollapsed) {
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
-
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
-                ImGui::Indent(); 
-                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); 
-                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); 
-                ImGui::Unindent();
+                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
             }
             if (ImGui::CollapsingHeader((const char*)u8"功能")) {
-                ImGui::Indent(); 
-                Toggle((const char*)u8"对手棋盘", &g_esp_board, 3); 
-                Toggle((const char*)u8"对手备战席", &g_esp_bench, 4); 
-                Toggle((const char*)u8"对手商店", &g_esp_shop, 5); 
-                ImGui::Unindent();
+                ImGui::Indent(); Toggle((const char*)u8"对手棋盘", &g_esp_board, 3); Toggle((const char*)u8"对手备战席", &g_esp_bench, 4); Toggle((const char*)u8"对手商店", &g_esp_shop, 5); ImGui::Unindent();
             }
             ImGui::Separator();
-            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); 
-            Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // --- 右下角缩放手柄 ---
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 60.0f * g_autoScale * g_scale; 
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) isScalingMenu = true;
-            
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    // 计算从左上角到鼠标的相对比例
                     float sw = (io.MousePos.x - g_menuX) / baseW;
                     float sh = (io.MousePos.y - g_menuY) / baseH;
-                    // 取较大值，向右拉或向下拉都有效
                     g_scale = std::clamp(std::max(sw, sh), 0.3f, 100.0f);
                 } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
@@ -320,7 +304,9 @@ void DrawMenu() {
 // =================================================================
 int main() {
     ImGui::CreateContext();
-    android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderType::RenderNative}); 
+    // 修复后的初始化代码行
+    android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
+    
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     LoadConfig(); UpdateFontHD(true);  
     static bool running = true; 
