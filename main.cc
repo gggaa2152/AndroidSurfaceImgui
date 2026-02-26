@@ -338,8 +338,8 @@ void DrawMenu() {
             
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
                 ImGui::Indent(); 
-                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); 
-                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); 
+                Toggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
+                Toggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
                 ImGui::Unindent();
             }
             if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
@@ -350,8 +350,8 @@ void DrawMenu() {
                 ImGui::Unindent();
             }
             ImGui::Separator();
-            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); 
-            Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
+            Toggle((const char*)u8"自动拿牌", &g_auto_buy, 6); 
+            Toggle((const char*)u8"极速秒退", &g_instant, 7);
             ImGui::Spacing();
             
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale))) SaveConfig();
