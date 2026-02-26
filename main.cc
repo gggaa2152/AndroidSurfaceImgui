@@ -193,7 +193,8 @@ void UpdateFontHD(bool force = false) {
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     float baseSize = 18.0f * g_autoScale * g_scale;
-    float targetSize = (baseSize > 120.0f) ? 120.0f : baseSize; 
+    // 提高保护上限，防止无限放大时文字崩溃，同时也支持超高清字体
+    float targetSize = std::clamp(baseSize, 8.0f, 500.0f); 
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
@@ -272,7 +273,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (全方向等比例缩放，左上角固定)
+// 6. 菜单 UI (左上角固定，右下角无限等比例缩放)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -294,13 +295,14 @@ bool Toggle(const char* label, bool* v, int idx) {
 }
 
 void DrawMenu() {
-    static bool isScalingMenu = false; static float startMS = 1.0f; static ImVec2 startMP;
+    static bool isScalingMenu = false; 
     ImGuiIO& io = ImGui::GetIO(); 
     
     // 基础参考尺寸
-    float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
+    float baseW = 320.0f * g_autoScale; 
+    float baseH = 500.0f * g_autoScale;
     
-    // 窗口尺寸受 g_scale 全局比例控制
+    // 实时宽高计算
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
@@ -309,17 +311,22 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+        // 1. 标题栏逻辑
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
-            if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
+            if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { 
+                g_menuCollapsed = !g_menuCollapsed; 
+                SaveConfig(); 
+            }
         }
         
-        // 移动逻辑：仅在标题栏拖动且非拉伸时改变 g_menuX/Y
+        // 2. 移动逻辑
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
 
         if (!g_menuCollapsed) {
+            // 内部缩放补偿
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
 
@@ -336,31 +343,30 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // 右下角全方向缩放手柄
+            // 3. 全方向无限缩放手柄 (映射算法)
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
-            float hSz = 50.0f * g_autoScale * g_scale; 
+            float hSz = 60.0f * g_autoScale * g_scale; // 动态手柄大小，在大比例下依然好点
+            
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { 
-                isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; 
+                isScalingMenu = true; 
             }
             
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    float dx = io.MousePos.x - startMP.x;
-                    float dy = io.MousePos.y - startMP.y;
+                    // 直接计算鼠标相对于左上角的距离比率
+                    float scaleW = (io.MousePos.x - g_menuX) / (320.0f * g_autoScale);
+                    float scaleH = (io.MousePos.y - g_menuY) / (500.0f * g_autoScale);
                     
-                    // 改良后的全方向响应算法：
-                    // 分别计算横向和纵向的偏移比例，取绝对值较大的一个作为缩放基准
-                    // 这样向右拉、向下拉都能立刻触发全局等比例缩放
-                    float sx = dx / baseW;
-                    float sy = dy / baseH;
-                    float maxDelta = (std::abs(sx) > std::abs(sy)) ? sx : sy;
-                    
-                    g_scale = std::clamp(startMS + maxDelta, 0.5f, 5.0f);
+                    // 取横纵较大值作为全局比例，范围放宽至 100 倍
+                    g_scale = std::clamp(std::max(scaleW, scaleH), 0.3f, 100.0f);
                 } else { 
-                    isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); 
+                    isScalingMenu = false; 
+                    g_needUpdateFontSafe = true; // 停止拖动后重建高清字体
+                    SaveConfig(); 
                 } 
             }
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
+            // 绘制视觉手柄
+            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.5f, 0), br - ImVec2(0, hSz*0.5f), IM_COL32(0, 120, 215, 200));
         }
     }
     ImGui::End();
