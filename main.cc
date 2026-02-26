@@ -222,7 +222,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制逻辑 (明亮水晶鎏金版)
+// 5. 棋盘绘制逻辑 (极简全息 HUD 版)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -308,9 +308,9 @@ void DrawBoard() {
     float curYStep = baseYStep * g_boardManualScale;
     float time = (float)ImGui::GetTime();
 
-    float interactionGlow = isDraggingBoard ? 40.0f : 0.0f;
+    float interactionGlow = isDraggingBoard ? 15.0f : 0.0f;
 
-    // 绘制棋盘格 (白晶半透底 + 流光金边)
+    // 绘制棋盘格 (深空微紫底 + 极纤细流光网格)
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
             float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
@@ -319,7 +319,7 @@ void DrawBoard() {
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
             
             float distToCenter = sqrtf((cx - g_startX)*(cx - g_startX) + (cy - g_startY)*(cy - g_startY));
-            float pulse = (sinf(time * 2.5f - distToCenter * 0.003f) + 1.0f) * 0.5f;
+            float pulse = (sinf(time * 3.0f - distToCenter * 0.003f) + 1.0f) * 0.5f;
             
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
@@ -327,76 +327,77 @@ void DrawBoard() {
                 pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
 
-            // 亮色水晶质感底色
-            d->AddConvexPolyFilled(pts, 6, IM_COL32(245 + interactionGlow, 245 + interactionGlow, 250 + interactionGlow, 100 + (int)(pulse * 40)));
-            // 鎏金呼吸边框
-            int borderR = (int)(240 + pulse * 15), borderG = (int)(160 + pulse * 40), borderB = (int)(40 + pulse * 20);
-            d->AddPolyline(pts, 6, IM_COL32(borderR, borderG, borderB, 220), ImDrawFlags_Closed, 3.0f * g_autoScale);
+            // 极简暗物质底色，带来悬浮感
+            d->AddConvexPolyFilled(pts, 6, IM_COL32(15 + interactionGlow, 10 + interactionGlow, 25 + interactionGlow, 40 + (int)(pulse * 30)));
+            
+            // 纤细高冷电光紫边框 (高级感的核心在于线条细且锐利)
+            int borderR = (int)(140 + pulse * 50), borderG = (int)(40 + pulse * 30), borderB = 255;
+            d->AddPolyline(pts, 6, IM_COL32(borderR, borderG, borderB, 180), ImDrawFlags_Closed, 1.5f * g_autoScale);
         }
     }
 
-    // --- 绘制手柄（鎏金白瓷瞄准仪） ---
+    // --- 绘制手柄（极简全息 HUD 游标） ---
     if (!g_boardLocked) {
         float handleX = g_startX + h_dx * g_boardManualScale;
         float handleY = g_startY + h_dy * g_boardManualScale;
         ImVec2 p_handle(handleX, handleY);
 
-        ImU32 coreColor = isScalingBoard ? IM_COL32(255, 120, 0, 255) : IM_COL32(250, 170, 30, 230);
+        ImU32 coreColor = isScalingBoard ? IM_COL32(200, 100, 255, 255) : IM_COL32(150, 60, 255, 220);
         
-        // 白瓷底座
-        d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 255, 255, 240));
-        // 发光鎏金核心
-        d->AddCircleFilled(p_handle, 6.0f * g_autoScale, coreColor);
-        // 金色环
-        d->AddCircle(p_handle, 16.0f * g_autoScale, IM_COL32(250, 170, 30, 200), 32, 2.0f * g_autoScale);
+        // 暗物质底座
+        d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(10, 8, 15, 250));
+        // 纤细悬浮外环
+        d->AddCircle(p_handle, 16.0f * g_autoScale, IM_COL32(160, 80, 255, 180), 32, 1.5f * g_autoScale);
+        // 呼吸内核
+        d->AddCircleFilled(p_handle, isScalingBoard ? 7.0f * g_autoScale : 4.0f * g_autoScale, coreColor);
         
-        // 旋转的金色十字准星
+        // 极简外围游标线 (仅四根极细短线，拒绝复杂轮盘)
         for(int i=0; i<4; i++) {
-            float a = time * 1.5f + i * (M_PI / 2.0f);
-            ImVec2 p1(p_handle.x + cosf(a) * 8.0f * g_autoScale, p_handle.y + sinf(a) * 8.0f * g_autoScale);
-            ImVec2 p2(p_handle.x + cosf(a) * 22.0f * g_autoScale, p_handle.y + sinf(a) * 22.0f * g_autoScale);
-            d->AddLine(p1, p2, IM_COL32(250, 150, 20, 210), 2.5f * g_autoScale);
+            float a = time * 2.0f + i * (M_PI / 2.0f);
+            ImVec2 p1(p_handle.x + cosf(a) * 20.0f * g_autoScale, p_handle.y + sinf(a) * 20.0f * g_autoScale);
+            ImVec2 p2(p_handle.x + cosf(a) * 26.0f * g_autoScale, p_handle.y + sinf(a) * 26.0f * g_autoScale);
+            d->AddLine(p1, p2, IM_COL32(150, 70, 255, 200), 1.5f * g_autoScale);
         }
 
         if (isScalingBoard) {
             float pulseGlow = (sinf(time * 15.0f) + 1.0f) * 0.5f;
-            d->AddCircle(p_handle, 24.0f * g_autoScale + pulseGlow * 4.0f, IM_COL32(255, 160, 0, 150), 32, 2.0f * g_autoScale);
+            d->AddCircle(p_handle, 22.0f * g_autoScale + pulseGlow * 6.0f, IM_COL32(180, 100, 255, 100), 32, 1.0f * g_autoScale);
         }
     }
 }
 
 // =================================================================
-// 6. 菜单 UI (水晶鎏金高级主题)
+// 6. 菜单 UI (深空幻影紫顶级主题)
 // =================================================================
 void SetupImGuiStyle() {
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
 
-    style.WindowRounding    = 14.0f * g_autoScale;
-    style.FrameRounding     = 8.0f * g_autoScale;
+    // 圆角收敛，更符合现代空间 UI
+    style.WindowRounding    = 12.0f * g_autoScale;
+    style.FrameRounding     = 6.0f * g_autoScale;
     style.PopupRounding     = 8.0f * g_autoScale;
-    style.GrabRounding      = 8.0f * g_autoScale;
-    style.ItemSpacing       = ImVec2(12 * g_autoScale, 16 * g_autoScale);
-    style.WindowPadding     = ImVec2(16 * g_autoScale, 16 * g_autoScale);
+    style.ItemSpacing       = ImVec2(12 * g_autoScale, 18 * g_autoScale);
+    style.WindowPadding     = ImVec2(20 * g_autoScale, 20 * g_autoScale);
     style.FramePadding      = ImVec2(8 * g_autoScale, 8 * g_autoScale);
     style.WindowTitleAlign  = ImVec2(0.5f, 0.5f); 
 
-    // 高级水晶亮色主题 (Crystal Gold - Pearlescent Glass)
-    colors[ImGuiCol_WindowBg]       = ImVec4(0.96f, 0.96f, 0.98f, 0.92f); // 亮白毛玻璃底
-    colors[ImGuiCol_TitleBg]        = ImVec4(0.92f, 0.92f, 0.94f, 0.95f);
-    colors[ImGuiCol_TitleBgActive]  = ImVec4(0.90f, 0.90f, 0.92f, 0.98f);
-    colors[ImGuiCol_TitleBgCollapsed]=ImVec4(0.94f, 0.94f, 0.96f, 0.90f);
-    colors[ImGuiCol_FrameBg]        = ImVec4(0.85f, 0.86f, 0.88f, 1.00f); // 浅灰控件底色
-    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.80f, 0.82f, 0.85f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]  = ImVec4(0.96f, 0.65f, 0.15f, 0.80f); // 鎏金高亮
-    colors[ImGuiCol_Header]         = ImVec4(0.96f, 0.65f, 0.15f, 0.25f); // 柔和的金底
-    colors[ImGuiCol_HeaderHovered]  = ImVec4(0.96f, 0.65f, 0.15f, 0.40f);
-    colors[ImGuiCol_HeaderActive]   = ImVec4(0.96f, 0.65f, 0.15f, 0.60f);
-    colors[ImGuiCol_Button]         = ImVec4(0.96f, 0.65f, 0.15f, 0.80f); // 主按钮鎏金色
-    colors[ImGuiCol_ButtonHovered]  = ImVec4(0.98f, 0.72f, 0.25f, 1.00f);
-    colors[ImGuiCol_ButtonActive]   = ImVec4(0.85f, 0.55f, 0.10f, 1.00f);
-    colors[ImGuiCol_Text]           = ImVec4(0.18f, 0.18f, 0.20f, 1.00f); // 深灰字，清晰护眼
-    colors[ImGuiCol_Separator]      = ImVec4(0.80f, 0.80f, 0.85f, 0.80f);
+    // 深空暗物质极简配色 (Deep Space / OLED Black + Phantom Violet)
+    colors[ImGuiCol_WindowBg]       = ImVec4(0.04f, 0.04f, 0.05f, 0.95f); // 极暗底，沉稳内敛
+    colors[ImGuiCol_TitleBg]        = ImVec4(0.04f, 0.04f, 0.05f, 1.00f);
+    colors[ImGuiCol_TitleBgActive]  = ImVec4(0.06f, 0.06f, 0.08f, 1.00f);
+    colors[ImGuiCol_TitleBgCollapsed]=ImVec4(0.04f, 0.04f, 0.05f, 0.90f);
+    colors[ImGuiCol_FrameBg]        = ImVec4(0.08f, 0.08f, 0.10f, 1.00f); // 控件未激活时的碳灰
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.12f, 0.12f, 0.14f, 1.00f);
+    colors[ImGuiCol_FrameBgActive]  = ImVec4(0.55f, 0.20f, 0.95f, 0.80f); // 电光紫
+    colors[ImGuiCol_Header]         = ImVec4(0.55f, 0.20f, 0.95f, 0.25f); // 折叠头微弱紫光
+    colors[ImGuiCol_HeaderHovered]  = ImVec4(0.55f, 0.20f, 0.95f, 0.40f);
+    colors[ImGuiCol_HeaderActive]   = ImVec4(0.55f, 0.20f, 0.95f, 0.60f);
+    colors[ImGuiCol_Button]         = ImVec4(0.10f, 0.10f, 0.12f, 1.00f); // 按钮默认极简灰
+    colors[ImGuiCol_ButtonHovered]  = ImVec4(0.55f, 0.20f, 0.95f, 0.80f); // 悬浮亮紫
+    colors[ImGuiCol_ButtonActive]   = ImVec4(0.45f, 0.15f, 0.85f, 1.00f);
+    colors[ImGuiCol_Text]           = ImVec4(0.92f, 0.92f, 0.95f, 1.00f); // 锐利冷白字
+    colors[ImGuiCol_Separator]      = ImVec4(0.15f, 0.15f, 0.18f, 1.00f); // 若有若无的极细分割线
 }
 
 bool ModernToggle(const char* label, bool* v, int idx) {
@@ -405,8 +406,9 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     const ImGuiID id = window->GetID(label);
     const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
     
-    float h = ImGui::GetFrameHeight() * 0.85f;
-    float w = h * 2.1f;
+    // 采用更修长的 iOS 极简比例
+    float h = ImGui::GetFrameHeight() * 0.75f; 
+    float w = h * 2.0f;
     const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + style.ItemInnerSpacing.x + label_size.x, h));
     
     ImGui::ItemSize(bb, style.FramePadding.y);
@@ -418,25 +420,23 @@ bool ModernToggle(const char* label, bool* v, int idx) {
 
     g_anim[idx] = ImLerp(g_anim[idx], (*v ? 1.0f : 0.0f), 0.15f);
     
-    // 开关配色：浅灰(关) -> 鎏金(开)
-    ImVec4 col_bg_off = ImVec4(0.82f, 0.83f, 0.85f, 1.0f);
-    ImVec4 col_bg_on  = ImVec4(0.96f, 0.68f, 0.15f, 1.0f);
+    // 开关配色：碳灰极简(关) -> 霓虹流光紫(开)
+    ImVec4 col_bg_off = ImVec4(0.12f, 0.12f, 0.14f, 1.0f);
+    ImVec4 col_bg_on  = ImVec4(0.55f, 0.20f, 0.95f, 1.0f);
     ImVec4 col_bg = ImLerp(col_bg_off, col_bg_on, g_anim[idx]);
     
+    // 轨道
     window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(col_bg), h*0.5f);
     
     float knob_x = bb.Min.x + h*0.5f + g_anim[idx]*(w-h);
     float knob_y = bb.Min.y + h*0.5f;
-    float knob_r = h*0.5f - 2.5f;
+    float knob_r = h*0.5f - 1.5f; // 旋钮微调，边缘更锐利
     
-    if (*v && g_anim[idx] > 0.1f) { 
-        // 开启时的温暖金光
-        int alphaGlow = (int)(g_anim[idx] * 90);
-        window->DrawList->AddCircleFilled(ImVec2(knob_x, knob_y), knob_r + 3.0f * g_autoScale, IM_COL32(250, 180, 50, alphaGlow));
-    }
+    // 极简风格剥离了杂乱的光晕，只留下纯净的本体与阴影
+    window->DrawList->AddCircleFilled(ImVec2(knob_x, knob_y + 0.5f), knob_r, IM_COL32(0, 0, 0, 80)); // 极简微投影
     window->DrawList->AddCircleFilled(ImVec2(knob_x, knob_y), knob_r, IM_COL32_WHITE);
     
-    ImGui::RenderText(ImVec2(bb.Min.x + w + style.ItemInnerSpacing.x, bb.Min.y + style.FramePadding.y*0.25f), label);
+    ImGui::RenderText(ImVec2(bb.Min.x + w + style.ItemInnerSpacing.x, bb.Min.y + style.FramePadding.y*0.1f), label);
     return pressed;
 }
 
@@ -450,11 +450,12 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    // 高级金色细边框
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * g_autoScale);
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.96f, 0.75f, 0.20f, 0.5f)); 
+    // 顶级极简风只保留 1px 的极细高冷紫边框，拒绝粗犷
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f * g_autoScale);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.45f, 0.15f, 0.85f, 0.4f)); 
 
-    if (ImGui::Begin((const char*)u8"✦ 金铲铲全能助手 v2.5 ✦", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    // 修改了名称，更具极简未来感
+    if (ImGui::Begin((const char*)u8"幻影 | 战棋终端 v2.6", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
@@ -469,17 +470,17 @@ void DrawMenu() {
         if (!g_menuCollapsed) {
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
             
-            // 绿色状态字，在白底上更清新
-            ImGui::TextColored(ImVec4(0.15f, 0.60f, 0.30f, 1.0f), (const char*)u8"● VSYNC 引擎已激活 | FPS: %.1f", io.Framerate);
+            // 状态文字改为冷峻的幻影紫
+            ImGui::TextColored(ImVec4(0.65f, 0.35f, 1.00f, 1.0f), (const char*)u8"VSYNC 同步引擎运行中 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            if (ImGui::CollapsingHeader((const char*)u8" ⚡ 智能预测 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader((const char*)u8"智能预测", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
                 ModernToggle((const char*)u8"对手预测", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"海克斯辅助", &g_predict_hex, 2); 
                 ImGui::Unindent();
             }
-            if (ImGui::CollapsingHeader((const char*)u8" 👁️ 透视显示 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader((const char*)u8"全息透视", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 4); 
@@ -487,12 +488,12 @@ void DrawMenu() {
                 ImGui::Unindent();
             }
             ImGui::Separator();
-            ModernToggle((const char*)u8"锁定棋盘位置", &g_boardLocked, 8); 
-            ModernToggle((const char*)u8"智能拿牌", &g_auto_buy, 6); 
-            ModernToggle((const char*)u8"极速退房", &g_instant, 7);
+            ModernToggle((const char*)u8"锁定空间坐标", &g_boardLocked, 8); 
+            ModernToggle((const char*)u8"核心自动抓取", &g_auto_buy, 6); 
+            ModernToggle((const char*)u8"进程急速释放", &g_instant, 7);
             
             ImGui::Spacing();
-            if (ImGui::Button((const char*)u8"💾 保存当前配置", ImVec2(-1, 55 * g_autoScale))) SaveConfig();
+            if (ImGui::Button((const char*)u8"应用并写入配置", ImVec2(-1, 50 * g_autoScale))) SaveConfig();
         }
     }
     ImGui::End();
