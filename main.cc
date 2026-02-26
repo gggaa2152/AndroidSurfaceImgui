@@ -18,31 +18,43 @@
 #include <unistd.h>
 
 // =================================================================
-// 1. 全局变量与功能状态
+// 1. 全局变量与功能状态 (保持你的原始定义)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
-bool g_predict_enemy = false, g_predict_hex = false, g_esp_board = true;
-bool g_esp_bench = false, g_esp_shop = false, g_auto_buy = false, g_instant = false;
+// 功能开关
+bool g_predict_enemy = false;
+bool g_predict_hex = false;
+bool g_esp_board = true;
+bool g_esp_bench = false; 
+bool g_esp_shop = false;  
+bool g_auto_buy = false;
+bool g_instant = false;
 
+// 菜单物理状态
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
-
-// 缩放与位置控制
-float g_scale = 1.0f;           
-float g_autoScale = 1.0f;        
+float g_scale = 1.0f;           // 内部内容缩放比
+float g_autoScale = 1.0f;       // 屏幕自适应
 float g_current_rendered_size = 0.0f; 
 
-float g_menuX = 100.0f, g_menuY = 100.0f;
-float g_menuW = 400.0f, g_menuH = 600.0f; 
+// 菜单位置与物理尺寸 (核心：增加 W 和 H 变量)
+float g_menuX = 100.0f;
+float g_menuY = 100.0f;
+float g_menuW = 320.0f;         // 初始物理宽度
+float g_menuH = 500.0f;         // 初始物理高度
 
 // 棋盘控制
-float g_boardScale = 2.2f, g_boardManualScale = 1.0f; 
-float g_startX = 400.0f, g_startY = 400.0f;    
+float g_boardScale = 2.2f;       
+float g_boardManualScale = 1.0f; 
+float g_startX = 400.0f;    
+float g_startY = 400.0f;    
 
 // 英雄资源
 GLuint g_heroTexture = 0;           
-bool g_textureLoaded = false, g_resLoaded = false, g_needUpdateFontSafe = false;
+bool g_textureLoaded = false;    
+bool g_resLoaded = false; 
+bool g_needUpdateFontSafe = false;
 
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
@@ -50,7 +62,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 贴图与 Shader 渲染 (保留你的核心绘图代码)
+// 2. 贴图与 Shader 渲染 (你的核心 Shader 代码，完整保留)
 // =================================================================
 class HexShader {
 public:
@@ -89,7 +101,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 3. 棋盘绘制逻辑
+// 3. 棋盘绘制逻辑 (完整保留)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -98,9 +110,10 @@ void DrawBoard() {
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
     float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
     
-    // 计算缩放手柄位置
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
+    
+    // 绘制棋盘缩放手柄 (黄色三角)
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
     ImVec2 p_top = ImVec2(lastCX + sz * cosf(a1), lastCY + sz * sinf(a1));
     ImVec2 p_bot = ImVec2(lastCX + sz * cosf(a2), lastCY + sz * sinf(a2));
@@ -143,7 +156,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 4. 配置与字体
+// 4. 配置读写与字体更新 (完整保留)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -152,6 +165,7 @@ void SaveConfig() {
         out << "menuX=" << g_menuX << "\n" << "menuY=" << g_menuY << "\n";
         out << "menuW=" << g_menuW << "\n" << "menuH=" << g_menuH << "\n";
         out << "menuScale=" << g_scale << "\n";
+        out << "startX=" << g_startX << "\n" << "startY=" << g_startY << "\n";
         out.close();
     }
 }
@@ -168,6 +182,8 @@ void LoadConfig() {
             else if (k == "menuW") g_menuW = std::stof(v);
             else if (k == "menuH") g_menuH = std::stof(v);
             else if (k == "menuScale") g_scale = std::stof(v);
+            else if (k == "startX") g_startX = std::stof(v);
+            else if (k == "startY") g_startY = std::stof(v);
             else if (k == "espBoard") g_esp_board = (v == "1");
         }
         in.close(); g_needUpdateFontSafe = true;
@@ -188,9 +204,9 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 核心菜单 (物理缩放逻辑)
+// 5. 核心菜单逻辑 (修正后的跟手缩放)
 // =================================================================
-bool Toggle(const char* label, bool* v, int idx) {
+bool CustomToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiID id = window->GetID(label);
     const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
@@ -201,7 +217,7 @@ bool Toggle(const char* label, bool* v, int idx) {
     if (pressed) { *v = !(*v); SaveConfig(); }
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.15f;
     window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(ImLerp(ImVec4(0.2f,0.2f,0.2f,1), ImVec4(0,0.5f,1,1), g_anim[idx])), h*0.5f);
-    window->DrawList->AddCircleFilled(bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f), h*0.5f - 2.0f, IM_COL32_WHITE);
+    window->DrawList->AddCircleFilled(ImVec2(bb.Min.x + h*0.5f + g_anim[idx]*(w-h), bb.Min.y + h*0.5f), h*0.5f - 2.0f, IM_COL32_WHITE);
     ImGui::RenderText(bb.Min + ImVec2(w + 10.0f, 0), label);
     return pressed;
 }
@@ -209,12 +225,17 @@ bool Toggle(const char* label, bool* v, int idx) {
 void DrawMenu() {
     static bool isResizing = false;
     ImGuiIO& io = ImGui::GetIO();
-    float winW = g_menuW, winH = g_menuCollapsed ? ImGui::GetFrameHeight() : g_menuH;
+    
+    // 当前显示的物理高度（折叠判断）
+    float currentWinH = g_menuCollapsed ? ImGui::GetFrameHeight() : g_menuH;
 
+    // 设置窗口位置和物理尺寸
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(winW, winH), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(g_menuW, currentWinH), ImGuiCond_Always);
 
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全功能助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+        
+        // 标题栏交互：拖动与折叠
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) g_menuCollapsed = !g_menuCollapsed;
         }
@@ -223,26 +244,41 @@ void DrawMenu() {
         }
 
         if (!g_menuCollapsed) {
+            // 内部内容缩放
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
             
-            Toggle((const char*)u8"对手棋盘显示", &g_esp_board, 1);
-            Toggle((const char*)u8"预测分布", &g_predict_enemy, 2);
-            if (ImGui::Button((const char*)u8"保存", ImVec2(-1, 45*g_autoScale*g_scale))) SaveConfig();
+            // --- 你的所有功能开关 ---
+            if (ImGui::CollapsingHeader(u8"预测相关")) {
+                CustomToggle(u8"对手分布", &g_predict_enemy, 1);
+                CustomToggle(u8"海克斯预测", &g_predict_hex, 2);
+            }
+            if (ImGui::CollapsingHeader(u8"透视相关")) {
+                CustomToggle(u8"棋盘显示", &g_esp_board, 3);
+                CustomToggle(u8"商店显示", &g_esp_shop, 4);
+            }
+            
+            ImGui::Separator();
+            if (ImGui::Button(u8"保存设置", ImVec2(-1, 45 * g_scale))) SaveConfig();
 
-            // --- 终极缩放手柄 ---
+            // --- 核心修改：缩放手柄 ---
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 80.0f * g_autoScale; // 大感应区
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br-ImVec2(hSz*0.6f,0), br-ImVec2(0,hSz*0.6f), IM_COL32(0,120,255,255));
+            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 255, 255));
 
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) isResizing = true;
+            
             if (isResizing) {
                 if (ImGui::IsMouseDown(0)) {
-                    // 核心：直接改变物理宽度 = 手指坐标 - 起始坐标
-                    g_menuW = std::max(200.0f, io.MousePos.x - g_menuX);
-                    g_menuH = std::max(150.0f, io.MousePos.y - g_menuY);
-                    // 反向推导 scale 用于内部缩放
+                    // 【绝对同步】：宽度 = 手指坐标 - 窗口起始坐标
+                    g_menuW = std::max(220.0f, io.MousePos.x - g_menuX);
+                    g_menuH = std::max(180.0f, io.MousePos.y - g_menuY);
+                    // 反推内部比例 (基准宽度设为 320)
                     g_scale = g_menuW / (320.0f * g_autoScale);
-                } else { isResizing = false; g_needUpdateFontSafe = true; SaveConfig(); }
+                } else { 
+                    isResizing = false; 
+                    g_needUpdateFontSafe = true; // 停下后重绘高清字体
+                    SaveConfig(); 
+                }
             }
         }
     }
@@ -250,19 +286,32 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 6. 入口
+// 6. 主程序入口 (补全 main 循环)
 // =================================================================
 int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
-    LoadConfig(); UpdateFontHD(true);
+    
+    LoadConfig(); 
+    UpdateFontHD(true);
+    
     while (true) {
         if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
+        
         imgui.BeginFrame();
-        if (!g_resLoaded) { g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; }
-        DrawBoard(); 
-        DrawMenu();
+        
+        // 自动加载英雄贴图资源
+        if (!g_resLoaded) { 
+            g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
+            g_textureLoaded = (g_heroTexture != 0); 
+            g_resLoaded = true; 
+        }
+        
+        DrawBoard(); // 绘制你的棋盘
+        DrawMenu();  // 绘制功能菜单
+        
         imgui.EndFrame();
+        std::this_thread::yield();
     }
     return 0;
 }
