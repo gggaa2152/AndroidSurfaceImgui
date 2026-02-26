@@ -188,10 +188,11 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体初始化 (仅设置数据)
+// 4. 字体初始化 (解锁状态下调用)
 // =================================================================
 void SetupFonts() {
     ImGuiIO& io = ImGui::GetIO();
+    // 假设一个默认高度用于初始计算，进入循环后会根据 DisplaySize 修正
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     float targetSize = 18.0f * g_autoScale;
@@ -216,6 +217,10 @@ void SetupFonts() {
         }
     }
     if(!loaded) io.Fonts->AddFontDefault();
+    
+    // 强制触发一次内存构建，标记 IsBuilt = true，避免 NewFrame 断言字体未构建
+    unsigned char* p; int w, h;
+    io.Fonts->GetTexDataAsRGBA32(&p, &w, &h);
 }
 
 // =================================================================
@@ -359,6 +364,9 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     LoadConfig(); 
     
+    // 关键修复点：在循环外，FontAtlas 处于解锁状态时完成字体配置
+    SetupFonts();
+
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
@@ -367,16 +375,17 @@ int main() {
     while (running) {
         ImGuiIO& io = ImGui::GetIO();
 
-        // 核心改动：利用 BeginFrame 建立环境
+        // 检查 EGL 环境是否可用
+        if (eglGetCurrentContext() == EGL_NO_CONTEXT) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+
+        // 开启新的一帧 (锁定 FontAtlas)
         imgui.BeginFrame(); 
 
-        // 只有当 BeginFrame 运行后，GL 上下文才百分百激活，此时初始化资源最安全
+        // 处理 GL 纹理相关的初始化 (在锁定区内执行此 GL 操作是合法的)
         if (firstFrame) {
-            SetupFonts();
-            // 让后端自动重新创建字体纹理（因为 Fonts->Clear() 后标志位已变）
-            // 在 RenderNative 内部，BeginFrame 已经执行了 ImGui_ImplOpenGL3_NewFrame
-            // 如果我们需要强制重建，调用此函数：
-            ImGui_ImplOpenGL3_DestroyFontsTexture(); 
             ImGui_ImplOpenGL3_CreateFontsTexture();
             firstFrame = false;
         }
