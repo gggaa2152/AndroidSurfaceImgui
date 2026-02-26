@@ -50,8 +50,6 @@ float g_menuW = 350.0f, g_menuH = 550.0f;
 GLuint g_heroTexture = 0;           
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
-
-// 字体更新防抖变量
 bool g_needUpdateFontSafe = false;
 float g_fontUpdateTimer = -1.0f; 
 
@@ -114,12 +112,11 @@ void LoadConfig() {
             } catch (...) {}
         }
         in.close();
-        g_needUpdateFontSafe = true; 
     }
 }
 
 // =================================================================
-// 3. Hex Shader 与 纹理加载
+// 3. 纹理与绘图助手
 // =================================================================
 class HexShader {
 public:
@@ -204,9 +201,11 @@ void UpdateFontHD(bool force = false) {
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
     // 销毁旧纹理
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    if (g_current_rendered_size > 0.1f) {
+        ImGui_ImplOpenGL3_DestroyFontsTexture();
+    }
     
-    io.Fonts->Clear();
+    io.Fonts->Clear(); // 清除 AImGui 可能自动加载的默认字体状态
     
     ImFontConfig config;
     config.OversampleH = 1;
@@ -234,7 +233,8 @@ void UpdateFontHD(bool force = false) {
     if(!loaded) io.Fonts->AddFontDefault();
 
     io.Fonts->Build();
-    // 重新创建纹理并标记为已构建
+    
+    // 确保 OpenGL Context 激活后创建纹理
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
 }
@@ -418,9 +418,10 @@ void DrawMenu() {
 // 7. 主循环
 // =================================================================
 int main() {
-    ImGui::CreateContext();
+    // 1. 初始化 AImGui（它内部会自动调用 ImGui::CreateContext）
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
+    // 2. 加载配置
     LoadConfig(); 
     
     static bool running = true; 
@@ -432,7 +433,6 @@ int main() {
     });
     
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
-    bool firstFrame = true;
 
     while (running) {
         auto now = std::chrono::high_resolution_clock::now();
@@ -444,30 +444,31 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // 第一次运行先构建一个空的 Atlas 以绕过断言，因为 AImGui 此时还没真正绑好 GL
-        if (firstFrame) {
-            ImGui::GetIO().Fonts->Build();
-            firstFrame = false;
-        }
+        // --- 核心修复流程 ---
 
+        // Step A: 进入 AImGui 的渲染帧处理
         imgui.BeginFrame(); 
-        
-        // 关键：在 BeginFrame 后执行真正的初始化
-        // 此时 AImGui 已经确保了渲染上下文（Context）是活动的
+
+        // Step B: 立即处理字体状态。
+        // AImGui 内部初始化时可能添加了默认字体导致图集未同步，
+        // 我们在第一帧运行或需要更新时强制执行一次完整的 Clear/Add/Build/Create 流程。
         if (g_current_rendered_size < 1.0f || g_needUpdateFontSafe) {
-            UpdateFontHD(true);
+            UpdateFontHD(true); 
             g_needUpdateFontSafe = false;
         }
 
+        // Step C: 加载资源
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
         }
 
+        // Step D: 绘制内容
         DrawBoard(); 
         DrawMenu();
         
+        // Step E: 结束渲染帧
         imgui.EndFrame(); 
     }
 
