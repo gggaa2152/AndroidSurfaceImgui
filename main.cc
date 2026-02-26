@@ -26,8 +26,6 @@
 // =================================================================
 // 2. 全局状态变量 (保持你原始所有变量名)
 // =================================================================
-// 修复建议：在 Android 上，/data 目录通常需要 root 权限才能写入。
-// 建议将配置文件存储在应用程序的私有数据目录中，例如通过 JNI 调用 Android API 获取 context->getFilesDir() 返回的路径。
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
 bool g_predict_enemy = false;
@@ -89,8 +87,6 @@ void SaveConfig() {
         out << "menuH=" << g_menuH << "\n";
         out << "menuScale=" << g_scale << "\n";
         out.close();
-    } else {
-        __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Failed to open config file for writing: %s", g_configPath);
     }
 }
 
@@ -118,17 +114,10 @@ void LoadConfig() {
                 else if (k == "menuW") g_menuW = std::stof(v);
                 else if (k == "menuH") g_menuH = std::stof(v);
                 else if (k == "menuScale") g_scale = std::stof(v);
-            } catch (const std::exception& e) {
-                // 修复建议：在 catch 块中添加错误日志输出，记录是哪个配置项的转换失败了。
-                __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Failed to parse config value for key '%s' with value '%s': %s", k.c_str(), v.c_str(), e.what());
-            } catch (...) {
-                __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Unknown error parsing config value for key '%s' with value '%s'", k.c_str(), v.c_str());
-            }
+            } catch (...) {}
         }
         in.close();
         g_needUpdateFontSafe = true; 
-    } else {
-        __android_log_print(ANDROID_LOG_INFO, "JKChess", "Config file not found or failed to open for reading: %s", g_configPath);
     }
 }
 
@@ -175,32 +164,9 @@ public:
         program = glCreateProgram();
         GLuint v = glCreateShader(GL_VERTEX_SHADER);
         glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
-        // 修复建议：添加着色器编译错误检查
-        GLint success;
-        GLchar infoLog[512];
-        glGetShaderiv(v, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            glGetShaderInfoLog(v, 512, NULL, infoLog);
-            __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Vertex shader compilation failed: %s", infoLog);
-        }
-
         GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
         glShaderSource(f, 1, &fs, NULL); glCompileShader(f);
-        // 修复建议：添加着色器编译错误检查
-        glGetShaderiv(f, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            glGetShaderInfoLog(f, 512, NULL, infoLog);
-            __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Fragment shader compilation failed: %s", infoLog);
-        }
-
         glAttachShader(program, v); glAttachShader(program, f); glLinkProgram(program);
-        // 修复建议：添加程序链接错误检查
-        glGetProgramiv(program, GL_LINK_STATUS, &success);
-        if (!success) {
-            glGetProgramInfoLog(program, 512, NULL, infoLog);
-            __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Shader program linking failed: %s", infoLog);
-        }
-
         resLoc = glGetUniformLocation(program, "u_Res");
         glDeleteShader(v); glDeleteShader(f);
     }
@@ -210,10 +176,7 @@ bool g_HexShaderInited = false;
 GLuint LoadTextureFromFile(const char* filename) {
     int w, h, c;
     unsigned char* data = stbi_load(filename, &w, &h, &c, 4);
-    if (!data) {
-        __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Failed to load image: %s", filename);
-        return 0;
-    }
+    if (!data) return 0;
     GLuint tid; glGenTextures(1, &tid); glBindTexture(GL_TEXTURE_2D, tid);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
@@ -226,8 +189,6 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
         glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
-        // 修复建议：确保 ImGui::GetIO().DisplaySize 在此处是最新且准确的值。
-        // 通常 ImGui 会在 BeginFrame 期间更新这些值。
         glUniform2f(g_HexShader.resLoc, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
     }, (void*)(intptr_t)g_heroTexture);
     drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, center - ImVec2(size, size), center + ImVec2(size, size));
@@ -245,16 +206,9 @@ void UpdateFontHD(bool force = false) {
     io.Fonts->Clear();
     ImFontConfig config;
     config.OversampleH = 1; config.PixelSnapH = true;
-    // 修复建议：/system/fonts 路径可能因设备差异或权限限制而无法访问。
-    // 建议将字体文件打包到应用程序的 assets 目录中，并在运行时从 assets 中加载。
-    // 或者，如果必须使用系统字体，应提供备用字体加载逻辑，以防指定字体不存在或不可访问。
     const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
     if (access(fontPath, R_OK) == 0) {
         io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    } else {
-        __android_log_print(ANDROID_LOG_WARN, "JKChess", "Font file not found or not readable: %s. Using default font.", fontPath);
-        // 可以在这里添加加载备用字体的逻辑
-        io.Fonts->AddFontDefault(&config);
     }
     io.Fonts->Build();
     ImGui_ImplOpenGL3_CreateFontsTexture();
@@ -268,14 +222,8 @@ void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
-    // 修复建议：将魔法数字定义为具名常量，提高可读性和可维护性。
-    const float HEX_SIZE_BASE = 38.0f;
-    const float HEX_X_MULTIPLIER = 1.73205f; // sqrt(3)
-    const float HEX_Y_MULTIPLIER = 1.5f;
-
-    float sz = HEX_SIZE_BASE * g_boardScale * g_autoScale * g_boardManualScale;
-    float xStep = sz * HEX_X_MULTIPLIER; 
-    float yStep = sz * HEX_Y_MULTIPLIER;
+    float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
+    float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
     float a1 = -30.0f * M_PI / 180.0f, a2 = 30.0f * M_PI / 180.0f;
@@ -298,7 +246,7 @@ void DrawBoard() {
     if (isScalingBoard) {
         if (ImGui::IsMouseDown(0)) {
             float curW = io.MousePos.x - g_startX;
-            float baseW = (6.5f * HEX_X_MULTIPLIER + 1.0f) * HEX_SIZE_BASE * g_boardScale * g_autoScale;
+            float baseW = (6.5f * 1.73205f + 1.0f) * 38.0f * g_boardScale * g_autoScale;
             g_boardManualScale = std::max(curW / baseW, 0.1f); 
         } else {
             isScalingBoard = false; SaveConfig(); 
@@ -317,7 +265,6 @@ void DrawBoard() {
         for(int c=0; c<7; c++) {
             float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0);
             float cy = g_startY + r * yStep;
-            // 修复建议：硬编码路径 "/data/1/heroes/FUX/aurora.png" 应该被配置化，或者从 assets 加载。
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), sz); 
             float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
             float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
@@ -358,19 +305,38 @@ void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO(); 
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
-    float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
+    
+    // 修复：折叠时高度应仅为标题栏高度
+    float titleBarHeight = ImGui::GetFrameHeight();
+    float currentH = g_menuCollapsed ? titleBarHeight : (baseH * g_scale);
 
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
-            if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
+    // 修复：添加 ImGuiWindowFlags_NoTitleBar，因为我们手动处理标题栏逻辑
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar)) {
+        
+        // 自定义标题栏区域判定
+        ImRect titleBarRect(ImGui::GetWindowPos(), ImGui::GetWindowPos() + ImVec2(currentW, titleBarHeight));
+        bool isHoveringTitle = titleBarRect.Contains(io.MousePos);
+
+        // 修复：折叠/展开逻辑改进
+        if (isHoveringTitle && ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
+            g_menuCollapsed = !g_menuCollapsed;
+            SaveConfig();
         }
-        if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
-            g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
+
+        // 拖动逻辑
+        if (!isScalingMenu && isHoveringTitle && ImGui::IsMouseDragging(0)) {
+            g_menuX += io.MouseDelta.x;
+            g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
+
+        // 绘制标题文本（因为禁用了原生标题栏）
+        ImGui::RenderText(ImGui::GetWindowPos() + ImGui::GetStyle().FramePadding, (const char*)u8"金铲铲助手");
+        ImGui::ItemSize(ImVec2(0, titleBarHeight)); // 占位
+
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
@@ -411,15 +377,12 @@ int main() {
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     LoadConfig(); UpdateFontHD(true);  
     static bool running = true; 
-    // 修复建议：ImGui 通常不是线程安全的。建议将所有 ImGui 相关的调用（包括 ProcessInputEvent、BeginFrame、EndFrame 以及所有 ImGui:: 函数）
-    // 限制在同一个线程中执行。如果必须在单独的线程中处理输入，则需要仔细设计线程间通信机制，确保 ImGui 上下文只在一个线程中被访问和修改。
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
         if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
         imgui.BeginFrame(); 
         if (!g_resLoaded) { 
-            // 修复建议：硬编码路径 "/data/1/heroes/FUX/aurora.png" 应该被配置化，或者从 assets 加载。
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; 
         }
@@ -427,21 +390,6 @@ int main() {
         imgui.EndFrame(); 
         std::this_thread::yield();
     }
-    running = false; 
-    if (it.joinable()) it.join(); 
-
-    // 修复建议：在程序退出前释放 OpenGL 资源
-    if (g_heroTexture != 0) {
-        glDeleteTextures(1, &g_heroTexture);
-        g_heroTexture = 0;
-    }
-    if (g_HexShader.program != 0) {
-        glDeleteProgram(g_HexShader.program);
-        g_HexShader.program = 0;
-    }
-
-    ImGui_ImplOpenGL3_Shutdown(); // 假设有这个函数来清理 OpenGL 后端
-    ImGui::DestroyContext();
-
+    running = false; if (it.joinable()) it.join(); 
     return 0;
 }
