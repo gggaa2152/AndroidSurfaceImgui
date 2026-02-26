@@ -275,7 +275,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (优化缩放逻辑)
+// 6. 菜单 UI (强制锁定位置版)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -302,8 +302,9 @@ void DrawMenu() {
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
     
-    ImGui::SetNextWindowSize(ImVec2(currentW, baseH * g_scale), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
+    // 核心修复：强制锁定位置，确保缩放时左上角绝对不动
+    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(currentW, baseH * g_scale), ImGuiCond_Always);
     
     ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Appearing);
 
@@ -315,11 +316,14 @@ void DrawMenu() {
             SaveConfig();
         }
 
-        ImVec2 currentPos = ImGui::GetWindowPos();
-        if (currentPos.x != g_menuX || currentPos.y != g_menuY) {
-            g_menuX = currentPos.x;
-            g_menuY = currentPos.y;
-            if (ImGui::IsMouseReleased(0)) SaveConfig();
+        // 只有在非缩放状态下，才同步位置（允许用户拖动标题栏移动窗口）
+        if (!isScalingMenu) {
+            ImVec2 currentPos = ImGui::GetWindowPos();
+            if (currentPos.x != g_menuX || currentPos.y != g_menuY) {
+                g_menuX = currentPos.x;
+                g_menuY = currentPos.y;
+                if (ImGui::IsMouseReleased(0)) SaveConfig();
+            }
         }
 
         if (!g_menuCollapsed) {
@@ -349,10 +353,9 @@ void DrawMenu() {
             
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    // 1. 增大缩放灵敏度：将分母从 baseW 减小，或者乘以一个系数
-                    // 2. 固定左上角：移除对 g_menuX/Y 的修改
-                    float deltaX = io.MousePos.x - startMP.x;
-                    g_scale = std::clamp(startMS + (deltaX / (baseW * 0.5f)), 0.5f, 5.0f); 
+                    // 增大缩放灵敏度，并根据鼠标相对于窗口左上角的距离来计算
+                    float deltaX = io.MousePos.x - g_menuX;
+                    g_scale = std::clamp(deltaX / baseW, 0.5f, 5.0f); 
                 } else { 
                     isScalingMenu = false; 
                     g_needUpdateFontSafe = true; 
