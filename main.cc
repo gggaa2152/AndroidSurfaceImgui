@@ -188,7 +188,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体初始化 (优化版)
+// 4. 字体初始化 (仅设置数据)
 // =================================================================
 void SetupFonts() {
     ImGuiIO& io = ImGui::GetIO();
@@ -216,10 +216,6 @@ void SetupFonts() {
         }
     }
     if(!loaded) io.Fonts->AddFontDefault();
-    
-    // 关键：预先生成像素数据，这会标记 IsBuilt = true
-    unsigned char* p; int w, h;
-    io.Fonts->GetTexDataAsRGBA32(&p, &w, &h);
 }
 
 // =================================================================
@@ -366,33 +362,24 @@ int main() {
     static bool running = true; 
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
-    bool initialized = false;
+    bool firstFrame = true;
 
     while (running) {
         ImGuiIO& io = ImGui::GetIO();
 
-        // 强行满足断言检查：
-        // 1. 如果没有上下文，不进行任何操作
-        if (eglGetCurrentContext() == EGL_NO_CONTEXT) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-
-        // 2. 第一次进入时加载字体并强制生成纹理
-        if (!initialized) {
-            SetupFonts();
-            // 在 BeginFrame 之前，必须显式调用这个
-            ImGui_ImplOpenGL3_CreateFontsTexture();
-            initialized = true;
-        }
-
-        // 3. 再次确保 IsBuilt 为真 (防御性编程)
-        if (!io.Fonts->IsBuilt()) {
-            unsigned char* p; int w, h;
-            io.Fonts->GetTexDataAsRGBA32(&p, &w, &h);
-        }
-
+        // 核心改动：利用 BeginFrame 建立环境
         imgui.BeginFrame(); 
+
+        // 只有当 BeginFrame 运行后，GL 上下文才百分百激活，此时初始化资源最安全
+        if (firstFrame) {
+            SetupFonts();
+            // 让后端自动重新创建字体纹理（因为 Fonts->Clear() 后标志位已变）
+            // 在 RenderNative 内部，BeginFrame 已经执行了 ImGui_ImplOpenGL3_NewFrame
+            // 如果我们需要强制重建，调用此函数：
+            ImGui_ImplOpenGL3_DestroyFontsTexture(); 
+            ImGui_ImplOpenGL3_CreateFontsTexture();
+            firstFrame = false;
+        }
 
         if (io.Fonts->TexID != 0 && !g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
