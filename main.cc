@@ -20,7 +20,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 1. 全局配置与状态 (恢复原始变量名)
+// 1. 全局配置与状态 (保留原始变量名)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -53,7 +53,7 @@ int g_enemyGrid[4][7] = {
 };
 
 // =================================================================
-// 2. 持久化管理 (恢复原始函数名)
+// 2. 持久化管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -91,16 +91,19 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 3. 字体与纹理管理 (恢复原始函数名)
+// 3. 字体图集构建核心
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
-    g_autoScale = io.DisplaySize.y / 1080.0f;
+    
+    // 确保有合法的 DisplaySize，如果没有则给个默认值防止计算出 0
+    float displayY = (io.DisplaySize.y > 0.0f) ? io.DisplaySize.y : 1080.0f;
+    g_autoScale = displayY / 1080.0f;
     float target = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 80.0f);
     
     if (!force && std::abs(target - g_current_rendered_size) < 0.2f) return;
 
-    // 清除旧纹理
+    // 清理旧后端纹理资源
     ImGui_ImplOpenGL3_DestroyFontsTexture(); 
     io.Fonts->Clear();
     
@@ -109,12 +112,13 @@ void UpdateFontHD(bool force = false) {
     
     io.Fonts->AddFontFromFileTTF(fontPath, target, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     
-    // 【关键修复】显式构建字体图集
+    // 【核心关键】在此处强制构建图集
+    // 这会设置 io.Fonts->IsBuilt() = true
     unsigned char* pixels;
     int width, height;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); 
     
-    // 同步到后端
+    // 同步到渲染后端纹理
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = target;
 }
@@ -132,7 +136,7 @@ GLuint LoadTextureFromFile(const char* path) {
 }
 
 // =================================================================
-// 4. 渲染引擎
+// 4. 渲染辅助
 // =================================================================
 class HexRenderer {
 public:
@@ -195,9 +199,6 @@ void RenderWorldESP() {
     dl->AddCircleFilled(handlePos, 15.0f * g_autoScale, IM_COL32(255, 200, 0, 200));
 }
 
-// =================================================================
-// 5. 交互组件
-// =================================================================
 bool ModernToggle(const char* label, bool* v, int id) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return false;
@@ -240,32 +241,37 @@ void RenderMenu() {
 }
 
 // =================================================================
-// 6. 主程序入口
+// 5. 主程序入口
 // =================================================================
 int main() {
+    // 1. 基础环境初始化
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     
+    // 2. 加载配置
     LoadConfig();
-    // 这里先不初始化字体，等到循环里第一次渲染时初始化，确保后端已准备好
+
+    // 3. 【断言修复关键点】
+    // 在进入主循环前，强行构建一次图集。即使此时分辨率未知，也要占个坑位。
+    UpdateFontHD(true); 
 
     static bool running = true;
     std::thread inputThread([&]{
         while(running) { imgui.ProcessInputEvent(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
     });
 
-    bool isFirstFrame = true;
-
     while (running) {
-        // 在 BeginFrame 之前处理字体更新
-        if (isFirstFrame || g_needUpdateFontSafe) { 
+        // 如果 UI 操作（如缩放）触发了字体更新需求，在 BeginFrame 之前处理
+        if (g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false; 
-            isFirstFrame = false;
         }
         
         imgui.BeginFrame();
         
+        // 第一次进入循环后，如果发现之前预构建的分辨率不准，这里会再次触发 UpdateFontHD
+        // 此时 IO.Fonts->IsBuilt() 已经是 true 了，不会崩溃。
+
         if (!g_textureLoaded) {
             g_heroTexture = LoadTextureFromFile("/data/1/hero.png"); 
             g_textureLoaded = (g_heroTexture != 0);
