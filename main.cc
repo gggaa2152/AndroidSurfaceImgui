@@ -221,97 +221,102 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制逻辑 (修复圆圈跟随与跳变)
+// 5. 棋盘绘制逻辑 (真正实现圆圈跟随手指且无跳变)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
 
-    float baseSz = 38.0f * g_boardScale * g_autoScale;
-    float baseXStep = baseSz * 1.73205f;
-    float baseYStep = baseSz * 1.5f;
+    // 基础常数：定义未缩放时的格栅跨度
+    const float baseUnit = 38.0f * g_boardScale * g_autoScale;
+    const float baseStepX = baseUnit * 1.73205f;
+    const float baseStepY = baseUnit * 1.5f;
 
-    float curSz = baseSz * g_boardManualScale;
-    float curXStep = baseXStep * g_boardManualScale;
-    float curYStep = baseYStep * g_boardManualScale;
+    // 当前实际尺寸
+    float curUnit = baseUnit * g_boardManualScale;
+    float curStepX = baseStepX * g_boardManualScale;
+    float curStepY = baseStepY * g_boardManualScale;
 
-    // 手柄逻辑渲染位置 (始终固定在棋盘右下角最后一个格子的偏移处)
-    float lastCX = g_startX + 6 * curXStep + (3 % 2 == 1 ? curXStep * 0.5f : 0);
-    float lastCY = g_startY + 3 * curYStep;
-    ImVec2 p_handle = ImVec2(lastCX + curSz, lastCY + curSz * 0.5f);
+    // 手柄逻辑位置：相对于棋盘起点 (startX, startY) 的固定网格偏移
+    // 我们定义手柄位于 [行3, 列6] 的右侧偏移处
+    auto GetHandlePos = [&](float startX, float startY, float scale) -> ImVec2 {
+        float sX = baseStepX * scale;
+        float sY = baseStepY * scale;
+        float u  = baseUnit * scale;
+        float cx = startX + 6 * sX + (3 % 2 == 1 ? sX * 0.5f : 0);
+        float cy = startY + 3 * sY;
+        return ImVec2(cx + u, cy + u * 0.5f);
+    };
+
+    ImVec2 p_handle = GetHandlePos(g_startX, g_startY, g_boardManualScale);
 
     if (!g_boardLocked) {
-        static bool isDraggingBoard = false;
-        static bool isScalingBoard = false;
-        static ImVec2 dragStartPos;
-        static ImVec2 dragStartBoardPos;
-        static ImVec2 dragStartOffset; // 记录点击瞬间手指相对于中心/参考点的偏移
-        static float dragStartScale = 1.0f;
+        static bool isScaling = false;
+        static bool isDragging = false;
+        static ImVec2 dragOffset; // 记录手指点击点相对于目标的偏移
 
-        // 仅当没有激活任何 ImGui 控件（滑块、按钮等）时才处理交互
         if (!ImGui::IsAnyItemActive()) {
             if (ImGui::IsMouseClicked(0)) {
                 float distSq = ImLengthSqr(io.MousePos - p_handle);
-                // 点击了金圈手柄
-                if (distSq < (5000.0f * g_autoScale)) {
-                    isScalingBoard = true;
-                    dragStartPos = io.MousePos;
-                    dragStartScale = g_boardManualScale;
-                    // 关键：记录点击点相对于中心位置的偏移，让圆圈跟随手指
-                    dragStartOffset = io.MousePos - p_handle; 
-                } else {
-                    // 检查是否点在棋盘大致区域内
-                    ImRect boardArea(ImVec2(g_startX - curSz * 2, g_startY - curSz * 2), 
-                                     ImVec2(lastCX + curSz * 2, lastCY + curSz * 2));
-                    if (boardArea.Contains(io.MousePos)) {
-                        isDraggingBoard = true;
-                        dragStartPos = io.MousePos;
-                        dragStartBoardPos = ImVec2(g_startX, g_startY);
+                // 1. 优先判断是否点击缩放圆圈 (手柄)
+                if (distSq < (6000.0f * g_autoScale)) {
+                    isScaling = true;
+                    dragOffset = io.MousePos - p_handle; // 记录手指相对于圆圈中心的位移
+                } 
+                // 2. 否则判断是否在棋盘区域内进行整体移动
+                else {
+                    ImRect area(ImVec2(g_startX - curUnit*2, g_startY - curUnit*2), 
+                                ImVec2(p_handle.x + curUnit, p_handle.y + curUnit));
+                    if (area.Contains(io.MousePos)) {
+                        isDragging = true;
+                        dragOffset = io.MousePos - ImVec2(g_startX, g_startY);
                     }
                 }
             }
         }
 
-        // 处理缩放逻辑
-        if (isScalingBoard) {
-            if (ImGui::IsMouseDown(0)) {
-                // 圆圈中心完美跟随手指：基于 X 轴相对于初始点击位置的偏移量计算缩放
-                // 这样既能实现跟随感，又能防止缩放导致的圆圈中心瞬间跳跃
-                float deltaX = io.MousePos.x - dragStartPos.x;
-                g_boardManualScale = dragStartScale + (deltaX / (baseXStep * 3.0f)); 
-                g_boardManualScale = std::max(g_boardManualScale, 0.2f);
-            } else {
-                isScalingBoard = false;
-                SaveConfig();
+        if (ImGui::IsMouseDown(0)) {
+            if (isScaling) {
+                // 圆圈跟随手指：新的手柄中心应等于 (当前手指位置 - 初始偏移)
+                ImVec2 targetHandlePos = io.MousePos - dragOffset;
+                
+                // 计算新的缩放比例：
+                // 因为横向跨度是 6.5 * StepX (大约)，我们通过当前位置与起点的距离反算 Scale
+                float dx = targetHandlePos.x - g_startX;
+                // 这是一个经验公式，用于将手指的绝对位置映射回棋盘的 ManualScale
+                // 这样圆圈就会一直粘在手指尖上
+                float newScale = dx / (baseStepX * 6.5f + baseUnit);
+                g_boardManualScale = std::clamp(newScale, 0.2f, 5.0f);
+                
+                // 实时更新位置防止视觉滞后
+                p_handle = GetHandlePos(g_startX, g_startY, g_boardManualScale);
+            } 
+            else if (isDragging) {
+                // 棋盘整体跟随手指
+                g_startX = io.MousePos.x - dragOffset.x;
+                g_startY = io.MousePos.y - dragOffset.y;
+                p_handle = GetHandlePos(g_startX, g_startY, g_boardManualScale);
             }
+        } else {
+            if (isScaling || isDragging) SaveConfig();
+            isScaling = false;
+            isDragging = false;
         }
 
-        // 处理拖拽逻辑
-        if (isDraggingBoard && !isScalingBoard) {
-            if (ImGui::IsMouseDown(0)) {
-                // 基于初始点击点和初始棋盘位置的偏移进行移动，实现跟随
-                g_startX = dragStartBoardPos.x + (io.MousePos.x - dragStartPos.x);
-                g_startY = dragStartBoardPos.y + (io.MousePos.y - dragStartPos.y);
-            } else {
-                isDraggingBoard = false;
-                SaveConfig();
-            }
-        }
-
-        // 绘制交互手柄
-        d->AddCircleFilled(p_handle, 15.0f * g_autoScale, IM_COL32(255, 215, 0, 220));
-        d->AddCircle(p_handle, (15.0f + 3.0f * sinf(ImGui::GetTime()*8)) * g_autoScale, IM_COL32(255, 215, 0, 120), 24, 2.5f);
+        // 绘制交互手柄 (金圈)
+        d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 230));
+        d->AddCircle(p_handle, (16.0f + 2.0f * sinf(ImGui::GetTime()*10)) * g_autoScale, IM_COL32(255, 255, 255, 150), 24, 2.0f);
     }
 
-    // 棋盘格渲染逻辑
+    // 最终棋盘渲染
     float time = (float)ImGui::GetTime();
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
-            float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
-            float cy = g_startY + r * curYStep;
+            float cx = g_startX + c * curStepX + (r % 2 == 1 ? curStepX * 0.5f : 0);
+            float cy = g_startY + r * curStepY;
             
-            if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
+            if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), curUnit * 0.95f); 
             
             float hue = fmodf(time * 0.4f + (cx + cy) * 0.0005f, 1.0f);
             float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.7f, 1.0f, rf, gf, bf);
@@ -319,7 +324,7 @@ void DrawBoard() {
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-                pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
+                pts[i] = ImVec2(cx + curUnit * cosf(a), cy + curUnit * sinf(a));
             }
             d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 240), ImDrawFlags_Closed, 3.5f * g_autoScale);
         }
@@ -412,13 +417,13 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 主循环 (帧率同步模式)
+// 7. 主循环 (全频率同步)
 // =================================================================
 int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
-    // 设置为 1 开启 VSYNC 垂直同步，渲染帧率将与屏幕刷新率完全一致
+    // 强制开启垂直同步，FPS = 屏幕刷新率
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     
     LoadConfig(); 
@@ -428,6 +433,7 @@ int main() {
     std::thread it([&] { 
         while(running) { 
             imgui.ProcessInputEvent(); 
+            // 输入处理尽量紧凑
             std::this_thread::yield(); 
         } 
     });
@@ -450,6 +456,7 @@ int main() {
         DrawMenu();
         
         imgui.EndFrame(); 
+        // 渲染由 SwapBuffers 阻塞，实现物理同步
     }
     
     g_HexShader.Cleanup();
