@@ -369,9 +369,11 @@ void DrawMenu() {
         float curH = ImGui::GetWindowSize().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        // 正确使用原生内部 API 检查窗口是否正在缩放
+        // 更加通用的方式检测窗口缩放行为
+        // 当窗口被激活且处于拖拽状态，且缩放手柄 ID 处于 Active 状态时
         ImGuiWindow* window = ImGui::GetCurrentWindow();
-        if (window->Resizing) {
+        ImGuiID resizeId = window->GetID("##Resize");
+        if (ImGui::GetActiveID() == resizeId && ImGui::IsMouseDragging(0)) {
             g_menuW = curW; 
             g_menuH = curH;
             g_scale = curW / (350.0f * g_autoScale);
