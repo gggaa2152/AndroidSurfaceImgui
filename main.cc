@@ -16,34 +16,34 @@
 #include <android/log.h>
 #include <algorithm>
 #include <unistd.h>
-#include <atomic>       // 新增，用于原子变量
-#include <chrono>       // 新增，用于 sleep_for
+#include <atomic>       
+#include <chrono>       
 
 // =================================================================
-// 常量定义（替代魔法数字）
+// 常量定义
 // =================================================================
 namespace Constants {
     const char* CONFIG_PATH = "/data/jkchess_config.ini";
     const char* FONT_PATH = "/system/fonts/SysSans-Hans-Regular.ttf";
     const char* HERO_TEXTURE_PATH = "/data/1/heroes/FUX/aurora.png";
 
-    const float HEX_SIZE_BASE = 38.0f;          // 六边形基础大小
-    const float HEX_X_STEP_FACTOR = 1.73205f;   // sqrt(3)
+    const float HEX_SIZE_BASE = 38.0f;          
+    const float HEX_X_STEP_FACTOR = 1.73205f;   
     const float HEX_Y_STEP_FACTOR = 1.5f;
     const float HEX_HANDLE_OFFSET_FACTOR = 0.6f;
     const float BOARD_SCALE_DEFAULT = 2.2f;
     
-    const float MENU_WIDTH_BASE = 320.0f;       // 菜单基础宽度
-    const float MENU_HEIGHT_BASE = 500.0f;      // 菜单基础高度
-    const float MENU_SCALE_MIN = 0.5f;          // 最小缩放系数
-    const float MENU_SCALE_MAX = 5.0f;          // 最大缩放系数
-    const float FONT_SIZE_BASE = 18.0f;         // 基础字体大小
-    const float FONT_SIZE_MAX = 120.0f;         // 最大字体限制
-    const float REFERENCE_SCREEN_HEIGHT = 1080.0f; // 参考屏幕高度
+    const float MENU_WIDTH_BASE = 320.0f;       
+    const float MENU_HEIGHT_BASE = 500.0f;      
+    const float MENU_SCALE_MIN = 0.5f;          
+    const float MENU_SCALE_MAX = 5.0f;          
+    const float FONT_SIZE_BASE = 18.0f;         
+    const float FONT_SIZE_MAX = 120.0f;         
+    const float REFERENCE_SCREEN_HEIGHT = 1080.0f;
 }
 
 // =================================================================
-// 全局状态变量（按功能分组到命名空间）
+// 全局状态变量分组
 // =================================================================
 namespace Config {
     bool predict_enemy = false;
@@ -82,7 +82,6 @@ namespace Resources {
     bool resLoaded = false;
 }
 
-// 标记：仅用于解决 BeginFrame 锁死问题，不改动业务逻辑
 bool g_needUpdateFontSafe = false;
 
 // =================================================================
@@ -270,7 +269,14 @@ GLuint LoadTextureFromFile(const char* filename) {
 }
 
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
-    if (!Resources::textureLoaded || !g_HexShader.valid) return;
+    if (!Resources::textureLoaded) {
+        __android_log_print(ANDROID_LOG_WARN, "DrawHero", "Texture not loaded, skipping");
+        return;
+    }
+    if (!g_HexShader.valid) {
+        __android_log_print(ANDROID_LOG_WARN, "DrawHero", "Hex shader invalid, skipping");
+        return;
+    }
     if (!g_HexShaderInited) {
         g_HexShader.Init();
         g_HexShaderInited = true;
@@ -337,7 +343,6 @@ void DrawBoard() {
     static ImVec2 dragOffset;
 
     if (ImGui::IsMouseClicked(0)) {
-        // 手动实现矩形包含检测，避免使用 ImRect
         float left = std::min(p_top.x, p_ext.x);
         float right = std::max(p_top.x, p_ext.x);
         float top = std::min(p_top.y, p_ext.y);
@@ -405,19 +410,15 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 菜单 UI（使用公开API，但仍保留 imgui_internal.h）
+// 菜单 UI
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
-    ImGuiIO& io = ImGui::GetIO();
     float h = ImGui::GetFrameHeight();
     float w = h * 1.8f;
     ImVec2 labelSize = ImGui::CalcTextSize(label, NULL, true);
     ImVec2 cursorPos = ImGui::GetCursorScreenPos();
 
-    // 创建不可见按钮，用于捕获点击和交互状态
     ImGui::InvisibleButton(label, ImVec2(w + ImGui::GetStyle().ItemInnerSpacing.x + labelSize.x, h));
-    bool hovered = ImGui::IsItemHovered();
-    bool active = ImGui::IsItemActive();
     bool clicked = ImGui::IsItemClicked();
 
     if (clicked) {
@@ -425,10 +426,8 @@ bool Toggle(const char* label, bool* v, int idx) {
         SaveConfig();
     }
 
-    // 动画插值
     UI::anim[idx] += ((*v ? 1.0f : 0.0f) - UI::anim[idx]) * 0.2f;
 
-    // 绘制背景和滑块（使用公开的绘制列表）
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     drawList->AddRectFilled(cursorPos, cursorPos + ImVec2(w, h),
         ImGui::GetColorU32(ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg),
@@ -437,7 +436,6 @@ bool Toggle(const char* label, bool* v, int idx) {
     drawList->AddCircleFilled(cursorPos + ImVec2(h * 0.5f + UI::anim[idx] * (w - h), h * 0.5f),
                                h * 0.5f - 2.5f, IM_COL32_WHITE);
 
-    // 绘制标签
     ImGui::SetCursorScreenPos(cursorPos + ImVec2(w + ImGui::GetStyle().ItemInnerSpacing.x, 0));
     ImGui::Text("%s", label);
 
@@ -459,21 +457,23 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(UI::menuX, UI::menuY), ImGuiCond_Always);
 
     if (ImGui::Begin("金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        // 标题栏交互（手动检测区域）
+        // 调整按钮间距
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 10));
+
+        // 标题栏交互（使用 InvisibleButton）
         float titleBarHeight = ImGui::GetFrameHeight();
-        ImVec2 windowPos = ImGui::GetWindowPos();
-        float mouseY = io.MousePos.y;
-        bool hoverTitle = (mouseY >= windowPos.y && mouseY <= windowPos.y + titleBarHeight);
+        ImVec2 titleBarMin = ImGui::GetWindowPos();
+        ImVec2 titleBarMax = ImVec2(titleBarMin.x + currentW, titleBarMin.y + titleBarHeight);
+        ImGui::SetCursorScreenPos(titleBarMin);
+        ImGui::InvisibleButton("##titleBar", ImVec2(currentW, titleBarHeight));
 
-        if (hoverTitle && ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
-            UI::menuCollapsed = !UI::menuCollapsed;
-            SaveConfig();
-        }
-
-        if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0) && hoverTitle) {
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0) && !isScalingMenu) {
             UI::menuX += io.MouseDelta.x;
             UI::menuY += io.MouseDelta.y;
-            if (ImGui::IsMouseReleased(0)) SaveConfig();
+        }
+        if (ImGui::IsItemDeactivated() && ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
+            UI::menuCollapsed = !UI::menuCollapsed;
+            SaveConfig();
         }
 
         if (!UI::menuCollapsed) {
@@ -511,13 +511,11 @@ void DrawMenu() {
             ImVec2 handleMin = br - ImVec2(hSz, hSz);
             ImVec2 handleMax = br;
 
-            // 绘制三角形
             ImGui::GetWindowDrawList()->AddTriangleFilled(br,
                 br - ImVec2(hSz * 0.6f, 0),
                 br - ImVec2(0, hSz * 0.6f),
                 IM_COL32(0, 120, 215, 200));
 
-            // 检测手柄点击（手动矩形）
             bool inHandle = (io.MousePos.x >= handleMin.x && io.MousePos.x <= handleMax.x &&
                              io.MousePos.y >= handleMin.y && io.MousePos.y <= handleMax.y);
             if (ImGui::IsMouseClicked(0) && inHandle) {
@@ -539,6 +537,8 @@ void DrawMenu() {
                 }
             }
         }
+
+        ImGui::PopStyleVar(); // 恢复间距
     }
     ImGui::End();
 }
@@ -581,14 +581,12 @@ int main() {
 
         imgui.EndFrame();
 
-        // 降低 CPU 占用
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     running = false;
     if (it.joinable()) it.join();
 
-    // 释放纹理资源
     if (Resources::heroTexture != 0) {
         glDeleteTextures(1, &Resources::heroTexture);
     }
