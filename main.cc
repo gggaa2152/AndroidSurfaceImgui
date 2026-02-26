@@ -39,6 +39,8 @@ float g_anim[15] = {0.0f};
 
 float g_scale = 1.0f;            
 float g_autoScale = 1.0f;        
+float g_current_rendered_size = 0.0f; 
+bool g_needUpdateFontSafe = false;
 
 float g_boardScale = 2.2f;       
 float g_boardManualScale = 1.0f; 
@@ -50,18 +52,13 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
-// 专业化字体管理：预载三套基准字号以实现无损缩放
-ImFont* g_fontSmall = nullptr;
-ImFont* g_fontMedium = nullptr;
-ImFont* g_fontLarge = nullptr;
-
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
     {0, 0, 0, 0, 0, 1, 0}, {1, 0, 1, 0, 1, 0, 1}
 };
 
 // =================================================================
-// 2. 配置管理 (保持原有逻辑)
+// 2. 配置管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -192,45 +189,34 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 专业字体管理 (多级图表方案)
+// 4. 动态字体锐化刷新 (重新编译字体方案)
 // =================================================================
-void InitFontsPro() {
+void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
     g_autoScale = screenH / 1080.0f;
     
+    // 计算目标字号
+    float targetSize = 18.0f * g_scale * g_autoScale;
+
+    // 如果字号变化微小且不是强制刷新，则跳过
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 1.0f) return;
+
     io.Fonts->Clear();
     ImFontConfig config;
     config.OversampleH = 1; 
-    config.OversampleV = 1;
+    config.OversampleV = 1; 
     config.PixelSnapH = true;
 
-    // 获取安卓系统字体路径
     const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
     if (access(fontPath, R_OK) != 0) fontPath = "/system/fonts/DroidSansFallback.ttf";
-
-    // 一次性加载三套字号到内存 Atlas 中，后续通过指针零延迟切换
-    g_fontSmall  = io.Fonts->AddFontFromFileTTF(fontPath, 14.0f * g_autoScale, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    g_fontMedium = io.Fonts->AddFontFromFileTTF(fontPath, 26.0f * g_autoScale, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    g_fontLarge  = io.Fonts->AddFontFromFileTTF(fontPath, 52.0f * g_autoScale, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     
+    io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     io.Fonts->Build();
+    
+    // 重新创建纹理并同步到 GPU
     ImGui_ImplOpenGL3_CreateFontsTexture();
-}
-
-// 动态选择最接近的物理字体进行渲染
-void PushOptimalFont() {
-    float targetSize = 18.0f * g_scale; 
-    if (targetSize <= 16.0f) {
-        ImGui::PushFont(g_fontSmall);
-        ImGui::SetWindowFontScale(targetSize / 14.0f);
-    } else if (targetSize <= 32.0f) {
-        ImGui::PushFont(g_fontMedium);
-        ImGui::SetWindowFontScale(targetSize / 26.0f);
-    } else {
-        ImGui::PushFont(g_fontLarge);
-        ImGui::SetWindowFontScale(targetSize / 52.0f);
-    }
+    g_current_rendered_size = targetSize;
 }
 
 // =================================================================
@@ -358,21 +344,29 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    // 在绘制内容前，根据缩放推入最优字体
-    PushOptimalFont();
-
     if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.5", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
         
-        // 修正编译报错：通过对比当前尺寸来判断缩放，不依赖不存在的内部函数
+        // --- 修正编译错误的逻辑部分 ---
         ImVec2 currentSize = ImGui::GetWindowSize();
-        if (std::abs(currentSize.x - g_menuW) > 0.01f || std::abs(currentSize.y - g_menuH) > 0.01f) {
-            g_menuW = currentSize.x; 
+        // 如果当前尺寸与记录尺寸不符，说明正在被缩放
+        if (std::abs(currentSize.x - g_menuW) > 0.1f || std::abs(currentSize.y - g_menuH) > 0.1f) {
+            g_menuW = currentSize.x;
             g_menuH = currentSize.y;
+            // 实时更新缩放系数
             g_scale = g_menuW / (350.0f * g_autoScale);
         }
+
+        // 当手指松开且缩放系数发生明显偏移时，标记需要执行 UpdateFontHD
+        if (!ImGui::IsMouseDown(0)) {
+            float targetSize = 18.0f * g_scale * g_autoScale;
+            if (std::abs(targetSize - g_current_rendered_size) > 1.5f) {
+                g_needUpdateFontSafe = true;
+            }
+        }
+        // ---------------------------
 
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
@@ -405,19 +399,20 @@ void DrawMenu() {
         }
     }
     ImGui::End();
-    ImGui::PopFont(); // 记得出栈
 }
 
 // =================================================================
-// 7. 主循环
+// 7. 主循环 (帧率同步模式)
 // =================================================================
 int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
+    
+    // 设置为 1 开启 VSYNC 垂直同步，渲染帧率将与屏幕刷新率完全一致
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     
     LoadConfig(); 
-    InitFontsPro(); // 初始化加载多级字体纹理
+    UpdateFontHD(true);  
     
     static bool running = true; 
     std::thread it([&] { 
@@ -426,18 +421,28 @@ int main() {
             std::this_thread::yield(); 
         } 
     });
-    
+
     while (running) {
+        // 在 BeginFrame 之前安全地重构字体纹理
+        if (g_needUpdateFontSafe) { 
+            UpdateFontHD(true); 
+            g_needUpdateFontSafe = false; 
+        }
+        
         imgui.BeginFrame(); 
+        
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
         }
+
         DrawBoard(); 
         DrawMenu();
+        
         imgui.EndFrame(); 
     }
+
     g_HexShader.Cleanup();
     running = false; 
     if (it.joinable()) it.join(); 
