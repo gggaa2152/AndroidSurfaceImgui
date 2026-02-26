@@ -38,7 +38,8 @@ bool g_menuCollapsed = false;
 float g_anim[15] = {0.0f}; 
 
 float g_scale = 1.0f;            
-float g_autoScale = 2.0f;        // 默认倍率
+float g_autoScale = 1.0f;        
+float g_current_rendered_size = 0.0f; 
 
 float g_boardScale = 2.2f;       
 float g_boardManualScale = 1.0f; 
@@ -49,6 +50,10 @@ float g_menuW = 350.0f, g_menuH = 550.0f;
 GLuint g_heroTexture = 0;           
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
+
+// 字体更新防抖变量
+bool g_needUpdateFontSafe = false;
+float g_fontUpdateTimer = -1.0f; 
 
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
@@ -109,6 +114,7 @@ void LoadConfig() {
             } catch (...) {}
         }
         in.close();
+        g_needUpdateFontSafe = true; 
     }
 }
 
@@ -187,7 +193,54 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 棋盘绘制逻辑
+// 4. 字体与显示适配 (修复中文问号)
+// =================================================================
+void UpdateFontHD(bool force = false) {
+    ImGuiIO& io = ImGui::GetIO();
+    float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
+    g_autoScale = screenH / 1080.0f;
+    
+    float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
+    
+    // 销毁旧纹理
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    io.Fonts->Clear();
+    
+    ImFontConfig config;
+    config.OversampleH = 1; // 减少 DPI 重构负担
+    config.OversampleV = 1; 
+    config.PixelSnapH = true;
+    
+    // 增加更多可能的系统字体路径，并确保使用正确的字符范围
+    const char* fonts[] = {
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/DroidSansFallback.ttf",
+        "/system/fonts/SysSans-Hans-Regular.ttf",
+        "/system/fonts/SourceHanSansCN-Regular.otf"
+    };
+    
+    bool loaded = false;
+    const ImWchar* ranges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
+    
+    for(const char* path : fonts) {
+        if (access(path, R_OK) == 0) {
+            if (io.Fonts->AddFontFromFileTTF(path, targetSize, &config, ranges)) {
+                loaded = true; break;
+            }
+        }
+    }
+    
+    if(!loaded) io.Fonts->AddFontDefault();
+
+    io.Fonts->Build();
+    // 重新创建纹理并绑定
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+    g_current_rendered_size = targetSize;
+}
+
+// =================================================================
+// 5. 棋盘绘制逻辑
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -277,7 +330,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 5. 菜单 UI
+// 6. 菜单 UI
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -315,20 +368,21 @@ void DrawMenu() {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
-        
-        ImVec2 currentSize = ImGui::GetWindowSize();
-        if (std::abs(currentSize.x - g_menuW) > 0.1f || std::abs(currentSize.y - g_menuH) > 0.1f) {
-            g_menuW = currentSize.x;
-            g_menuH = currentSize.y;
-            g_scale = g_menuW / (350.0f * g_autoScale);
-        }
-
-        // 使用 SetWindowFontScale 来缩放菜单文字，不会涉及纹理重建，绝对稳定
-        ImGui::SetWindowFontScale(g_scale);
-
+        float curW = ImGui::GetWindowSize().x;
+        float curH = ImGui::GetWindowSize().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
+        if (ImGui::IsWindowResizing()) {
+            g_menuW = curW; 
+            g_menuH = curH;
+            g_scale = curW / (350.0f * g_autoScale);
+            g_fontUpdateTimer = 0.5f; 
+        }
+
         if (!g_menuCollapsed) {
+            // 在重绘前临时视觉缩放
+            ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
+            
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"· VSYNC 同步中 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
@@ -360,17 +414,14 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 6. 主循环
+// 7. 主循环
 // =================================================================
 int main() {
-    // 这里只管创建 AImGui 实例。AImGui 内部会自己初始化 ImGuiContext、Fonts 等。
+    ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
-    
-    // 设置垂直同步保证画面平滑
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    
     LoadConfig(); 
-    
+    UpdateFontHD(true);  
     static bool running = true; 
     std::thread it([&] { 
         while(running) { 
@@ -378,22 +429,36 @@ int main() {
             std::this_thread::yield(); 
         } 
     });
+    
+    auto lastFrameTime = std::chrono::high_resolution_clock::now();
 
     while (running) {
-        imgui.BeginFrame(); 
+        auto now = std::chrono::high_resolution_clock::now();
+        float deltaTime = std::chrono::duration<float>(now - lastFrameTime).count();
+        lastFrameTime = now;
+
+        if (g_fontUpdateTimer > 0.0f) {
+            g_fontUpdateTimer -= deltaTime;
+            if (g_fontUpdateTimer <= 0.0f) {
+                g_needUpdateFontSafe = true;
+            }
+        }
+
+        if (g_needUpdateFontSafe) { 
+            UpdateFontHD(true); 
+            g_needUpdateFontSafe = false; 
+        }
         
+        imgui.BeginFrame(); 
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
         }
-
         DrawBoard(); 
         DrawMenu();
-        
         imgui.EndFrame(); 
     }
-
     g_HexShader.Cleanup();
     running = false; 
     if (it.joinable()) it.join(); 
