@@ -8,7 +8,6 @@
 #include "stb_image.h" 
 
 #include <thread>      
-#define _USE_MATH_DEFINES // For M_PI
 #include <cmath>       
 #include <fstream>      
 #include <string>
@@ -18,13 +17,8 @@
 #include <algorithm>
 #include <unistd.h>
 
-// 定义 M_PI，以防 _USE_MATH_DEFINES 不起作用或平台不支持
-#ifndef M_PI
-#define M_PI 3.14159265358979323846f
-#endif
-
 // =================================================================
-// 2. 全局状态变量 (保持你原始所有变量名)
+// 2. 全局状态变量 (完全保持原始)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -57,7 +51,6 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
-// 标记：仅用于解决 BeginFrame 锁死问题，不改动业务逻辑
 bool g_needUpdateFontSafe = false;
 
 int g_enemyBoard[4][7] = {
@@ -66,7 +59,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 配置管理 (完整保留你的stof解析逻辑)
+// 3. 配置管理 (完全保持原始)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -122,7 +115,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助 (完全保留你的 HexShader 算法)
+// 4. 渲染辅助 (完全恢复原始 DrawHero 回调逻辑，消除白色三角形)
 // =================================================================
 class HexShader {
 public:
@@ -187,7 +180,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
     if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
     
-    // 彻底修复：在绘制前强制设置状态
+    // 恢复原始回调逻辑
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
         glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
@@ -196,13 +189,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     
     drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, center - ImVec2(size, size), center + ImVec2(size, size));
     
-    // 彻底修复：在绘制后物理上重置 OpenGL 状态，防止污染后续渲染
-    drawList->AddCallback([](const ImDrawList*, const ImDrawCmd*) {
-        glUseProgram(0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }, nullptr);
-    
-    // 彻底修复：使用 ImGui 官方重置状态的回调
+    // 恢复原始重置逻辑
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
@@ -227,7 +214,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (保留原始位移与缩放逻辑)
+// 5. 棋盘绘制 (完全保持原始)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -242,8 +229,6 @@ void DrawBoard() {
     ImVec2 p_bot = ImVec2(lastCX + sz * cosf(a2), lastCY + sz * sinf(a2));
     float hOffset = sz * 0.6f; 
     ImVec2 p_ext = ImVec2((p_top.x + p_bot.x) * 0.5f + hOffset, (p_top.y + p_bot.y) * 0.5f);
-    
-    // 绘制棋盘缩放手柄
     d->AddTriangleFilled(p_top, p_bot, p_ext, IM_COL32(255, 215, 0, 240));
     
     static bool isDraggingBoard = false, isScalingBoard = false;
@@ -292,7 +277,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (完整保留原始动画与补偿逻辑)
+// 6. 菜单 UI (完全恢复原始结构，仅修复折叠逻辑)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -319,43 +304,29 @@ void DrawMenu() {
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
     
-    float titleBarHeight = ImGui::GetFrameHeight();
-    float currentH = g_menuCollapsed ? titleBarHeight : (baseH * g_scale);
+    // 恢复原始 Begin 逻辑，不再使用 NoTitleBar
+    ImGui::SetNextWindowSize(ImVec2(currentW, baseH * g_scale), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
+    
+    // 核心修复：同步折叠状态
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Appearing);
 
-    ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
-
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar)) {
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         
-        ImVec2 windowPos = ImGui::GetWindowPos();
-        ImRect titleBarRect(windowPos, windowPos + ImVec2(currentW, titleBarHeight));
-        bool isHoveringTitle = titleBarRect.Contains(io.MousePos);
-
-        // 折叠/展开逻辑
-        if (isHoveringTitle && ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
-            g_menuCollapsed = !g_menuCollapsed;
+        // 核心修复：当用户点击原生三角折叠时，同步回全局变量并保存
+        bool currentCollapsed = ImGui::IsWindowCollapsed();
+        if (currentCollapsed != g_menuCollapsed) {
+            g_menuCollapsed = currentCollapsed;
             SaveConfig();
         }
 
-        // 拖动逻辑
-        if (!isScalingMenu && isHoveringTitle && ImGui::IsMouseDragging(0)) {
-            g_menuX += io.MouseDelta.x;
-            g_menuY += io.MouseDelta.y;
+        // 核心修复：同步窗口位置到全局变量，确保拖动后能保存
+        ImVec2 currentPos = ImGui::GetWindowPos();
+        if (currentPos.x != g_menuX || currentPos.y != g_menuY) {
+            g_menuX = currentPos.x;
+            g_menuY = currentPos.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
-
-        // 绘制标题栏背景
-        ImGui::GetWindowDrawList()->AddRectFilled(titleBarRect.Min, titleBarRect.Max, ImGui::GetColorU32(ImGuiCol_TitleBgActive));
-
-        // 绘制折叠三角图标
-        float arrowSize = titleBarHeight * 0.4f;
-        ImVec2 arrowPos = windowPos + ImVec2(ImGui::GetStyle().FramePadding.x + arrowSize * 0.5f, titleBarHeight * 0.5f);
-        ImGui::RenderArrow(ImGui::GetWindowDrawList(), arrowPos - ImVec2(arrowSize * 0.5f, arrowSize * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), g_menuCollapsed ? ImGuiDir_Right : ImGuiDir_Down, arrowSize);
-
-        // 绘制标题文本
-        ImGui::RenderText(windowPos + ImVec2(ImGui::GetStyle().FramePadding.x + arrowSize * 1.5f, ImGui::GetStyle().FramePadding.y), (const char*)u8"金铲铲助手");
-        
-        ImGui::ItemSize(ImVec2(0, titleBarHeight)); // 占位
 
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
@@ -373,7 +344,6 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // 彻底修复：移除可能导致渲染异常的缩放手柄绘制，改用更安全的方式
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
@@ -383,15 +353,14 @@ void DrawMenu() {
                     g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
                 } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
-            // 绘制菜单缩放手柄（蓝色小三角）
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.4f, 0), br - ImVec2(0, hSz*0.4f), IM_COL32(0, 120, 215, 200));
+            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 7. 程序入口 (无 TLS 版本)
+// 7. 程序入口 (完全保持原始)
 // =================================================================
 int main() {
     ImGui::CreateContext();
