@@ -273,7 +273,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (恢复圆弧风格 + 原生交互 + 卡顿优化)
+// 6. 菜单 UI (保留圆弧风格 + 原生交互修复)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -297,42 +297,39 @@ bool Toggle(const char* label, bool* v, int idx) {
 void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO(); 
     
-    // --- 恢复圆弧风格 ---
+    // 恢复圆弧风格设置 (修正版本兼容性错误)
     ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 12.0f * g_autoScale;      // 窗口圆角
-    style.FrameRounding = 6.0f * g_autoScale;       // 按钮圆角
-    style.HeaderRounding = 6.0f * g_autoScale;      // 列表头圆角
+    style.WindowRounding = 12.0f * g_autoScale;
+    style.FrameRounding = 6.0f * g_autoScale;
     style.PopupRounding = 6.0f * g_autoScale;
-    style.GrabRounding = 12.0f * g_autoScale;       // 滑块手柄圆角
+    style.GrabRounding = 12.0f * g_autoScale;
+    // 注：由于部分版本没有 HeaderRounding，此处移除该行以通过编译
     
-    // 设置初始位置和大小
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    // 原生标志：允许移动、允许缩放、允许双击标题栏折叠
+    // 原生标志：允许移动、缩放和原生折叠
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_None)) {
         
-        // 实时同步窗口状态
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
         float curW = ImGui::GetWindowSize().x;
         float curH = ImGui::GetWindowSize().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        // 计算当前缩放比例（用于视觉展示）
+        // 缩放适配逻辑
         float visualScale = curW / (320.0f * g_autoScale);
 
-        // 卡顿优化：只有在松开鼠标（缩放结束）且尺寸确实改变时，才重构字体
+        // 卡顿优化：缩放动作结束（松开鼠标）且尺寸变化时再重构高清字体
         if (ImGui::IsMouseReleased(0) && (curW != g_menuW || curH != g_menuH)) {
             g_menuW = curW;
             g_menuH = curH;
             g_scale = visualScale;
-            g_needUpdateFontSafe = true; // 触发高清字体重建
+            g_needUpdateFontSafe = true; 
             SaveConfig();
         }
 
         if (!g_menuCollapsed) {
-            // 设置视觉缩放适配
             float expectedSize = 18.0f * g_autoScale * visualScale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
             
