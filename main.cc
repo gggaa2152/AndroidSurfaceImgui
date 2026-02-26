@@ -190,14 +190,13 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体与显示适配 (修复断言锁定问题与 API 混淆)
+// 4. 字体与显示适配 (彻底修复构建状态与上下文同步)
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     
-    // 如果已经在渲染帧内，严禁修改字体 atlas
     if (ImGui::GetCurrentContext() && ImGui::GetCurrentContext()->WithinFrameScope) {
-        g_needUpdateFontSafe = true; // 标记稍后更新
+        g_needUpdateFontSafe = true;
         return;
     }
 
@@ -207,7 +206,8 @@ void UpdateFontHD(bool force = false) {
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
-    if (g_current_rendered_size > 0.1f) {
+    // 如果已有旧纹理，先销毁
+    if (g_current_rendered_size > 0.1f && eglGetCurrentContext() != EGL_NO_CONTEXT) {
         ImGui_ImplOpenGL3_DestroyFontsTexture();
     }
     
@@ -234,15 +234,17 @@ void UpdateFontHD(bool force = false) {
     
     if(!loaded) io.Fonts->AddFontDefault();
 
-    io.Fonts->Build();
+    // 关键修复：必须强制 Build()，此时会生成位图，io.Fonts->IsBuilt() 会变为 true
+    unsigned char* pixels; int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); 
     
-    // 修复：使用 EGL API 检查上下文是否存在
+    // 只有在上下文可用时才上传
     if (eglGetCurrentContext() != EGL_NO_CONTEXT) {
         ImGui_ImplOpenGL3_CreateFontsTexture();
     }
     
     g_current_rendered_size = targetSize;
-    __android_log_print(ANDROID_LOG_INFO, "AImGui_Helper", "Font Updated to: %.2f", targetSize);
+    __android_log_print(ANDROID_LOG_INFO, "AImGui_Helper", "Font Build Completed. Size: %.2f", targetSize);
 }
 
 // =================================================================
@@ -415,6 +417,13 @@ int main() {
         }
 
         imgui.BeginFrame(); 
+
+        // 额外的安全检查：如果在 BeginFrame 后发现纹理还没上传，强制补传
+        // 应对冷启动时上下文获取延迟的情况
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.Fonts->IsBuilt() && io.Fonts->TexID == 0) {
+            ImGui_ImplOpenGL3_CreateFontsTexture();
+        }
 
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
