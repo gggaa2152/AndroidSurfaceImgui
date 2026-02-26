@@ -169,7 +169,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 4. 棋盘绘制
+// 4. 棋盘绘制逻辑
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -227,7 +227,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 5. 菜单 UI
+// 5. 菜单 UI (已修复向右缩放)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -250,6 +250,9 @@ bool Toggle(const char* label, bool* v, int idx) {
 
 void DrawMenu() {
     static bool isScalingMenu = false; 
+    static float startScale = 1.0f;
+    static ImVec2 startMousePos;
+
     ImGuiIO& io = ImGui::GetIO(); 
     float baseW = 320.0f * g_autoScale; 
     float baseH = 500.0f * g_autoScale;
@@ -283,14 +286,20 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
+            // --- 核心修正后的右下角缩放手柄 ---
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 60.0f * g_autoScale * g_scale; 
-            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) isScalingMenu = true;
+            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) {
+                isScalingMenu = true; startScale = g_scale; startMousePos = io.MousePos;
+            }
+            
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    float sw = (io.MousePos.x - g_menuX) / baseW;
-                    float sh = (io.MousePos.y - g_menuY) / baseH;
-                    g_scale = std::clamp(std::max(sw, sh), 0.3f, 100.0f);
+                    float dragDX = io.MousePos.x - startMousePos.x;
+                    float dragDY = io.MousePos.y - startMousePos.y;
+                    // 关键点：取横向或纵轴偏移最大的增量，这样向右划立刻变大
+                    float dragIncr = std::max(dragDX / baseW, dragDY / baseH);
+                    g_scale = std::clamp(startScale + dragIncr, 0.3f, 100.0f);
                 } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.5f, 0), br - ImVec2(0, hSz*0.5f), IM_COL32(0, 120, 255, 200));
@@ -300,11 +309,11 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 6. 程序入口
+// 6. 程序入口 (修复编译错误)
 // =================================================================
 int main() {
     ImGui::CreateContext();
-    // 修复后的初始化代码行
+    // 修复：删除多余的 RenderType:: 层级
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
