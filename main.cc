@@ -190,7 +190,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体与显示适配 (修复断言锁定问题)
+// 4. 字体与显示适配 (修复断言锁定问题与 API 混淆)
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -236,8 +236,8 @@ void UpdateFontHD(bool force = false) {
 
     io.Fonts->Build();
     
-    // 只有在 OpenGL 环境可用时才上传纹理
-    if (glGetCurrentContext() != nullptr) {
+    // 修复：使用 EGL API 检查上下文是否存在
+    if (eglGetCurrentContext() != EGL_NO_CONTEXT) {
         ImGui_ImplOpenGL3_CreateFontsTexture();
     }
     
