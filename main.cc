@@ -33,15 +33,18 @@ bool g_instant = false;
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
 
+// 缩放控制
 float g_scale = 1.0f;           
 float g_autoScale = 1.0f;        
 float g_current_rendered_size = 0.0f; 
 
+// 棋盘控制
 float g_boardScale = 2.2f;       
 float g_boardManualScale = 1.0f; 
 float g_startX = 400.0f;    
 float g_startY = 400.0f;    
 
+// 菜单位置
 float g_menuX = 100.0f;
 float g_menuY = 100.0f;
 float g_menuW = 320.0f; 
@@ -58,7 +61,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理
+// 2. 配置存取
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -169,7 +172,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 4. 棋盘绘制逻辑
+// 4. 棋盘渲染
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -227,7 +230,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 5. 菜单 UI (已修复向右缩放)
+// 5. 菜单 UI (解决视频中向右无法缩放的问题)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -250,12 +253,13 @@ bool Toggle(const char* label, bool* v, int idx) {
 
 void DrawMenu() {
     static bool isScalingMenu = false; 
-    static float startScale = 1.0f;
-    static ImVec2 startMousePos;
-
     ImGuiIO& io = ImGui::GetIO(); 
+    
+    // 基础尺寸定义
     float baseW = 320.0f * g_autoScale; 
     float baseH = 500.0f * g_autoScale;
+    
+    // 根据当前 g_scale 计算物理像素大小
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
@@ -263,6 +267,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+        // 1. 标题栏逻辑 (折叠/移动)
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
         }
@@ -272,63 +277,114 @@ void DrawMenu() {
         }
 
         if (!g_menuCollapsed) {
+            // 2. 内容缩放适配
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
+
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
+            
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
-                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
+                ImGui::Indent(); 
+                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); 
+                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); 
+                ImGui::Unindent();
             }
             if (ImGui::CollapsingHeader((const char*)u8"功能")) {
-                ImGui::Indent(); Toggle((const char*)u8"对手棋盘", &g_esp_board, 3); Toggle((const char*)u8"对手备战席", &g_esp_bench, 4); Toggle((const char*)u8"对手商店", &g_esp_shop, 5); ImGui::Unindent();
+                ImGui::Indent(); 
+                Toggle((const char*)u8"对手棋盘", &g_esp_board, 3); 
+                Toggle((const char*)u8"对手备战席", &g_esp_bench, 4); 
+                Toggle((const char*)u8"对手商店", &g_esp_shop, 5); 
+                ImGui::Unindent();
             }
+            
             ImGui::Separator();
-            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); 
+            Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
+            
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // --- 核心修正后的右下角缩放手柄 ---
+            // --- 3. 【重点修复】缩放手柄 ---
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
-            float hSz = 60.0f * g_autoScale * g_scale; 
-            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) {
-                isScalingMenu = true; startScale = g_scale; startMousePos = io.MousePos;
+            float handleSize = 60.0f * g_autoScale * g_scale; // 点击区域随比例增大
+            
+            // 如果点中了右下角三角区
+            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(handleSize, handleSize), br).Contains(io.MousePos)) {
+                isScalingMenu = true;
             }
             
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    float dragDX = io.MousePos.x - startMousePos.x;
-                    float dragDY = io.MousePos.y - startMousePos.y;
-                    // 关键点：取横向或纵轴偏移最大的增量，这样向右划立刻变大
-                    float dragIncr = std::max(dragDX / baseW, dragDY / baseH);
-                    g_scale = std::clamp(startScale + dragIncr, 0.3f, 100.0f);
-                } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
+                    // 核心逻辑：直接用手指当前的 X/Y 坐标减去窗口起始位置，得到物理尺寸
+                    // 然后除以基础尺寸，得到绝对比例。这保证了手指移到哪，手柄跟到哪。
+                    float sw = (io.MousePos.x - g_menuX) / baseW;
+                    float sh = (io.MousePos.y - g_menuY) / baseH;
+                    
+                    // 取横纵比例中最大的一个，确保向右拉动立刻有大副度的缩放感
+                    g_scale = std::clamp(std::max(sw, sh), 0.3f, 10.0f);
+                } else { 
+                    isScalingMenu = false; 
+                    g_needUpdateFontSafe = true; // 停止缩放后更新高清字体
+                    SaveConfig(); 
+                } 
             }
-            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.5f, 0), br - ImVec2(0, hSz*0.5f), IM_COL32(0, 120, 255, 200));
+            
+            // 绘制视觉手柄
+            ImGui::GetWindowDrawList()->AddTriangleFilled(
+                br, 
+                br - ImVec2(handleSize * 0.5f, 0), 
+                br - ImVec2(0, handleSize * 0.5f), 
+                IM_COL32(0, 130, 255, 220)
+            );
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 6. 程序入口 (修复编译错误)
+// 6. 运行入口
 // =================================================================
 int main() {
     ImGui::CreateContext();
-    // 修复：删除多余的 RenderType:: 层级
+    
+    // NDK 环境下的初始化 (已修复 RenderType 层级错误)
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    LoadConfig(); UpdateFontHD(true);  
+    LoadConfig(); 
+    UpdateFontHD(true);  
+    
     static bool running = true; 
-    std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
+    std::thread it([&] { 
+        while(running) { 
+            imgui.ProcessInputEvent(); 
+            std::this_thread::yield(); 
+        } 
+    });
 
     while (running) {
-        if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
+        if (g_needUpdateFontSafe) { 
+            UpdateFontHD(true); 
+            g_needUpdateFontSafe = false; 
+        }
+        
         imgui.BeginFrame(); 
-        if (!g_resLoaded) { g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; }
-        DrawBoard(); DrawMenu();
+        
+        // 资源加载
+        if (!g_resLoaded) { 
+            g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
+            g_textureLoaded = (g_heroTexture != 0); 
+            g_resLoaded = true; 
+        }
+        
+        DrawBoard(); 
+        DrawMenu();
+        
         imgui.EndFrame(); 
         std::this_thread::yield();
     }
-    running = false; if (it.joinable()) it.join(); 
+    
+    running = false; 
+    if (it.joinable()) it.join(); 
     return 0;
 }
