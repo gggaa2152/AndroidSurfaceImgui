@@ -430,7 +430,6 @@ int main() {
         } 
     });
     
-    bool firstFrame = true;
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
 
     while (running) {
@@ -444,22 +443,18 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // 核心修改：在帧开始前，仅在非锁定状态更新字体
-        if (g_needUpdateFontSafe) {
-            UpdateFontHD(true); 
-            g_needUpdateFontSafe = false;
+        // 核心修改：将所有可能导致 Atlas 锁定的操作放在 BeginFrame 之前
+        // 但要注意 AImGui 的 BeginFrame 会调用渲染后端的 NewFrame，
+        // 而后端的 NewFrame 往往会触发 IsBuilt() 的断言。
+        
+        // 尝试：在真正绘制任何东西前，确保字体已构建
+        if (g_needUpdateFontSafe || !ImGui::GetIO().Fonts->IsBuilt()) {
+             UpdateFontHD(true);
+             g_needUpdateFontSafe = false;
         }
 
         imgui.BeginFrame(); 
         
-        // 关键：第一帧强制构建。此时环境肯定已经 NewFrame 过了，或者上下文已激活
-        if (firstFrame) {
-            if (!ImGui::GetIO().Fonts->IsBuilt()) {
-                 UpdateFontHD(true);
-            }
-            firstFrame = false;
-        }
-
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
