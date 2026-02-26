@@ -38,7 +38,7 @@ bool g_menuCollapsed = false;
 float g_anim[15] = {0.0f}; 
 
 float g_scale = 1.0f;            
-float g_autoScale = 1.0f;        
+float g_autoScale = 2.0f;        // 默认倍率
 
 float g_boardScale = 2.2f;       
 float g_boardManualScale = 1.0f; 
@@ -187,32 +187,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体初始化 (崩溃修复的关键)
-// =================================================================
-void InitFont() {
-    ImGuiIO& io = ImGui::GetIO();
-    // 默认缩放
-    g_autoScale = 2.0f; 
-
-    ImFontConfig config;
-    config.OversampleH = 2; 
-    config.OversampleV = 2; 
-    config.PixelSnapH = true;
-
-    const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
-    if (access(fontPath, R_OK) != 0) fontPath = "/system/fonts/DroidSansFallback.ttf";
-    
-    // 加载一个较大的基础字号
-    io.Fonts->AddFontFromFileTTF(fontPath, 36.0f, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    
-    // 核心步骤：在此处立即构建字体集
-    unsigned char* pixels;
-    int width, height;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-}
-
-// =================================================================
-// 5. 棋盘绘制逻辑
+// 4. 棋盘绘制逻辑
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -302,7 +277,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI
+// 5. 菜单 UI
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -348,6 +323,7 @@ void DrawMenu() {
             g_scale = g_menuW / (350.0f * g_autoScale);
         }
 
+        // 使用 SetWindowFontScale 来缩放菜单文字，不会涉及纹理重建，绝对稳定
         ImGui::SetWindowFontScale(g_scale);
 
         g_menuCollapsed = ImGui::IsWindowCollapsed();
@@ -384,22 +360,15 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 主循环 (帧率同步模式)
+// 6. 主循环
 // =================================================================
 int main() {
-    // 1. 先创建上下文
-    ImGui::CreateContext();
-    
-    // 2. 立即初始化字体
-    InitFont();
-    
-    // 3. 再创建渲染类对象
+    // 这里只管创建 AImGui 实例。AImGui 内部会自己初始化 ImGuiContext、Fonts 等。
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
-    // 4. 强制上传字体纹理到渲染后端
-    ImGui_ImplOpenGL3_CreateFontsTexture();
-    
+    // 设置垂直同步保证画面平滑
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
+    
     LoadConfig(); 
     
     static bool running = true; 
