@@ -52,6 +52,7 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 bool g_needUpdateFontSafe = false;
 
+// 模拟的敌方棋盘数据
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, {0, 1, 0, 1, 0, 0, 0},
     {0, 0, 0, 0, 0, 1, 0}, {1, 0, 1, 0, 1, 0, 1}
@@ -243,25 +244,35 @@ void DrawBoard() {
 
     if (!g_boardLocked) {
         static bool isDraggingBoard = false, isScalingBoard = false;
+        static ImVec2 dragOffset;
+        static float initialScaleDist = 0.0f;
+        static float initialScaleBase = 1.0f;
         
         // 核心修复：仅在未操作任何 UI 控件时才允许棋盘交互
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
             float distSq = ImLengthSqr(io.MousePos - p_handle);
-            if (distSq < (3600.0f * g_autoScale)) {
+            // 增大触摸热区判定
+            if (distSq < (4900.0f * g_autoScale * g_autoScale)) {
                 isScalingBoard = true;
+                // 记录初始触摸点到起点的真实距离，防止跳变
+                initialScaleDist = sqrtf(ImLengthSqr(io.MousePos - ImVec2(g_startX, g_startY)));
+                if (initialScaleDist < 1.0f) initialScaleDist = 1.0f; // 防止除零
+                initialScaleBase = g_boardManualScale;
             } else {
-                // 增加点击区域判定，只有点在棋盘范围内才触发拖动，防止全屏点击跳变
                 ImRect boardArea(ImVec2(g_startX - curSz*2, g_startY - curSz*2), ImVec2(lastCX + curSz*2, lastCY + curSz*2));
                 if (boardArea.Contains(io.MousePos)) {
                     isDraggingBoard = true; 
+                    // 使用偏移量而非 Delta，彻底杜绝按下瞬间的坐标跳变
+                    dragOffset = io.MousePos - ImVec2(g_startX, g_startY);
                 }
             }
         }
         
         if (isScalingBoard) {
             if (ImGui::IsMouseDown(0)) {
-                // 使用鼠标每帧的偏移量 io.MouseDelta 来更新缩放，彻底消除点击瞬间坐标重置的跳变
-                g_boardManualScale += io.MouseDelta.x * 0.005f;
+                // 通过距离比例计算缩放：数学上保证手在哪，圆圈的相对距离就在哪
+                float currentDist = sqrtf(ImLengthSqr(io.MousePos - ImVec2(g_startX, g_startY)));
+                g_boardManualScale = initialScaleBase * (currentDist / initialScaleDist);
                 g_boardManualScale = std::max(g_boardManualScale, 0.2f);
             } else { 
                 isScalingBoard = false; SaveConfig(); 
@@ -270,20 +281,21 @@ void DrawBoard() {
         
         if (isDraggingBoard && !isScalingBoard) {
             if (ImGui::IsMouseDown(0)) {
-                // 使用鼠标每帧的位移增量更新棋盘位置
-                g_startX += io.MouseDelta.x;
-                g_startY += io.MouseDelta.y;
+                // 通过绝对偏移量更新位置，如丝般顺滑
+                g_startX = io.MousePos.x - dragOffset.x;
+                g_startY = io.MousePos.y - dragOffset.y;
             } else { 
                 isDraggingBoard = false; SaveConfig(); 
             }
         }
 
-        // 绘制交互手柄
-        d->AddCircleFilled(p_handle, 14.0f * g_autoScale, IM_COL32(255, 215, 0, 220));
-        d->AddCircle(p_handle, (14.0f + 3.0f * sinf(ImGui::GetTime()*8)) * g_autoScale, IM_COL32(255, 215, 0, 120), 24, 2.0f);
+        // 绘制高级交互手柄 (实心内核 + 阴影 + 呼吸外圈)
+        d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
+        d->AddCircleFilled(p_handle, 6.0f * g_autoScale, IM_COL32(255, 255, 255, 255));
+        d->AddCircle(p_handle, (20.0f + 4.0f * sinf(ImGui::GetTime()*6)) * g_autoScale, IM_COL32(255, 215, 0, 150), 32, 2.5f * g_autoScale);
     }
 
-    // 棋盘格渲染逻辑
+    // 棋盘格渲染逻辑 (全息高级感)
     float time = (float)ImGui::GetTime();
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
@@ -292,15 +304,18 @@ void DrawBoard() {
             
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
             
-            float hue = fmodf(time * 0.4f + (cx + cy) * 0.0005f, 1.0f);
-            float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.7f, 1.0f, rf, gf, bf);
+            float hue = fmodf(time * 0.3f + (cx + cy) * 0.0008f, 1.0f);
+            float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
             
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
                 pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
-            d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 240), ImDrawFlags_Closed, 3.5f * g_autoScale);
+            // 增加微透明内部填充，打造高级科技感
+            d->AddConvexPolyFilled(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 30));
+            // 绘制清晰的边缘
+            d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 220), ImDrawFlags_Closed, 2.5f * g_autoScale);
         }
     }
 }
@@ -325,11 +340,23 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
     if (pressed) { *v = !(*v); SaveConfig(); }
 
-    g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.25f; 
+    // 更柔和快速的动画过渡
+    g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f; 
     
-    ImVec4 col_bg = ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0.15f, 0.70f, 0.45f, 1.0f), g_anim[idx]);
+    // 质感配色：深灰底色 vs 极客薄荷绿
+    ImVec4 col_bg_off = ImVec4(0.20f, 0.22f, 0.27f, 1.0f);
+    ImVec4 col_bg_on  = ImVec4(0.00f, 0.85f, 0.55f, 1.0f); 
+    ImVec4 col_bg = ImLerp(col_bg_off, col_bg_on, g_anim[idx]);
+    
+    // 绘制轨道底色及内阴影边框
     window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(col_bg), h*0.5f);
-    window->DrawList->AddCircleFilled(bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f), h*0.5f - 2.5f, IM_COL32_WHITE);
+    window->DrawList->AddRect(bb.Min, bb.Min + ImVec2(w, h), IM_COL32(0, 0, 0, 80), h*0.5f, 0, 1.0f);
+    
+    // 绘制带立体感阴影的圆钮
+    float handle_radius = h * 0.5f - 2.5f;
+    ImVec2 handle_center = bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f);
+    window->DrawList->AddCircleFilled(handle_center + ImVec2(0, 1.5f), handle_radius, IM_COL32(0, 0, 0, 90)); // 投影
+    window->DrawList->AddCircleFilled(handle_center, handle_radius, IM_COL32_WHITE);
     
     ImGui::RenderText(ImVec2(bb.Min.x + w + style.ItemInnerSpacing.x, bb.Min.y + style.FramePadding.y*0.5f), label);
     return pressed;
@@ -339,15 +366,31 @@ void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO(); 
     ImGuiStyle& style = ImGui::GetStyle();
     
-    style.WindowRounding = 12.0f * g_autoScale;
-    style.FrameRounding = 6.0f * g_autoScale;
-    style.ItemSpacing = ImVec2(10 * g_autoScale, 15 * g_autoScale);
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.10f, 0.12f, 0.96f);
+    // 赋予全局 UI 高级质感 (高圆角、舒适间距、暗黑系配色)
+    style.WindowRounding = 16.0f * g_autoScale;
+    style.FrameRounding = 8.0f * g_autoScale;
+    style.PopupRounding = 8.0f * g_autoScale;
+    style.GrabRounding = 8.0f * g_autoScale;
+    style.ItemSpacing = ImVec2(12 * g_autoScale, 16 * g_autoScale);
+    style.WindowPadding = ImVec2(16 * g_autoScale, 16 * g_autoScale);
+    style.WindowBorderSize = 1.0f;
+
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.09f, 0.11f, 0.98f);
+    style.Colors[ImGuiCol_Border] = ImVec4(1.0f, 1.0f, 1.0f, 0.08f);
+    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.08f, 0.09f, 0.11f, 1.0f);
+    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.13f, 0.15f, 1.0f);
+    style.Colors[ImGuiCol_Header] = ImVec4(0.18f, 0.20f, 0.25f, 0.8f);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.24f, 0.27f, 0.32f, 0.8f);
+    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.30f, 0.35f, 0.40f, 1.0f);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.15f, 0.17f, 0.20f, 1.0f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.22f, 0.25f, 0.30f, 1.0f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.28f, 0.32f, 0.38f, 1.0f);
 
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.4", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    // 增加了 ✨ 小图标点缀，看起来更加精致
+    if (ImGui::Begin((const char*)u8"✨ 金铲铲全能助手 v2.4", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
@@ -362,7 +405,7 @@ void DrawMenu() {
         if (!g_menuCollapsed) {
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
             
-            ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"● VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
+            ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"● VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
             if (ImGui::CollapsingHeader((const char*)u8" 智能预测 ", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -420,6 +463,7 @@ int main() {
         imgui.BeginFrame(); 
         
         if (!g_resLoaded) { 
+            // 假设这是某个英雄的测试头像路径
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
