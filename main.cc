@@ -116,7 +116,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 3. 纹理与绘图助手
+// 3. 纹理与绘图助手 (Hex 形状渲染)
 // =================================================================
 class HexShader {
 public:
@@ -190,7 +190,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体与显示适配
+// 4. 字体与显示适配 (核心修复: 与 AImGui 后端同步)
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -200,28 +200,25 @@ void UpdateFontHD(bool force = false) {
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
-    // 销毁旧纹理
+    // 如果已经存在纹理，销毁并重置
     if (g_current_rendered_size > 0.1f) {
         ImGui_ImplOpenGL3_DestroyFontsTexture();
     }
     
-    io.Fonts->Clear(); // 清除 AImGui 可能自动加载的默认字体状态
+    // 清除 AImGui::InitEnvironment 中默认加载的 22px 字体
+    io.Fonts->Clear(); 
     
     ImFontConfig config;
-    config.OversampleH = 1;
-    config.OversampleV = 1; 
-    config.PixelSnapH = true;
+    config.OversampleH = 1; config.OversampleV = 1; config.PixelSnapH = true;
     
     const char* fonts[] = {
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/DroidSansFallback.ttf",
-        "/system/fonts/SysSans-Hans-Regular.ttf",
         "/system/fonts/SourceHanSansCN-Regular.otf"
     };
     
     bool loaded = false;
     const ImWchar* ranges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
-    
     for(const char* path : fonts) {
         if (access(path, R_OK) == 0) {
             if (io.Fonts->AddFontFromFileTTF(path, targetSize, &config, ranges)) {
@@ -232,11 +229,12 @@ void UpdateFontHD(bool force = false) {
     
     if(!loaded) io.Fonts->AddFontDefault();
 
+    // 重新构建图集并手动上传到当前 OpenGL 上下文
     io.Fonts->Build();
-    
-    // 确保 OpenGL Context 激活后创建纹理
     ImGui_ImplOpenGL3_CreateFontsTexture();
+    
     g_current_rendered_size = targetSize;
+    __android_log_print(ANDROID_LOG_INFO, "AImGui_Helper", "Font Updated to: %.2f", targetSize);
 }
 
 // =================================================================
@@ -267,45 +265,26 @@ void DrawBoard() {
     ImVec2 p_handle = CalcHandlePos(g_startX, g_startY, g_boardManualScale);
 
     if (!g_boardLocked) {
-        static bool isScaling = false;
-        static bool isDragging = false;
-        static ImVec2 dragOffset;
-
+        static bool isScaling = false; static bool isDragging = false; static ImVec2 dragOffset;
         if (!ImGui::IsAnyItemActive()) {
             if (ImGui::IsMouseClicked(0)) {
                 float distSq = ImLengthSqr(io.MousePos - p_handle);
-                if (distSq < (6000.0f * g_autoScale)) {
-                    isScaling = true;
-                    dragOffset = io.MousePos - p_handle; 
-                } 
+                if (distSq < (6000.0f * g_autoScale)) { isScaling = true; dragOffset = io.MousePos - p_handle; } 
                 else {
-                    ImRect area(ImVec2(g_startX - curUnit*2, g_startY - curUnit*2), 
-                                ImVec2(p_handle.x + curUnit, p_handle.y + curUnit));
-                    if (area.Contains(io.MousePos)) {
-                        isDragging = true;
-                        dragOffset = io.MousePos - ImVec2(g_startX, g_startY);
-                    }
+                    ImRect area(ImVec2(g_startX - curUnit*2, g_startY - curUnit*2), ImVec2(p_handle.x + curUnit, p_handle.y + curUnit));
+                    if (area.Contains(io.MousePos)) { isDragging = true; dragOffset = io.MousePos - ImVec2(g_startX, g_startY); }
                 }
             }
         }
-
         if (ImGui::IsMouseDown(0)) {
             if (isScaling) {
-                ImVec2 currentHandleCenter = io.MousePos - dragOffset;
-                float deltaX = currentHandleCenter.x - g_startX;
-                float newScale = deltaX / (baseStepX * 6.5f + baseUnit);
-                g_boardManualScale = std::clamp(newScale, 0.2f, 5.0f);
-                p_handle = CalcHandlePos(g_startX, g_startY, g_boardManualScale);
-            } 
-            else if (isDragging) {
-                g_startX = io.MousePos.x - dragOffset.x;
-                g_startY = io.MousePos.y - dragOffset.y;
-                p_handle = CalcHandlePos(g_startX, g_startY, g_boardManualScale);
+                float deltaX = (io.MousePos - dragOffset).x - g_startX;
+                g_boardManualScale = std::clamp(deltaX / (baseStepX * 6.5f + baseUnit), 0.2f, 5.0f);
+            } else if (isDragging) {
+                g_startX = io.MousePos.x - dragOffset.x; g_startY = io.MousePos.y - dragOffset.y;
             }
-        } else {
-            isScaling = false;
-            isDragging = false;
-        }
+            p_handle = CalcHandlePos(g_startX, g_startY, g_boardManualScale);
+        } else { isScaling = false; isDragging = false; }
 
         d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
         d->AddCircle(p_handle, (16.0f + 2.5f * sinf(ImGui::GetTime()*12)) * g_autoScale, IM_COL32(255, 255, 255, 180), 32, 2.5f);
@@ -365,72 +344,52 @@ void DrawMenu() {
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
     if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.5", NULL, ImGuiWindowFlags_NoSavedSettings)) {
-        
-        g_menuX = ImGui::GetWindowPos().x;
-        g_menuY = ImGui::GetWindowPos().y;
-        float curW = ImGui::GetWindowSize().x;
-        float curH = ImGui::GetWindowSize().y;
+        g_menuX = ImGui::GetWindowPos().x; g_menuY = ImGui::GetWindowPos().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        ImGuiWindow* window = ImGui::GetCurrentWindow();
-        ImGuiID resizeId = window->GetID("##Resize");
-        if (ImGui::GetActiveID() == resizeId && ImGui::IsMouseDragging(0)) {
-            g_menuW = curW; 
-            g_menuH = curH;
-            g_scale = curW / (350.0f * g_autoScale);
+        if (ImGui::IsMouseDragging(0) && ImGui::GetActiveID() == ImGui::GetCurrentWindow()->GetID("##Resize")) {
+            g_menuW = ImGui::GetWindowSize().x; g_menuH = ImGui::GetWindowSize().y;
+            g_scale = g_menuW / (350.0f * g_autoScale);
             g_fontUpdateTimer = 0.5f; 
         }
 
         if (!g_menuCollapsed) {
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
-            
-            ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"· VSYNC 同步中 | FPS: %.1f", io.Framerate);
+            ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"· FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            if (ImGui::CollapsingHeader((const char*)u8" 智能预测 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader((const char*)u8" 智能功能 ", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
                 ModernToggle((const char*)u8"对手预测", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"海克斯辅助", &g_predict_hex, 2); 
+                ModernToggle((const char*)u8"棋盘位置锁定", &g_boardLocked, 3);
                 ImGui::Unindent();
             }
-            if (ImGui::CollapsingHeader((const char*)u8" 透视显示 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader((const char*)u8" 透视开关 ", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
-                ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
-                ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 4); 
-                ModernToggle((const char*)u8"商店概率透视", &g_esp_shop, 5); 
+                ModernToggle((const char*)u8"棋盘布局透视", &g_esp_board, 4); 
+                ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 5); 
                 ImGui::Unindent();
             }
-            ImGui::Separator();
-            ModernToggle((const char*)u8"锁定棋盘位置", &g_boardLocked, 8); 
-            ModernToggle((const char*)u8"智能拿牌", &g_auto_buy, 6); 
-            ModernToggle((const char*)u8"极速退房", &g_instant, 7);
-            
             ImGui::Spacing();
-            if (ImGui::Button((const char*)u8"保存当前配置", ImVec2(-1, 55 * g_autoScale))) {
-                SaveConfig();
-            }
+            if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 55 * g_autoScale))) SaveConfig();
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 7. 主循环
+// 7. 主循环 (与 AImGui 源码深度集成)
 // =================================================================
 int main() {
-    // 1. 初始化 AImGui（它内部会自动调用 ImGui::CreateContext）
+    // 关键点：不要在此手动创建 ImGui Context，AImGui 构造函数内部会创建。
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
-    // 2. 加载配置
     LoadConfig(); 
     
+    // 开启输入处理线程
     static bool running = true; 
-    std::thread it([&] { 
-        while(running) { 
-            imgui.ProcessInputEvent(); 
-            std::this_thread::yield(); 
-        } 
-    });
+    std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
     
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
 
@@ -444,31 +403,27 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // --- 核心修复流程 ---
-
-        // Step A: 进入 AImGui 的渲染帧处理
+        // AImGui::BeginFrame 会检查 Surface 状态并调用 ImGui::NewFrame()
         imgui.BeginFrame(); 
 
-        // Step B: 立即处理字体状态。
-        // AImGui 内部初始化时可能添加了默认字体导致图集未同步，
-        // 我们在第一帧运行或需要更新时强制执行一次完整的 Clear/Add/Build/Create 流程。
+        // 首次运行或缩放改变时，重新加载字体并更新纹理
         if (g_current_rendered_size < 1.0f || g_needUpdateFontSafe) {
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false;
         }
 
-        // Step C: 加载资源
+        // 加载必要的纹理
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
         }
 
-        // Step D: 绘制内容
+        // 渲染 UI
         DrawBoard(); 
         DrawMenu();
         
-        // Step E: 结束渲染帧
+        // AImGui::EndFrame 会执行渲染指令提交并交换缓冲区
         imgui.EndFrame(); 
     }
 
