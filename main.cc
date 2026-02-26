@@ -32,7 +32,7 @@ bool g_esp_bench = false;
 bool g_esp_shop = false;  
 bool g_auto_buy = false;
 bool g_instant = false;
-bool g_boardLocked = false; // 新增：锁定棋盘防止误触
+bool g_boardLocked = false; 
 
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
@@ -221,37 +221,35 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制逻辑
+// 5. 棋盘绘制逻辑 (修复跳变)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
 
-    // 基础参数计算
     float baseSz = 38.0f * g_boardScale * g_autoScale;
     float baseXStep = baseSz * 1.73205f;
     float baseYStep = baseSz * 1.5f;
 
-    // 当前实际尺寸
     float curSz = baseSz * g_boardManualScale;
     float curXStep = baseXStep * g_boardManualScale;
     float curYStep = baseYStep * g_boardManualScale;
 
-    // 交互手柄位置
     float lastCX = g_startX + 6 * curXStep + (3 % 2 == 1 ? curXStep * 0.5f : 0);
     float lastCY = g_startY + 3 * curYStep;
     ImVec2 p_handle = ImVec2(lastCX + curSz, lastCY + curSz * 0.5f);
 
-    // 交互逻辑
     if (!g_boardLocked) {
         static bool isDraggingBoard = false, isScalingBoard = false;
         static ImVec2 dragOffset;
+        static float startScale = 1.0f;
 
         if (ImGui::IsMouseClicked(0)) {
             float distSq = ImLengthSqr(io.MousePos - p_handle);
-            if (distSq < (2500.0f * g_autoScale)) {
+            if (distSq < (3600.0f * g_autoScale)) { // 增加判定范围至 60px
                 isScalingBoard = true;
+                startScale = g_boardManualScale;
             } else {
                 ImRect boardArea(ImVec2(g_startX - curSz, g_startY - curSz), ImVec2(lastCX + curSz, lastCY + curSz));
                 if (boardArea.Contains(io.MousePos)) {
@@ -263,25 +261,29 @@ void DrawBoard() {
         
         if (isScalingBoard) {
             if (ImGui::IsMouseDown(0)) {
-                // 使用相对位移计算缩放，防止坐标跳变
+                // 修复：基于鼠标移动距离进行相对缩放，避免绝对坐标计算导致的跳变
                 g_boardManualScale += io.MouseDelta.x * 0.005f;
                 g_boardManualScale = std::max(g_boardManualScale, 0.2f);
-            } else { isScalingBoard = false; SaveConfig(); }
+            } else { 
+                isScalingBoard = false; 
+                SaveConfig(); 
+            }
         }
         
         if (isDraggingBoard && !isScalingBoard) {
             if (ImGui::IsMouseDown(0)) {
                 g_startX = io.MousePos.x - dragOffset.x; 
                 g_startY = io.MousePos.y - dragOffset.y;
-            } else { isDraggingBoard = false; SaveConfig(); }
+            } else { 
+                isDraggingBoard = false; 
+                SaveConfig(); 
+            }
         }
 
-        // 绘制交互引导
-        d->AddCircleFilled(p_handle, 12.0f * g_autoScale, IM_COL32(255, 215, 0, 200));
-        d->AddCircle(p_handle, (12.0f + 4.0f * sinf(ImGui::GetTime()*6)) * g_autoScale, IM_COL32(255, 215, 0, 100), 24, 2.0f);
+        d->AddCircleFilled(p_handle, 14.0f * g_autoScale, IM_COL32(255, 215, 0, 200));
+        d->AddCircle(p_handle, (14.0f + 4.0f * sinf(ImGui::GetTime()*6)) * g_autoScale, IM_COL32(255, 215, 0, 100), 24, 2.5f);
     }
 
-    // 渲染循环
     float time = (float)ImGui::GetTime();
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
@@ -290,15 +292,15 @@ void DrawBoard() {
             
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
             
-            float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
-            float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.7f, 1.0f, rf, gf, bf);
+            float hue = fmodf(time * 0.4f + (cx + cy) * 0.0005f, 1.0f);
+            float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.75f, 1.0f, rf, gf, bf);
             
             ImVec2 pts[6];
             for(int i=0; i<6; i++) {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
                 pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
-            d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 220), ImDrawFlags_Closed, 3.0f * g_autoScale);
+            d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 230), ImDrawFlags_Closed, 3.5f * g_autoScale);
         }
     }
 }
@@ -345,7 +347,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.2", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.3", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
@@ -377,7 +379,7 @@ void DrawMenu() {
                 ImGui::Unindent();
             }
             ImGui::Separator();
-            ModernToggle((const char*)u8"锁定棋盘位置", &g_boardLocked, 8); // 新增锁定开关
+            ModernToggle((const char*)u8"锁定棋盘位置", &g_boardLocked, 8); 
             ModernToggle((const char*)u8"智能拿牌", &g_auto_buy, 6); 
             ModernToggle((const char*)u8"极速退房", &g_instant, 7);
             
@@ -389,23 +391,14 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 主循环与性能限制
+// 7. 主循环 (移除 FPS 限制)
 // =================================================================
-void LimitFPS(int target_fps) {
-    static auto last_time = std::chrono::high_resolution_clock::now();
-    auto now = std::chrono::high_resolution_clock::now();
-    auto delta = std::chrono::duration_cast<std::chrono::microseconds>(now - last_time).count();
-    long target_period = 1000000 / target_fps;
-    if (delta < target_period) {
-        usleep(target_period - delta);
-    }
-    last_time = std::chrono::high_resolution_clock::now();
-}
-
 int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
-    eglSwapInterval(eglGetCurrentDisplay(), 1); 
+    
+    // 设置为 0 即不限制 FPS，完全由设备性能决定
+    eglSwapInterval(eglGetCurrentDisplay(), 0); 
     
     LoadConfig(); 
     UpdateFontHD(true);  
@@ -427,7 +420,6 @@ int main() {
         imgui.BeginFrame(); 
         
         if (!g_resLoaded) { 
-            // 棋子头像路径
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
             g_resLoaded = true; 
@@ -437,7 +429,7 @@ int main() {
         DrawMenu();
         
         imgui.EndFrame(); 
-        LimitFPS(60); // 限制 60 帧，减少发热
+        // 移除 LimitFPS 调用，实现最高帧率渲染
         std::this_thread::yield();
     }
     
