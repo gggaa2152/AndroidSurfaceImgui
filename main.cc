@@ -1,4 +1,4 @@
-l#include <stdarg.h>
+#include <stdarg.h>
 #include "Global.h"
 #include "AImGui.h"
 #include "imgui_internal.h"
