@@ -1,19 +1,7 @@
-// 优化点：
-// 1. 删除未使用的头文件，添加必要的 <atomic>
-// 2. 全局变量按功能分组到命名空间
-// 3. 硬编码路径定义为常量
-// 4. 增加详细的错误检查和日志输出
-// 5. 主循环使用 sleep_for 降低 CPU 占用
-// 6. 使用原子变量保证线程安全
-// 7. 移除对 imgui_internal.h 的依赖，重写 Toggle 函数
-// 8. 程序退出时释放纹理资源
-// 9. 魔法数字替换为有意义的常量
-// 10. 长行换行提高可读性
-// 11. 着色器编译状态检查
-// 12. 添加注释说明退出机制需结合 AImGui 生命周期
-
+#include <stdarg.h>
 #include "Global.h"
 #include "AImGui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_opengl3.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -23,13 +11,13 @@
 #include <cmath>       
 #include <fstream>      
 #include <string>
-#include <atomic>       // 用于原子变量
-#include <chrono>       // 用于 sleep_for
 #include <GLES3/gl3.h>
 #include <EGL/egl.h>    
-#include <android/log.h> // 保留用于错误日志
+#include <android/log.h>
 #include <algorithm>
 #include <unistd.h>
+#include <atomic>       // 新增，用于原子变量
+#include <chrono>       // 新增，用于 sleep_for
 
 // =================================================================
 // 常量定义（替代魔法数字）
@@ -48,9 +36,9 @@ namespace Constants {
     const float MENU_WIDTH_BASE = 320.0f;       // 菜单基础宽度
     const float MENU_HEIGHT_BASE = 500.0f;      // 菜单基础高度
     const float MENU_SCALE_MIN = 0.5f;          // 最小缩放系数
-    const float MENU_SCALE_MAX = 5.0f;           // 最大缩放系数
-    const float FONT_SIZE_BASE = 18.0f;          // 基础字体大小
-    const float FONT_SIZE_MAX = 120.0f;           // 最大字体限制
+    const float MENU_SCALE_MAX = 5.0f;          // 最大缩放系数
+    const float FONT_SIZE_BASE = 18.0f;         // 基础字体大小
+    const float FONT_SIZE_MAX = 120.0f;         // 最大字体限制
     const float REFERENCE_SCREEN_HEIGHT = 1080.0f; // 参考屏幕高度
 }
 
@@ -98,7 +86,7 @@ namespace Resources {
 bool g_needUpdateFontSafe = false;
 
 // =================================================================
-// 配置管理（使用 Constants::CONFIG_PATH）
+// 配置管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(Constants::CONFIG_PATH);
@@ -354,7 +342,6 @@ void DrawBoard() {
         float right = std::max(p_top.x, p_ext.x);
         float top = std::min(p_top.y, p_ext.y);
         float bottom = std::max(p_top.y, p_ext.y);
-        // 扩大检测区域
         const float expand = 40.0f;
         bool inHandle = (io.MousePos.x >= left - expand && io.MousePos.x <= right + expand &&
                          io.MousePos.y >= top - expand && io.MousePos.y <= bottom + expand);
@@ -418,7 +405,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 菜单 UI（使用公开API，完全移除 imgui_internal.h 依赖）
+// 菜单 UI（使用公开API，但仍保留 imgui_internal.h）
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiIO& io = ImGui::GetIO();
@@ -432,7 +419,6 @@ bool Toggle(const char* label, bool* v, int idx) {
     bool hovered = ImGui::IsItemHovered();
     bool active = ImGui::IsItemActive();
     bool clicked = ImGui::IsItemClicked();
-    bool released = ImGui::IsItemDeactivated();
 
     if (clicked) {
         *v = !(*v);
@@ -472,7 +458,7 @@ void DrawMenu() {
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(UI::menuX, UI::menuY), ImGuiCond_Always);
 
-    if (ImGui::Begin(u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+    if (ImGui::Begin("金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         // 标题栏交互（手动检测区域）
         float titleBarHeight = ImGui::GetFrameHeight();
         ImVec2 windowPos = ImGui::GetWindowPos();
@@ -497,25 +483,25 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
 
-            if (ImGui::CollapsingHeader(u8"预测功能")) {
+            if (ImGui::CollapsingHeader("预测功能")) {
                 ImGui::Indent();
-                Toggle(u8"预测对手分布", &Config::predict_enemy, 1);
-                Toggle(u8"海克斯强化预测", &Config::predict_hex, 2);
+                Toggle("预测对手分布", &Config::predict_enemy, 1);
+                Toggle("海克斯强化预测", &Config::predict_hex, 2);
                 ImGui::Unindent();
             }
-            if (ImGui::CollapsingHeader(u8"透视功能")) {
+            if (ImGui::CollapsingHeader("透视功能")) {
                 ImGui::Indent();
-                Toggle(u8"对手棋盘透视", &Config::esp_board, 3);
-                Toggle(u8"对手备战席透视", &Config::esp_bench, 4);
-                Toggle(u8"对手商店透视", &Config::esp_shop, 5);
+                Toggle("对手棋盘透视", &Config::esp_board, 3);
+                Toggle("对手备战席透视", &Config::esp_bench, 4);
+                Toggle("对手商店透视", &Config::esp_shop, 5);
                 ImGui::Unindent();
             }
             ImGui::Separator();
-            Toggle(u8"全自动拿牌", &Config::auto_buy, 6);
-            Toggle(u8"极速秒退助手", &Config::instant, 7);
+            Toggle("全自动拿牌", &Config::auto_buy, 6);
+            Toggle("极速秒退助手", &Config::instant, 7);
             ImGui::Spacing();
 
-            if (ImGui::Button(u8"保存设置", ImVec2(-1, 45 * UI::autoScale * UI::scale))) {
+            if (ImGui::Button("保存设置", ImVec2(-1, 45 * UI::autoScale * UI::scale))) {
                 SaveConfig();
             }
 
