@@ -121,7 +121,6 @@ public:
                          "    vec2 ndc = (Position / u_Res) * 2.0 - 1.0;\n"
                          "    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);\n"
                          "}";
-        // 加入 smoothstep 以实现抗锯齿边缘
         const char* fs = "#version 300 es\n"
                          "precision mediump float;\n"
                          "uniform sampler2D Texture;\n"
@@ -191,7 +190,6 @@ void UpdateFontHD(bool force = false) {
     ImFontConfig config;
     config.OversampleH = 2; config.OversampleV = 2; config.PixelSnapH = true;
     
-    // 多路径搜索字体，解决兼容性
     const char* fonts[] = {
         "/system/fonts/SysSans-Hans-Regular.ttf",
         "/system/fonts/NotoSansCJK-Regular.ttc",
@@ -222,12 +220,10 @@ void DrawBoard() {
     float sz = 38.0f * g_boardScale * g_autoScale * g_boardManualScale;
     float xStep = sz * 1.73205f; float yStep = sz * 1.5f;
     
-    // 计算棋盘右下角，放置缩放手柄
     float lastCX = g_startX + 6 * xStep + (3 % 2 == 1 ? xStep * 0.5f : 0);
     float lastCY = g_startY + 3 * yStep;
     ImVec2 p_handle = ImVec2(lastCX + sz, lastCY + sz * 0.5f);
     
-    // 绘制手柄反馈
     d->AddCircleFilled(p_handle, 12.0f * g_autoScale, IM_COL32(255, 215, 0, 200));
     d->AddCircle(p_handle, (12.0f + 4.0f * sinf(ImGui::GetTime()*4)) * g_autoScale, IM_COL32(255, 215, 0, 100), 24, 2.0f);
 
@@ -261,10 +257,8 @@ void DrawBoard() {
             float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0);
             float cy = g_startY + r * yStep;
             
-            // 绘制裁剪英雄
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), sz * 0.95f); 
             
-            // 彩虹边框
             float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
             float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.7f, 1.0f, rf, gf, bf);
             
@@ -279,7 +273,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 现代风格菜单 (精装修版)
+// 6. 现代风格菜单 (强制转换字符类型修复)
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -298,7 +292,6 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
     if (pressed) { *v = !(*v); SaveConfig(); }
 
-    // 动画平滑
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.15f;
     
     ImVec4 col_bg = ImLerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBg), ImVec4(0.12f, 0.65f, 0.45f, 1.0f), g_anim[idx]);
@@ -313,7 +306,6 @@ void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO(); 
     ImGuiStyle& style = ImGui::GetStyle();
     
-    // 全局视觉风格
     style.WindowRounding = 14.0f * g_autoScale;
     style.FrameRounding = 6.0f * g_autoScale;
     style.ItemSpacing = ImVec2(10 * g_autoScale, 14 * g_autoScale);
@@ -323,6 +315,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
+    // 添加 (const char*) 强转以适配 C++20 编译器
     if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.1", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
@@ -338,35 +331,35 @@ void DrawMenu() {
         if (!g_menuCollapsed) {
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
             
-            ImGui::TextColored(ImVec4(0, 1, 0.6f, 1), u8"● 核心加载成功 | FPS: %.1f", io.Framerate);
+            ImGui::TextColored(ImVec4(0, 1, 0.6f, 1), (const char*)u8"● 核心加载成功 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            if (ImGui::CollapsingHeader(u8" 智能预测 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader((const char*)u8" 智能预测 ", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
-                ModernToggle(u8"对手预测", &g_predict_enemy, 1); 
-                ModernToggle(u8"海克斯辅助", &g_predict_hex, 2); 
+                ModernToggle((const char*)u8"对手预测", &g_predict_enemy, 1); 
+                ModernToggle((const char*)u8"海克斯辅助", &g_predict_hex, 2); 
                 ImGui::Unindent();
             }
-            if (ImGui::CollapsingHeader(u8" 透视显示 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::CollapsingHeader((const char*)u8" 透视显示 ", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Indent(); 
-                ModernToggle(u8"对手棋盘透视", &g_esp_board, 3); 
-                ModernToggle(u8"备战席透视", &g_esp_bench, 4); 
-                ModernToggle(u8"商店概率透视", &g_esp_shop, 5); 
+                ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
+                ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 4); 
+                ModernToggle((const char*)u8"商店概率透视", &g_esp_shop, 5); 
                 ImGui::Unindent();
             }
             ImGui::Separator();
-            ModernToggle(u8"智能拿牌", &g_auto_buy, 6); 
-            ModernToggle(u8"极速退房", &g_instant, 7);
+            ModernToggle((const char*)u8"智能拿牌", &g_auto_buy, 6); 
+            ModernToggle((const char*)u8"极速退房", &g_instant, 7);
             
             ImGui::Spacing();
-            if (ImGui::Button(u8"持久化保存设置", ImVec2(-1, 50 * g_autoScale))) SaveConfig();
+            if (ImGui::Button((const char*)u8"持久化保存设置", ImVec2(-1, 50 * g_autoScale))) SaveConfig();
         }
     }
     ImGui::End();
 }
 
 // =================================================================
-// 7. 主循环 (修复原版末尾语法错误)
+// 7. 主循环
 // =================================================================
 int main() {
     ImGui::CreateContext();
