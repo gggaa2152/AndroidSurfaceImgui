@@ -196,6 +196,8 @@ void UpdateFontHD(bool force = false) {
     float baseSize = 18.0f * g_autoScale * g_scale;
     float targetSize = (baseSize > 120.0f) ? 120.0f : baseSize; 
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
+    
+    // 只有在真正需要高清重绘时才执行重建
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     ImFontConfig config;
@@ -210,7 +212,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (完全保留你的原始逻辑)
+// 5. 棋盘绘制 (保持原始位移与缩放逻辑)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -273,7 +275,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (切换为原生交互逻辑)
+// 6. 菜单 UI (原生交互且优化更新频率)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -297,35 +299,36 @@ bool Toggle(const char* label, bool* v, int idx) {
 void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO(); 
     
-    // 移除自定义的尺寸计算，直接应用到原生属性
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 8.0f * g_autoScale;
-    
-    // 设置初始位置和大小 (仅在第一次启动或无配置时生效)
+    // 设置初始位置和大小
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
     // 使用原生标志：允许移动、允许调整大小、允许折叠
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_None)) {
         
-        // 实时同步原生窗口状态回全局变量
+        // 实时读取当前窗口状态
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
-        g_menuW = ImGui::GetWindowSize().x;
-        g_menuH = ImGui::GetWindowSize().y;
+        float currentW = ImGui::GetWindowSize().x;
+        float currentH = ImGui::GetWindowSize().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        // 核心：基于原生窗口宽度反推 g_scale 以适配文字大小
-        float targetScale = g_menuW / (320.0f * g_autoScale);
-        if (std::abs(targetScale - g_scale) > 0.01f) {
-            g_scale = targetScale;
-            g_needUpdateFontSafe = true; // 触发字体纹理重构，防止模糊
+        // 核心优化：
+        // 1. 在拖动过程中，计算一个临时的 scale 以通过 SetWindowFontScale 视觉缩放文字，不触发重建
+        float tempScale = currentW / (320.0f * g_autoScale);
+        
+        // 2. 只有在缩放动作停止（松开鼠标）时，才同步全局 scale 并触发高清字体重建
+        if (ImGui::IsMouseReleased(0) && (currentW != g_menuW || currentH != g_menuH)) {
+            g_menuW = currentW;
+            g_menuH = currentH;
+            g_scale = tempScale;
+            g_needUpdateFontSafe = true; // 缩放完成后才标记更新字体
+            SaveConfig();
         }
 
-        if (io.MouseReleased[0]) SaveConfig(); // 释放鼠标时保存配置
-
         if (!g_menuCollapsed) {
-            float expectedSize = 18.0f * g_autoScale * g_scale;
+            // 使用 SetWindowFontScale 进行平滑的即时视觉缩放 (无开销)
+            float expectedSize = 18.0f * g_autoScale * tempScale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
             
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
@@ -356,7 +359,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 程序入口 (无 TLS 版本)
+// 7. 程序入口
 // =================================================================
 int main() {
     ImGui::CreateContext();
