@@ -183,7 +183,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体与显示适配 (修复中文字符问号问题)
+// 4. 字体与显示适配 (修复中文字符问号 & 移除不兼容函数)
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -193,8 +193,8 @@ void UpdateFontHD(bool force = false) {
     
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     
-    // 如果已经有后端初始化，先销毁旧纹理
-    if (ImGui::GetBackendRendererUserData() != nullptr)
+    // 检查字体纹理是否已存在，如果存在则销毁，兼容旧版本 ImGui
+    if (io.Fonts->TexID != 0)
         ImGui_ImplOpenGL3_DestroyFontsTexture();
 
     io.Fonts->Clear();
@@ -222,11 +222,10 @@ void UpdateFontHD(bool force = false) {
     
     if(!loaded) io.Fonts->AddFontDefault();
 
-    io.Fonts->Build(); // 必须调用 Build
+    io.Fonts->Build(); 
 
-    // 如果后端已初始化，立即重新创建纹理，防止断言失败
-    if (ImGui::GetBackendRendererUserData() != nullptr)
-        ImGui_ImplOpenGL3_CreateFontsTexture();
+    // 构建后立即创建纹理，解决断言崩溃
+    ImGui_ImplOpenGL3_CreateFontsTexture();
 
     g_current_rendered_size = targetSize;
 }
@@ -370,11 +369,11 @@ void DrawMenu() {
 int main() {
     ImGui::CreateContext();
     
-    // 初始化 AImGui 后端 (此步骤通常会初始化 OpenGL 渲染状态)
+    // 初始化 AImGui 后端
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
 
-    // 关键修复：在 BeginFrame 之前确保字体图集已 Build 且纹理已同步
+    // 初始化字体
     LoadConfig(); 
     UpdateFontHD(true); 
 
