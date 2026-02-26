@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 1. 全局状态变量
+// 1. 全局状态
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -33,18 +33,15 @@ bool g_instant = false;
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
 
-// 缩放控制
 float g_scale = 1.0f;           
 float g_autoScale = 1.0f;        
 float g_current_rendered_size = 0.0f; 
 
-// 棋盘控制
 float g_boardScale = 2.2f;       
 float g_boardManualScale = 1.0f; 
 float g_startX = 400.0f;    
 float g_startY = 400.0f;    
 
-// 菜单位置
 float g_menuX = 100.0f;
 float g_menuY = 100.0f;
 float g_menuW = 320.0f; 
@@ -230,7 +227,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 5. 菜单 UI (解决视频中向右无法缩放的问题)
+// 5. 菜单 UI (解决视频中向右无法缩放的问题 - 增强跟手版)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -253,13 +250,15 @@ bool Toggle(const char* label, bool* v, int idx) {
 
 void DrawMenu() {
     static bool isScalingMenu = false; 
+    // 新增：用于绝对同步的静态变量
+    static float startScale = 1.0f;
+    static ImVec2 startMousePos;
+
     ImGuiIO& io = ImGui::GetIO(); 
     
-    // 基础尺寸定义
     float baseW = 320.0f * g_autoScale; 
     float baseH = 500.0f * g_autoScale;
     
-    // 根据当前 g_scale 计算物理像素大小
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
@@ -267,7 +266,6 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        // 1. 标题栏逻辑 (折叠/移动)
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
         }
@@ -277,65 +275,61 @@ void DrawMenu() {
         }
 
         if (!g_menuCollapsed) {
-            // 2. 内容缩放适配
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
 
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
             if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
-                ImGui::Indent(); 
-                Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); 
-                Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); 
-                ImGui::Unindent();
+                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
             }
             if (ImGui::CollapsingHeader((const char*)u8"功能")) {
-                ImGui::Indent(); 
-                Toggle((const char*)u8"对手棋盘", &g_esp_board, 3); 
-                Toggle((const char*)u8"对手备战席", &g_esp_bench, 4); 
-                Toggle((const char*)u8"对手商店", &g_esp_shop, 5); 
-                ImGui::Unindent();
+                ImGui::Indent(); Toggle((const char*)u8"对手棋盘", &g_esp_board, 3); Toggle((const char*)u8"对手备战席", &g_esp_bench, 4); Toggle((const char*)u8"对手商店", &g_esp_shop, 5); ImGui::Unindent();
             }
             
             ImGui::Separator();
-            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); 
-            Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
             
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // --- 3. 【重点修复】缩放手柄 ---
+            // --- 强力跟手缩放手柄 ---
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
-            float handleSize = 60.0f * g_autoScale * g_scale; // 点击区域随比例增大
+            float handleSize = 80.0f * g_autoScale * g_scale; // 点击区域显著增大，方便触控
             
-            // 如果点中了右下角三角区
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(handleSize, handleSize), br).Contains(io.MousePos)) {
                 isScalingMenu = true;
+                startScale = g_scale;
+                startMousePos = io.MousePos; // 记录按下时的手指物理坐标
             }
             
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    // 核心逻辑：直接用手指当前的 X/Y 坐标减去窗口起始位置，得到物理尺寸
-                    // 然后除以基础尺寸，得到绝对比例。这保证了手指移到哪，手柄跟到哪。
-                    float sw = (io.MousePos.x - g_menuX) / baseW;
-                    float sh = (io.MousePos.y - g_menuY) / baseH;
+                    // 计算位移增量
+                    float dx = io.MousePos.x - startMousePos.x;
+                    float dy = io.MousePos.y - startMousePos.y;
+
+                    // 设置灵敏度系数，2.0f 代表手指移动 1 像素，缩放响应 2 像素的效果
+                    // 你可以根据需求调大这个值 (比如 1.5f ~ 3.0f)
+                    const float sensitivity = 1.8f; 
+
+                    float scaleIncrX = (dx / baseW) * sensitivity;
+                    float scaleIncrY = (dy / baseH) * sensitivity;
+
+                    // 取横向和纵向最大的变化，让右拉下拉都极度灵敏
+                    float maxIncr = (std::abs(scaleIncrX) > std::abs(scaleIncrY)) ? scaleIncrX : scaleIncrY;
                     
-                    // 取横纵比例中最大的一个，确保向右拉动立刻有大副度的缩放感
-                    g_scale = std::clamp(std::max(sw, sh), 0.3f, 10.0f);
+                    g_scale = std::clamp(startScale + maxIncr, 0.4f, 12.0f);
+
                 } else { 
                     isScalingMenu = false; 
-                    g_needUpdateFontSafe = true; // 停止缩放后更新高清字体
+                    g_needUpdateFontSafe = true; 
                     SaveConfig(); 
                 } 
             }
             
-            // 绘制视觉手柄
-            ImGui::GetWindowDrawList()->AddTriangleFilled(
-                br, 
-                br - ImVec2(handleSize * 0.5f, 0), 
-                br - ImVec2(0, handleSize * 0.5f), 
-                IM_COL32(0, 130, 255, 220)
-            );
+            // 绘制手柄
+            ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(handleSize*0.5f, 0), br - ImVec2(0, handleSize*0.5f), IM_COL32(255, 215, 0, 200));
         }
     }
     ImGui::End();
@@ -346,45 +340,22 @@ void DrawMenu() {
 // =================================================================
 int main() {
     ImGui::CreateContext();
-    
-    // NDK 环境下的初始化 (已修复 RenderType 层级错误)
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    LoadConfig(); 
-    UpdateFontHD(true);  
+    LoadConfig(); UpdateFontHD(true);  
     
     static bool running = true; 
-    std::thread it([&] { 
-        while(running) { 
-            imgui.ProcessInputEvent(); 
-            std::this_thread::yield(); 
-        } 
-    });
+    std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
-        if (g_needUpdateFontSafe) { 
-            UpdateFontHD(true); 
-            g_needUpdateFontSafe = false; 
-        }
-        
+        if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
         imgui.BeginFrame(); 
-        
-        // 资源加载
-        if (!g_resLoaded) { 
-            g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
-            g_textureLoaded = (g_heroTexture != 0); 
-            g_resLoaded = true; 
-        }
-        
-        DrawBoard(); 
-        DrawMenu();
-        
+        if (!g_resLoaded) { g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; }
+        DrawBoard(); DrawMenu();
         imgui.EndFrame(); 
         std::this_thread::yield();
     }
-    
-    running = false; 
-    if (it.joinable()) it.join(); 
+    running = false; if (it.joinable()) it.join(); 
     return 0;
 }
