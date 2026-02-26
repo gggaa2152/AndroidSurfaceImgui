@@ -306,36 +306,34 @@ void DrawMenu() {
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
     
-    // 修复：折叠时高度应仅为标题栏高度
-    float titleBarHeight = ImGui::GetFrameHeight();
-    float currentH = g_menuCollapsed ? titleBarHeight : (baseH * g_scale);
-
-    ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
+    // 修复：保留原生标题栏，不再手动计算 currentH
+    // ImGui 会根据折叠状态自动处理高度
+    ImGui::SetNextWindowSize(ImVec2(currentW, baseH * g_scale), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
+    
+    // 修复：使用 SetNextWindowCollapsed 来同步全局变量 g_menuCollapsed 到原生状态
+    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Appearing);
 
-    // 修复：添加 ImGuiWindowFlags_NoTitleBar，因为我们手动处理标题栏逻辑
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoTitleBar)) {
+    // 修复：移除 NoTitleBar，保留原生标题栏和折叠三角
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         
-        // 自定义标题栏区域判定
-        ImRect titleBarRect(ImGui::GetWindowPos(), ImGui::GetWindowPos() + ImVec2(currentW, titleBarHeight));
-        bool isHoveringTitle = titleBarRect.Contains(io.MousePos);
-
-        // 修复：折叠/展开逻辑改进
-        if (isHoveringTitle && ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) {
-            g_menuCollapsed = !g_menuCollapsed;
+        // 修复：同步原生折叠状态回全局变量 g_menuCollapsed
+        bool currentCollapsed = ImGui::IsWindowCollapsed();
+        if (currentCollapsed != g_menuCollapsed) {
+            g_menuCollapsed = currentCollapsed;
             SaveConfig();
         }
 
-        // 拖动逻辑
-        if (!isScalingMenu && isHoveringTitle && ImGui::IsMouseDragging(0)) {
-            g_menuX += io.MouseDelta.x;
-            g_menuY += io.MouseDelta.y;
-            if (ImGui::IsMouseReleased(0)) SaveConfig();
+        // 修复：原生标题栏自带拖动功能，但如果您需要自定义拖动逻辑，可以保留
+        // 注意：原生标题栏区域会自动处理拖动，除非设置了 NoMove
+        if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
+            // 只有在点击标题栏区域时才允许更新坐标（防止在窗口内部拖动触发）
+            if (io.MousePos.y < (ImGui::GetWindowPos().y + ImGui::GetFrameHeight())) {
+                g_menuX = ImGui::GetWindowPos().x;
+                g_menuY = ImGui::GetWindowPos().y;
+                if (ImGui::IsMouseReleased(0)) SaveConfig();
+            }
         }
-
-        // 绘制标题文本（因为禁用了原生标题栏）
-        ImGui::RenderText(ImGui::GetWindowPos() + ImGui::GetStyle().FramePadding, (const char*)u8"金铲铲助手");
-        ImGui::ItemSize(ImVec2(0, titleBarHeight)); // 占位
 
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
