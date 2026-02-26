@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 2. 全局状态变量 (完全保持原始)
+// 2. 全局状态变量 (保持你原始所有变量名)
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
@@ -51,6 +51,7 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
+// 标记：仅用于解决 BeginFrame 锁死问题，不改动业务逻辑
 bool g_needUpdateFontSafe = false;
 
 int g_enemyBoard[4][7] = {
@@ -59,7 +60,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 配置管理 (完全保持原始)
+// 3. 配置管理 (完整保留你的stof解析逻辑)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -88,7 +89,7 @@ void LoadConfig() {
     if (in.is_open()) {
         std::string line;
         while (std::getline(in, line)) {
-            size_t pos = line.find("=");
+            size_t pos = line.find('=');
             if (pos == std::string::npos) continue; 
             std::string k = line.substr(0, pos), v = line.substr(pos + 1);
             try {
@@ -115,7 +116,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助 (完全恢复原始 DrawHero 回调逻辑，消除白色三角形)
+// 4. 渲染辅助 (完全保留你的 HexShader 算法)
 // =================================================================
 class HexShader {
 public:
@@ -179,15 +180,12 @@ GLuint LoadTextureFromFile(const char* filename) {
 void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
     if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
-    
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
         glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
         glUniform2f(g_HexShader.resLoc, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
     }, (void*)(intptr_t)g_heroTexture);
-    
     drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, center - ImVec2(size, size), center + ImVec2(size, size));
-    
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
@@ -212,7 +210,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制 (完全保持原始)
+// 5. 棋盘绘制 (保留原始位移与缩放逻辑)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -275,7 +273,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (强制锁定位置版)
+// 6. 菜单 UI (完整保留原始动画与补偿逻辑)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -301,31 +299,19 @@ void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO(); 
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
-    
-    // 核心修复：强制锁定位置，确保缩放时左上角绝对不动
+    float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
+
+    ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(currentW, baseH * g_scale), ImGuiCond_Always);
-    
-    ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Appearing);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        
-        bool currentCollapsed = ImGui::IsWindowCollapsed();
-        if (currentCollapsed != g_menuCollapsed) {
-            g_menuCollapsed = currentCollapsed;
-            SaveConfig();
+        if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
+            if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
         }
-
-        // 只有在非缩放状态下，才同步位置（允许用户拖动标题栏移动窗口）
-        if (!isScalingMenu) {
-            ImVec2 currentPos = ImGui::GetWindowPos();
-            if (currentPos.x != g_menuX || currentPos.y != g_menuY) {
-                g_menuX = currentPos.x;
-                g_menuY = currentPos.y;
-                if (ImGui::IsMouseReleased(0)) SaveConfig();
-            }
+        if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
+            g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
+            if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
-
         if (!g_menuCollapsed) {
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
@@ -342,25 +328,14 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // 优化缩放逻辑
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
-            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { 
-                isScalingMenu = true; 
-                startMS = g_scale; 
-                startMP = io.MousePos; 
-            }
-            
+            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    // 增大缩放灵敏度，并根据鼠标相对于窗口左上角的距离来计算
-                    float deltaX = io.MousePos.x - g_menuX;
-                    g_scale = std::clamp(deltaX / baseW, 0.5f, 5.0f); 
-                } else { 
-                    isScalingMenu = false; 
-                    g_needUpdateFontSafe = true; 
-                    SaveConfig(); 
-                } 
+                    float oldS = g_scale; g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
+                    g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
+                } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
             }
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
         }
@@ -369,7 +344,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 程序入口 (完全保持原始)
+// 7. 程序入口 (无 TLS 版本)
 // =================================================================
 int main() {
     ImGui::CreateContext();
