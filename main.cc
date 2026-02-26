@@ -222,45 +222,65 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 棋盘绘制逻辑 (修复点击跳变 + 高级美化)
+// 5. 棋盘绘制逻辑 (高级无缝交互 + 瞄准仪美化)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
 
+    // 基础尺寸(未缩放)
     float baseSz = 38.0f * g_boardScale * g_autoScale;
     float baseXStep = baseSz * 1.73205f;
     float baseYStep = baseSz * 1.5f;
 
-    float curSz = baseSz * g_boardManualScale;
-    float curXStep = baseXStep * g_boardManualScale;
-    float curYStep = baseYStep * g_boardManualScale;
+    // 手柄相对原点(g_startX, g_startY)的未缩放固定偏移量
+    float h_dx = 6 * baseXStep + (3 % 2 == 1 ? baseXStep * 0.5f : 0) + baseSz;
+    float h_dy = 3 * baseYStep + baseSz * 0.5f;
 
-    // 手柄位置逻辑
-    float lastCX = g_startX + 6 * curXStep + (3 % 2 == 1 ? curXStep * 0.5f : 0);
-    float lastCY = g_startY + 3 * curYStep;
-    ImVec2 p_handle = ImVec2(lastCX + curSz, lastCY + curSz * 0.5f);
+    static bool isDraggingBoard = false, isScalingBoard = false;
+    static ImVec2 dragOffset;        // 拖拽时的坐标差值锚点
+    static float initialScale = 1.0f; 
+    static float initialMouseDist = 1.0f; // 缩放时的初始极径
 
     if (!g_boardLocked) {
-        static bool isDraggingBoard = false, isScalingBoard = false;
-        
+        // --- 第一步：交互逻辑处理 (必须在渲染前，保证0延迟同步) ---
+        float currentHandleX = g_startX + h_dx * g_boardManualScale;
+        float currentHandleY = g_startY + h_dy * g_boardManualScale;
+        ImVec2 p_handle(currentHandleX, currentHandleY);
+
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
             float distSq = ImLengthSqr(io.MousePos - p_handle);
-            if (distSq < (3600.0f * g_autoScale)) {
+            if (distSq < (2500.0f * g_autoScale * g_autoScale)) { // 半径50的判定区，方便触控
                 isScalingBoard = true;
+                initialScale = g_boardManualScale;
+                // 记录手指按下时，距原点的准确距离
+                initialMouseDist = sqrtf(powf(io.MousePos.x - g_startX, 2) + powf(io.MousePos.y - g_startY, 2));
             } else {
-                ImRect boardArea(ImVec2(g_startX - curSz*2, g_startY - curSz*2), ImVec2(lastCX + curSz*2, lastCY + curSz*2));
+                // 精确计算棋盘有效点击包围盒
+                float currentSz = baseSz * g_boardManualScale;
+                ImRect boardArea(
+                    ImVec2(g_startX - currentSz, g_startY - currentSz), 
+                    ImVec2(g_startX + 6.5f * baseXStep * g_boardManualScale + currentSz, 
+                           g_startY + 3.0f * baseYStep * g_boardManualScale + currentSz)
+                );
                 if (boardArea.Contains(io.MousePos)) {
-                    isDraggingBoard = true; 
+                    isDraggingBoard = true;
+                    // 核心修复：记录鼠标与原点的【绝对差值】，彻底消除点击跳变
+                    dragOffset = ImVec2(g_startX - io.MousePos.x, g_startY - io.MousePos.y);
                 }
             }
         }
         
         if (isScalingBoard) {
             if (ImGui::IsMouseDown(0)) {
-                g_boardManualScale += io.MouseDelta.x * 0.005f;
-                g_boardManualScale = std::max(g_boardManualScale, 0.2f);
+                // 核心修复：计算当前手指与原点的距离，等比例求出缩放。
+                // 这能保证手柄**永远完美贴在手指正下方**！
+                float currentDist = sqrtf(powf(io.MousePos.x - g_startX, 2) + powf(io.MousePos.y - g_startY, 2));
+                if (initialMouseDist > 1.0f) {
+                    g_boardManualScale = initialScale * (currentDist / initialMouseDist);
+                    g_boardManualScale = std::clamp(g_boardManualScale, 0.2f, 5.0f); // 限制缩放范围
+                }
             } else { 
                 isScalingBoard = false; SaveConfig(); 
             }
@@ -268,21 +288,22 @@ void DrawBoard() {
         
         if (isDraggingBoard && !isScalingBoard) {
             if (ImGui::IsMouseDown(0)) {
-                g_startX += io.MouseDelta.x;
-                g_startY += io.MouseDelta.y;
+                // 利用绝对差值更新原点坐标
+                g_startX = io.MousePos.x + dragOffset.x;
+                g_startY = io.MousePos.y + dragOffset.y;
             } else { 
                 isDraggingBoard = false; SaveConfig(); 
             }
         }
-
-        // 绘制交互手柄 (海克斯科技能量核心)
-        d->AddCircleFilled(p_handle, 14.0f * g_autoScale, IM_COL32(20, 30, 50, 220)); // 深层底座
-        d->AddCircleFilled(p_handle, 8.0f * g_autoScale, IM_COL32(0, 210, 255, 255)); // 青色能量核心
-        d->AddCircle(p_handle, (14.0f + 4.0f * sinf(ImGui::GetTime()*6)) * g_autoScale, IM_COL32(0, 255, 255, 150), 24, 2.5f); // 科技光波
     }
 
-    // 棋盘格渲染逻辑 (科技呼吸质感)
+    // --- 第二步：根据更新后的状态，计算最终渲染用的参数 ---
+    float curSz = baseSz * g_boardManualScale;
+    float curXStep = baseXStep * g_boardManualScale;
+    float curYStep = baseYStep * g_boardManualScale;
     float time = (float)ImGui::GetTime();
+
+    // 绘制棋盘格
     for(int r=0; r<4; r++) {
         for(int c=0; c<7; c++) {
             float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
@@ -290,7 +311,6 @@ void DrawBoard() {
             
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
             
-            // 动态呼吸发光计算
             float distToCenter = sqrtf((cx - g_startX)*(cx - g_startX) + (cy - g_startY)*(cy - g_startY));
             float pulse = (sinf(time * 2.5f - distToCenter * 0.003f) + 1.0f) * 0.5f;
             
@@ -300,15 +320,40 @@ void DrawBoard() {
                 pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
 
-            // 绘制底色填充（增加立体感和沉浸感）
             d->AddConvexPolyFilled(pts, 6, IM_COL32(10, 15, 30, 100 + (int)(pulse * 30)));
-
-            // 绘制高科技质感边框 (青/冰蓝呼吸渐变色调)
-            int borderR = (int)(0 + pulse * 40);
-            int borderG = (int)(160 + pulse * 95);
-            int borderB = (int)(220 + pulse * 35);
-            
+            int borderR = (int)(0 + pulse * 40), borderG = (int)(160 + pulse * 95), borderB = (int)(220 + pulse * 35);
             d->AddPolyline(pts, 6, IM_COL32(borderR, borderG, borderB, 230), ImDrawFlags_Closed, 3.0f * g_autoScale);
+        }
+    }
+
+    // --- 第三步：绘制手柄（海克斯动态瞄准仪） ---
+    if (!g_boardLocked) {
+        // 获取交互后的精准位置
+        float handleX = g_startX + h_dx * g_boardManualScale;
+        float handleY = g_startY + h_dy * g_boardManualScale;
+        ImVec2 p_handle(handleX, handleY);
+
+        ImU32 coreColor = isScalingBoard ? IM_COL32(0, 255, 180, 255) : IM_COL32(0, 200, 255, 230);
+        
+        // 暗夜底座
+        d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(10, 15, 25, 240));
+        // 发光能量核心
+        d->AddCircleFilled(p_handle, 6.0f * g_autoScale, coreColor);
+        // 科技环
+        d->AddCircle(p_handle, 16.0f * g_autoScale, IM_COL32(0, 200, 255, 180), 32, 2.0f * g_autoScale);
+        
+        // 旋转的十字准星刻度 (Crosshair)
+        for(int i=0; i<4; i++) {
+            float a = time * 1.5f + i * (M_PI / 2.0f);
+            ImVec2 p1(p_handle.x + cosf(a) * 8.0f * g_autoScale, p_handle.y + sinf(a) * 8.0f * g_autoScale);
+            ImVec2 p2(p_handle.x + cosf(a) * 22.0f * g_autoScale, p_handle.y + sinf(a) * 22.0f * g_autoScale);
+            d->AddLine(p1, p2, IM_COL32(0, 255, 255, 200), 2.5f * g_autoScale);
+        }
+
+        // 缩放时的激动态光晕 (Pulse Glow)
+        if (isScalingBoard) {
+            float pulseGlow = (sinf(time * 15.0f) + 1.0f) * 0.5f;
+            d->AddCircle(p_handle, 24.0f * g_autoScale + pulseGlow * 4.0f, IM_COL32(0, 255, 180, 150), 32, 2.0f * g_autoScale);
         }
     }
 }
