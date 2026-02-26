@@ -115,7 +115,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 渲染辅助 (HexShader)
+// 4. 渲染辅助
 // =================================================================
 class HexShader {
 public:
@@ -272,7 +272,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (左上角不动，右下角全方向缩放)
+// 6. 菜单 UI (全方向等比例缩放，左上角固定)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -300,28 +300,26 @@ void DrawMenu() {
     // 基础参考尺寸
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     
-    // 全局比例 g_scale 同时决定宽高，实现等比例全方向缩放
+    // 窗口尺寸受 g_scale 全局比例控制
     float currentW = baseW * g_scale;
     float currentH = g_menuCollapsed ? ImGui::GetFrameHeight() : (baseH * g_scale);
 
-    // 关键：左上角位置 g_menuX, g_menuY 始终不动
+    // 锁定左上角：SetNextWindowPos 始终使用固定的 g_menuX/Y
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
-        // 标题栏点击折叠逻辑
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
         }
         
-        // 移动逻辑（仅在标题栏拖动且非拉伸时）
+        // 移动逻辑：仅在标题栏拖动且非拉伸时改变 g_menuX/Y
         if (!isScalingMenu && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0)) {
             g_menuX += io.MouseDelta.x; g_menuY += io.MouseDelta.y;
             if (ImGui::IsMouseReleased(0)) SaveConfig();
         }
 
         if (!g_menuCollapsed) {
-            // 内部字体缩放补偿
             float expectedSize = 18.0f * g_autoScale * g_scale;
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
 
@@ -338,7 +336,7 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
-            // 右下角拉伸手柄
+            // 右下角全方向缩放手柄
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
             if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { 
@@ -347,12 +345,17 @@ void DrawMenu() {
             
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    // 综合横纵位移偏移量
                     float dx = io.MousePos.x - startMP.x;
                     float dy = io.MousePos.y - startMP.y;
-                    // 全方向等比例缩放增量算法
-                    float deltaScale = (dx / baseW + dy / baseH) * 0.5f;
-                    g_scale = std::clamp(startMS + deltaScale, 0.5f, 5.0f);
+                    
+                    // 改良后的全方向响应算法：
+                    // 分别计算横向和纵向的偏移比例，取绝对值较大的一个作为缩放基准
+                    // 这样向右拉、向下拉都能立刻触发全局等比例缩放
+                    float sx = dx / baseW;
+                    float sy = dy / baseH;
+                    float maxDelta = (std::abs(sx) > std::abs(sy)) ? sx : sy;
+                    
+                    g_scale = std::clamp(startMS + maxDelta, 0.5f, 5.0f);
                 } else { 
                     isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); 
                 } 
