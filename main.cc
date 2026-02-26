@@ -203,6 +203,7 @@ void UpdateFontHD(bool force = false) {
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
+    // 销毁旧纹理
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     
@@ -232,6 +233,7 @@ void UpdateFontHD(bool force = false) {
     if(!loaded) io.Fonts->AddFontDefault();
 
     io.Fonts->Build();
+    // 重新创建纹理
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
 }
@@ -442,16 +444,22 @@ int main() {
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // 关键修复：在 BeginFrame 之前处理字体更新
-        // 这样可以确保 ImFontAtlas 没有被锁定
-        if (firstFrame || g_needUpdateFontSafe) {
+        // 核心修改：在帧开始前，仅在非锁定状态更新字体
+        if (g_needUpdateFontSafe) {
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false;
-            firstFrame = false;
         }
 
         imgui.BeginFrame(); 
         
+        // 关键：第一帧强制构建。此时环境肯定已经 NewFrame 过了，或者上下文已激活
+        if (firstFrame) {
+            if (!ImGui::GetIO().Fonts->IsBuilt()) {
+                 UpdateFontHD(true);
+            }
+            firstFrame = false;
+        }
+
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
