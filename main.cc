@@ -50,7 +50,7 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
-// 专业化字体管理：预载三套字号
+// 专业化字体管理：预载三套基准字号以实现无损缩放
 ImFont* g_fontSmall = nullptr;
 ImFont* g_fontMedium = nullptr;
 ImFont* g_fontLarge = nullptr;
@@ -61,7 +61,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 (仅在保存时调用)
+// 2. 配置管理 (保持原有逻辑)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -192,7 +192,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 专业字体管理 (多级预载，彻底解决卡顿)
+// 4. 专业字体管理 (多级图表方案)
 // =================================================================
 void InitFontsPro() {
     ImGuiIO& io = ImGui::GetIO();
@@ -201,15 +201,15 @@ void InitFontsPro() {
     
     io.Fonts->Clear();
     ImFontConfig config;
-    config.OversampleH = 1; // Android环境减小采样以节省内存
+    config.OversampleH = 1; 
     config.OversampleV = 1;
     config.PixelSnapH = true;
 
+    // 获取安卓系统字体路径
     const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
     if (access(fontPath, R_OK) != 0) fontPath = "/system/fonts/DroidSansFallback.ttf";
 
-    // 预载三套字号：14px(小), 24px(中), 48px(大)
-    // 渲染时只进行缩放，不进行重新生成，所以零卡顿
+    // 一次性加载三套字号到内存 Atlas 中，后续通过指针零延迟切换
     g_fontSmall  = io.Fonts->AddFontFromFileTTF(fontPath, 14.0f * g_autoScale, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     g_fontMedium = io.Fonts->AddFontFromFileTTF(fontPath, 26.0f * g_autoScale, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     g_fontLarge  = io.Fonts->AddFontFromFileTTF(fontPath, 52.0f * g_autoScale, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
@@ -218,18 +218,18 @@ void InitFontsPro() {
     ImGui_ImplOpenGL3_CreateFontsTexture();
 }
 
-// 根据当前缩放比例动态切换字体指针
+// 动态选择最接近的物理字体进行渲染
 void PushOptimalFont() {
-    float targetBase = 18.0f * g_scale;
-    if (targetBase <= 16.0f) {
+    float targetSize = 18.0f * g_scale; 
+    if (targetSize <= 16.0f) {
         ImGui::PushFont(g_fontSmall);
-        ImGui::SetWindowFontScale(targetBase / 14.0f);
-    } else if (targetBase <= 32.0f) {
+        ImGui::SetWindowFontScale(targetSize / 14.0f);
+    } else if (targetSize <= 32.0f) {
         ImGui::PushFont(g_fontMedium);
-        ImGui::SetWindowFontScale(targetBase / 26.0f);
+        ImGui::SetWindowFontScale(targetSize / 26.0f);
     } else {
         ImGui::PushFont(g_fontLarge);
-        ImGui::SetWindowFontScale(targetBase / 52.0f);
+        ImGui::SetWindowFontScale(targetSize / 52.0f);
     }
 }
 
@@ -358,23 +358,23 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    // 动态应用字体与缩放
+    // 在绘制内容前，根据缩放推入最优字体
     PushOptimalFont();
 
     if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.5", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
-        float curW = ImGui::GetWindowSize().x;
-        float curH = ImGui::GetWindowSize().y;
-        g_menuCollapsed = ImGui::IsWindowCollapsed();
-
-        if (ImGui::IsWindowResizing()) {
-            g_menuW = curW; 
-            g_menuH = curH;
-            g_scale = curW / (350.0f * g_autoScale);
-            // 这里不再标记更新字体，因为PushOptimalFont已经动态解决了
+        
+        // 修正编译报错：通过对比当前尺寸来判断缩放，不依赖不存在的内部函数
+        ImVec2 currentSize = ImGui::GetWindowSize();
+        if (std::abs(currentSize.x - g_menuW) > 0.01f || std::abs(currentSize.y - g_menuH) > 0.01f) {
+            g_menuW = currentSize.x; 
+            g_menuH = currentSize.y;
+            g_scale = g_menuW / (350.0f * g_autoScale);
         }
+
+        g_menuCollapsed = ImGui::IsWindowCollapsed();
 
         if (!g_menuCollapsed) {
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"· VSYNC 同步中 | FPS: %.1f", io.Framerate);
@@ -405,7 +405,7 @@ void DrawMenu() {
         }
     }
     ImGui::End();
-    ImGui::PopFont(); // 记得恢复默认
+    ImGui::PopFont(); // 记得出栈
 }
 
 // =================================================================
@@ -417,7 +417,7 @@ int main() {
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     
     LoadConfig(); 
-    InitFontsPro(); // 初始化一次，加载三套字体图集
+    InitFontsPro(); // 初始化加载多级字体纹理
     
     static bool running = true; 
     std::thread it([&] { 
