@@ -203,10 +203,8 @@ void UpdateFontHD(bool force = false) {
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
-    // 如果还没构建过，不要销毁纹理，防止后端报错
-    if (io.Fonts->IsBuilt()) {
-        ImGui_ImplOpenGL3_DestroyFontsTexture();
-    }
+    // 销毁旧纹理
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
     
     io.Fonts->Clear();
     
@@ -236,7 +234,7 @@ void UpdateFontHD(bool force = false) {
     if(!loaded) io.Fonts->AddFontDefault();
 
     io.Fonts->Build();
-    // 只有在 OpenGL 上下文准备好时调用
+    // 重新创建纹理并标记为已构建
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
 }
@@ -434,35 +432,33 @@ int main() {
     });
     
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
+    bool firstFrame = true;
 
     while (running) {
         auto now = std::chrono::high_resolution_clock::now();
         float deltaTime = std::chrono::duration<float>(now - lastFrameTime).count();
         lastFrameTime = now;
 
-        // 防抖计时
         if (g_fontUpdateTimer > 0.0f) {
             g_fontUpdateTimer -= deltaTime;
             if (g_fontUpdateTimer <= 0.0f) g_needUpdateFontSafe = true;
         }
 
-        // 核心修复逻辑：
-        // AImGui::BeginFrame 会调用 ImGui_ImplOpenGL3_NewFrame
-        // 该函数内部会检查 Fonts->IsBuilt()。
-        // 如果我们还没构建过字体，必须在此之前强行构建一次。
-        if (!ImGui::GetIO().Fonts->IsBuilt()) {
-             UpdateFontHD(true); 
-             g_needUpdateFontSafe = false;
-        }
-        
-        // 如果有配置更新或缩放需求
-        if (g_needUpdateFontSafe) {
-             UpdateFontHD(true);
-             g_needUpdateFontSafe = false;
+        // 第一次运行先构建一个空的 Atlas 以绕过断言，因为 AImGui 此时还没真正绑好 GL
+        if (firstFrame) {
+            ImGui::GetIO().Fonts->Build();
+            firstFrame = false;
         }
 
         imgui.BeginFrame(); 
         
+        // 关键：在 BeginFrame 后执行真正的初始化
+        // 此时 AImGui 已经确保了渲染上下文（Context）是活动的
+        if (g_current_rendered_size < 1.0f || g_needUpdateFontSafe) {
+            UpdateFontHD(true);
+            g_needUpdateFontSafe = false;
+        }
+
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
