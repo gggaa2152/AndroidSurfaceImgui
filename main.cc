@@ -193,7 +193,7 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 字体与显示适配 (修复中文问号)
+// 4. 字体与显示适配
 // =================================================================
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
@@ -203,16 +203,14 @@ void UpdateFontHD(bool force = false) {
     float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.1f) return;
     
-    // 销毁旧纹理
     ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear();
     
     ImFontConfig config;
-    config.OversampleH = 1; // 减少 DPI 重构负担
+    config.OversampleH = 1;
     config.OversampleV = 1; 
     config.PixelSnapH = true;
     
-    // 增加更多可能的系统字体路径，并确保使用正确的字符范围
     const char* fonts[] = {
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/DroidSansFallback.ttf",
@@ -234,7 +232,6 @@ void UpdateFontHD(bool force = false) {
     if(!loaded) io.Fonts->AddFontDefault();
 
     io.Fonts->Build();
-    // 重新创建纹理并绑定
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
 }
@@ -372,7 +369,9 @@ void DrawMenu() {
         float curH = ImGui::GetWindowSize().y;
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        if (ImGui::IsWindowResizing()) {
+        // 修复编译错误：检测窗口尺寸调整
+        // 逻辑：如果当前窗口正在被 Active 且鼠标在拖动调整手柄（通常在右下角）
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseDragging(0) && ImGui::GetActiveID() == ImGui::GetWindowGetID(ImGui::GetCurrentWindow(), "##Resize")) {
             g_menuW = curW; 
             g_menuH = curH;
             g_scale = curW / (350.0f * g_autoScale);
@@ -380,7 +379,6 @@ void DrawMenu() {
         }
 
         if (!g_menuCollapsed) {
-            // 在重绘前临时视觉缩放
             ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
             
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"· VSYNC 同步中 | FPS: %.1f", io.Framerate);
