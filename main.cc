@@ -334,7 +334,7 @@ bool ToggleSwitch(const char* label, bool* v) {
 }
 
 // =================================================================
-// 7. 菜单UI（优化缩放逻辑：结束时更新字体）
+// 7. 菜单UI（优化缩放逻辑：结束时更新字体，提高灵敏度）
 // =================================================================
 void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
@@ -377,7 +377,7 @@ void DrawMenu() {
             ImVec2(br.x - 10, br.y - 10),
             handleHovered ? IM_COL32(0, 150, 255, 255) : IM_COL32(100, 100, 100, 200));
         
-        // 缩放交互（结束时更新字体）
+        // 缩放交互（结束时更新字体，提高灵敏度系数为0.005）
         static bool isScaling = false;
         static float startScale = 1.0f;
         static float startMouseX = 0;
@@ -392,7 +392,7 @@ void DrawMenu() {
         
         if (isScaling) {
             if (ImGui::IsMouseDown(0)) {
-                float delta = (io.MousePos.x - startMouseX) * 0.002f;
+                float delta = (io.MousePos.x - startMouseX) * 0.005f; // 提高灵敏度
                 targetScale = std::clamp(startScale + delta, 0.5f, 2.5f);
                 // 实时更新 g_scale 以提供视觉反馈，但不触发字体更新
                 g_scale = targetScale;
@@ -489,19 +489,19 @@ int main() {
     LoadConfig();
     UpdateFontHD(true);
     
-    // 加载纹理
-    const char* texturePath = "/sdcard/heroes/FUX/aurora.png";
+    // 加载纹理（原路径，需要root权限）
+    const char* texturePath = "/data/1/heroes/FUX/aurora.png";
     g_heroTexture = LoadTextureFromFile(texturePath);
     g_textureLoaded = (g_heroTexture != 0);
     g_resLoaded = true;
     
     __android_log_print(ANDROID_LOG_DEBUG, "JKChess", "纹理加载状态: %d", g_textureLoaded);
     
-    // 输入线程
+    // 输入线程（休眠1ms，提高响应速度）
     std::thread inputThread([&] {
         while (true) { 
             imgui.ProcessInputEvent(); 
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1)); // 从5ms改为1ms
         }
     });
     
