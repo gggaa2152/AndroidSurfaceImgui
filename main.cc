@@ -187,15 +187,12 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
 }
 
 // =================================================================
-// 4. 静态字体加载 (稳定性最高版本)
+// 4. 字体初始化 (崩溃修复的关键)
 // =================================================================
 void InitFont() {
     ImGuiIO& io = ImGui::GetIO();
-    float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f;
-    g_autoScale = screenH / 1080.0f;
-    
-    // 加载一个较大的基础字号，缩放时才不容易糊
-    float baseSize = 24.0f * g_autoScale;
+    // 默认缩放
+    g_autoScale = 2.0f; 
 
     ImFontConfig config;
     config.OversampleH = 2; 
@@ -205,8 +202,13 @@ void InitFont() {
     const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
     if (access(fontPath, R_OK) != 0) fontPath = "/system/fonts/DroidSansFallback.ttf";
     
-    io.Fonts->AddFontFromFileTTF(fontPath, baseSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    io.Fonts->Build();
+    // 加载一个较大的基础字号
+    io.Fonts->AddFontFromFileTTF(fontPath, 36.0f, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    
+    // 核心步骤：在此处立即构建字体集
+    unsigned char* pixels;
+    int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
 }
 
 // =================================================================
@@ -346,7 +348,6 @@ void DrawMenu() {
             g_scale = g_menuW / (350.0f * g_autoScale);
         }
 
-        // 使用 SetWindowFontScale 实时缩放，绝对流畅不崩溃
         ImGui::SetWindowFontScale(g_scale);
 
         g_menuCollapsed = ImGui::IsWindowCollapsed();
@@ -386,15 +387,20 @@ void DrawMenu() {
 // 7. 主循环 (帧率同步模式)
 // =================================================================
 int main() {
+    // 1. 先创建上下文
     ImGui::CreateContext();
+    
+    // 2. 立即初始化字体
+    InitFont();
+    
+    // 3. 再创建渲染类对象
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
+    // 4. 强制上传字体纹理到渲染后端
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+    
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    
     LoadConfig(); 
-    
-    // 初始化时构建一次字体，不要在循环里构建
-    InitFont();
     
     static bool running = true; 
     std::thread it([&] { 
