@@ -100,6 +100,7 @@ void UpdateFontHD(bool force = false) {
     
     if (!force && std::abs(target - g_current_rendered_size) < 0.2f) return;
 
+    // 清除旧纹理
     ImGui_ImplOpenGL3_DestroyFontsTexture(); 
     io.Fonts->Clear();
     
@@ -108,11 +109,12 @@ void UpdateFontHD(bool force = false) {
     
     io.Fonts->AddFontFromFileTTF(fontPath, target, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     
-    // 必须调用此函数以构建图集，防止断言失败
+    // 【关键修复】显式构建字体图集
     unsigned char* pixels;
     int width, height;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); 
     
+    // 同步到后端
     ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = target;
 }
@@ -245,23 +247,26 @@ int main() {
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative});
     
     LoadConfig();
-    UpdateFontHD(true); 
+    // 这里先不初始化字体，等到循环里第一次渲染时初始化，确保后端已准备好
 
     static bool running = true;
     std::thread inputThread([&]{
         while(running) { imgui.ProcessInputEvent(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
     });
 
+    bool isFirstFrame = true;
+
     while (running) {
-        if (g_needUpdateFontSafe) { 
+        // 在 BeginFrame 之前处理字体更新
+        if (isFirstFrame || g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false; 
+            isFirstFrame = false;
         }
         
         imgui.BeginFrame();
         
         if (!g_textureLoaded) {
-            // 恢复为你代码中原始的路径逻辑
             g_heroTexture = LoadTextureFromFile("/data/1/hero.png"); 
             g_textureLoaded = (g_heroTexture != 0);
         }
