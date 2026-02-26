@@ -18,16 +18,16 @@
 #include <algorithm>
 #include <unistd.h>
 
-// 瀹氫箟 M_PI锛屼互闃� _USE_MATH_DEFINES 涓嶈捣浣滅敤鎴栧钩鍙颁笉鏀寔
+// 定义 M_PI，以防 _USE_MATH_DEFINES 不起作用或平台不支持
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
 #endif
 
 // =================================================================
-// 2. 鍏ㄥ眬鐘舵€佸彉閲� (淇濇寔浣犲師濮嬫墍鏈夊彉閲忓悕)
+// 2. 全局状态变量 (保持你原始所有变量名)
 // =================================================================
-// 淇寤鸿锛氬湪 Android 涓婏紝/data 鐩綍閫氬父闇€瑕� root 鏉冮檺鎵嶈兘鍐欏叆銆�
-// 寤鸿灏嗛厤缃枃浠跺瓨鍌ㄥ湪搴旂敤绋嬪簭鐨勭鏈夋暟鎹洰褰曚腑锛屼緥濡傞€氳繃 JNI 璋冪敤 Android API 鑾峰彇 context->getFilesDir() 杩斿洖鐨勮矾寰勩€�
+// 修复建议：在 Android 上，/data 目录通常需要 root 权限才能写入。
+// 建议将配置文件存储在应用程序的私有数据目录中，例如通过 JNI 调用 Android API 获取 context->getFilesDir() 返回的路径。
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
 bool g_predict_enemy = false;
@@ -59,7 +59,7 @@ GLuint g_heroTexture = 0;
 bool g_textureLoaded = false;    
 bool g_resLoaded = false; 
 
-// 鏍囪锛氫粎鐢ㄤ簬瑙ｅ喅 BeginFrame 閿佹闂锛屼笉鏀瑰姩涓氬姟閫昏緫
+// 标记：仅用于解决 BeginFrame 锁死问题，不改动业务逻辑
 bool g_needUpdateFontSafe = false;
 
 int g_enemyBoard[4][7] = {
@@ -68,7 +68,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 3. 閰嶇疆绠＄悊 (瀹屾暣淇濈暀浣犵殑stof瑙ｆ瀽閫昏緫)
+// 3. 配置管理 (完整保留你的stof解析逻辑)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -119,7 +119,7 @@ void LoadConfig() {
                 else if (k == "menuH") g_menuH = std::stof(v);
                 else if (k == "menuScale") g_scale = std::stof(v);
             } catch (const std::exception& e) {
-                // 淇寤鸿锛氬湪 catch 鍧椾腑娣诲姞閿欒鏃ュ織杈撳嚭锛岃褰曟槸鍝釜閰嶇疆椤圭殑杞崲澶辫触浜嗐€�
+                // 修复建议：在 catch 块中添加错误日志输出，记录是哪个配置项的转换失败了。
                 __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Failed to parse config value for key '%s' with value '%s': %s", k.c_str(), v.c_str(), e.what());
             } catch (...) {
                 __android_log_print(ANDROID_LOG_ERROR, "JKChess", "Unknown error parsing config value for key '%s' with value '%s'", k.c_str(), v.c_str());
@@ -133,7 +133,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 4. 娓叉煋杈呭姪 (瀹屽叏淇濈暀浣犵殑 HexShader 绠楁硶)
+// 4. 渲染辅助 (完全保留你的 HexShader 算法)
 // =================================================================
 class HexShader {
 public:
@@ -175,7 +175,7 @@ public:
         program = glCreateProgram();
         GLuint v = glCreateShader(GL_VERTEX_SHADER);
         glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
-        // 淇寤鸿锛氭坊鍔犵潃鑹插櫒缂栬瘧閿欒妫€鏌�
+        // 修复建议：添加着色器编译错误检查
         GLint success;
         GLchar infoLog[512];
         glGetShaderiv(v, GL_COMPILE_STATUS, &success);
@@ -186,7 +186,7 @@ public:
 
         GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
         glShaderSource(f, 1, &fs, NULL); glCompileShader(f);
-        // 淇寤鸿锛氭坊鍔犵潃鑹插櫒缂栬瘧閿欒妫€鏌�
+        // 修复建议：添加着色器编译错误检查
         glGetShaderiv(f, GL_COMPILE_STATUS, &success);
         if (!success) {
             glGetShaderInfoLog(f, 512, NULL, infoLog);
@@ -194,7 +194,7 @@ public:
         }
 
         glAttachShader(program, v); glAttachShader(program, f); glLinkProgram(program);
-        // 淇寤鸿锛氭坊鍔犵▼搴忛摼鎺ラ敊璇鏌�
+        // 修复建议：添加程序链接错误检查
         glGetProgramiv(program, GL_LINK_STATUS, &success);
         if (!success) {
             glGetProgramInfoLog(program, 512, NULL, infoLog);
@@ -226,8 +226,8 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
         glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
-        // 淇寤鸿锛氱‘淇� ImGui::GetIO().DisplaySize 鍦ㄦ澶勬槸鏈€鏂颁笖鍑嗙‘鐨勫€笺€�
-        // 閫氬父 ImGui 浼氬湪 BeginFrame 鏈熼棿鏇存柊杩欎簺鍊笺€�
+        // 修复建议：确保 ImGui::GetIO().DisplaySize 在此处是最新且准确的值。
+        // 通常 ImGui 会在 BeginFrame 期间更新这些值。
         glUniform2f(g_HexShader.resLoc, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
     }, (void*)(intptr_t)g_heroTexture);
     drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, center - ImVec2(size, size), center + ImVec2(size, size));
@@ -245,15 +245,15 @@ void UpdateFontHD(bool force = false) {
     io.Fonts->Clear();
     ImFontConfig config;
     config.OversampleH = 1; config.PixelSnapH = true;
-    // 淇寤鸿锛�/system/fonts 璺緞鍙兘鍥犺澶囧樊寮傛垨鏉冮檺闄愬埗鑰屾棤娉曡闂€�
-    // 寤鸿灏嗗瓧浣撴枃浠舵墦鍖呭埌搴旂敤绋嬪簭鐨� assets 鐩綍涓紝骞跺湪杩愯鏃朵粠 assets 涓姞杞姐€�
-    // 鎴栬€咃紝濡傛灉蹇呴』浣跨敤绯荤粺瀛椾綋锛屽簲鎻愪緵澶囩敤瀛椾綋鍔犺浇閫昏緫锛屼互闃叉寚瀹氬瓧浣撲笉瀛樺湪鎴栦笉鍙闂€�
+    // 修复建议：/system/fonts 路径可能因设备差异或权限限制而无法访问。
+    // 建议将字体文件打包到应用程序的 assets 目录中，并在运行时从 assets 中加载。
+    // 或者，如果必须使用系统字体，应提供备用字体加载逻辑，以防指定字体不存在或不可访问。
     const char* fontPath = "/system/fonts/SysSans-Hans-Regular.ttf";
     if (access(fontPath, R_OK) == 0) {
         io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     } else {
         __android_log_print(ANDROID_LOG_WARN, "JKChess", "Font file not found or not readable: %s. Using default font.", fontPath);
-        // 鍙互鍦ㄨ繖閲屾坊鍔犲姞杞藉鐢ㄥ瓧浣撶殑閫昏緫
+        // 可以在这里添加加载备用字体的逻辑
         io.Fonts->AddFontDefault(&config);
     }
     io.Fonts->Build();
@@ -262,13 +262,13 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 5. 妫嬬洏缁樺埗 (淇濈暀鍘熷浣嶇Щ涓庣缉鏀鹃€昏緫)
+// 5. 棋盘绘制 (保留原始位移与缩放逻辑)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
-    // 淇寤鸿锛氬皢榄旀硶鏁板瓧瀹氫箟涓哄叿鍚嶅父閲忥紝鎻愰珮鍙鎬у拰鍙淮鎶ゆ€с€�
+    // 修复建议：将魔法数字定义为具名常量，提高可读性和可维护性。
     const float HEX_SIZE_BASE = 38.0f;
     const float HEX_X_MULTIPLIER = 1.73205f; // sqrt(3)
     const float HEX_Y_MULTIPLIER = 1.5f;
@@ -317,7 +317,7 @@ void DrawBoard() {
         for(int c=0; c<7; c++) {
             float cx = g_startX + c * xStep + (r % 2 == 1 ? xStep * 0.5f : 0);
             float cy = g_startY + r * yStep;
-            // 淇寤鸿锛氱‖缂栫爜璺緞 "/data/1/heroes/FUX/aurora.png" 搴旇琚厤缃寲锛屾垨鑰呬粠 assets 鍔犺浇銆�
+            // 修复建议：硬编码路径 "/data/1/heroes/FUX/aurora.png" 应该被配置化，或者从 assets 加载。
             if(g_enemyBoard[r][c] && g_textureLoaded) DrawHero(d, ImVec2(cx, cy), sz); 
             float hue = fmodf(time * 0.5f + (cx + cy) * 0.001f, 1.0f);
             float rf, gf, bf; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
@@ -332,7 +332,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 鑿滃崟 UI (瀹屾暣淇濈暀鍘熷鍔ㄧ敾涓庤ˉ鍋块€昏緫)
+// 6. 菜单 UI (完整保留原始动画与补偿逻辑)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -363,7 +363,7 @@ void DrawMenu() {
     ImGui::SetNextWindowSize(ImVec2(currentW, currentH), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_Always);
 
-    if (ImGui::Begin((const char*)u8"閲戦摬閾插姪鎵�", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         if (ImGui::IsWindowHovered() && io.MousePos.y < (g_menuY + ImGui::GetFrameHeight())) {
             if (ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragging(0)) { g_menuCollapsed = !g_menuCollapsed; SaveConfig(); }
         }
@@ -376,16 +376,16 @@ void DrawMenu() {
             ImGui::SetWindowFontScale(expectedSize / g_current_rendered_size);
             ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "FPS: %.1f", io.Framerate);
             ImGui::Separator();
-            if (ImGui::CollapsingHeader((const char*)u8"棰勬祴鍔熻兘")) {
-                ImGui::Indent(); Toggle((const char*)u8"棰勬祴瀵规墜鍒嗗竷", &g_predict_enemy, 1); Toggle((const char*)u8"娴峰厠鏂己鍖栭娴�", &g_predict_hex, 2); ImGui::Unindent();
+            if (ImGui::CollapsingHeader((const char*)u8"预测功能")) {
+                ImGui::Indent(); Toggle((const char*)u8"预测对手分布", &g_predict_enemy, 1); Toggle((const char*)u8"海克斯强化预测", &g_predict_hex, 2); ImGui::Unindent();
             }
-            if (ImGui::CollapsingHeader((const char*)u8"閫忚鍔熻兘")) {
-                ImGui::Indent(); Toggle((const char*)u8"瀵规墜妫嬬洏閫忚", &g_esp_board, 3); Toggle((const char*)u8"瀵规墜澶囨垬甯€忚", &g_esp_bench, 4); Toggle((const char*)u8"瀵规墜鍟嗗簵閫忚", &g_esp_shop, 5); ImGui::Unindent();
+            if (ImGui::CollapsingHeader((const char*)u8"透视功能")) {
+                ImGui::Indent(); Toggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); Toggle((const char*)u8"对手备战席透视", &g_esp_bench, 4); Toggle((const char*)u8"对手商店透视", &g_esp_shop, 5); ImGui::Unindent();
             }
             ImGui::Separator();
-            Toggle((const char*)u8"鍏ㄨ嚜鍔ㄦ嬁鐗�", &g_auto_buy, 6); Toggle((const char*)u8"鏋侀€熺閫€鍔╂墜", &g_instant, 7);
+            Toggle((const char*)u8"全自动拿牌", &g_auto_buy, 6); Toggle((const char*)u8"极速秒退助手", &g_instant, 7);
             ImGui::Spacing();
-            if (ImGui::Button((const char*)u8"淇濆瓨璁剧疆", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
+            if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
@@ -403,7 +403,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 7. 绋嬪簭鍏ュ彛 (鏃� TLS 鐗堟湰)
+// 7. 程序入口 (无 TLS 版本)
 // =================================================================
 int main() {
     ImGui::CreateContext();
@@ -411,15 +411,15 @@ int main() {
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     LoadConfig(); UpdateFontHD(true);  
     static bool running = true; 
-    // 淇寤鸿锛欼mGui 閫氬父涓嶆槸绾跨▼瀹夊叏鐨勩€傚缓璁皢鎵€鏈� ImGui 鐩稿叧鐨勮皟鐢紙鍖呮嫭 ProcessInputEvent銆丅eginFrame銆丒ndFrame 浠ュ強鎵€鏈� ImGui:: 鍑芥暟锛�
-    // 闄愬埗鍦ㄥ悓涓€涓嚎绋嬩腑鎵ц銆傚鏋滃繀椤诲湪鍗曠嫭鐨勭嚎绋嬩腑澶勭悊杈撳叆锛屽垯闇€瑕佷粩缁嗚璁＄嚎绋嬮棿閫氫俊鏈哄埗锛岀‘淇� ImGui 涓婁笅鏂囧彧鍦ㄤ竴涓嚎绋嬩腑琚闂拰淇敼銆�
+    // 修复建议：ImGui 通常不是线程安全的。建议将所有 ImGui 相关的调用（包括 ProcessInputEvent、BeginFrame、EndFrame 以及所有 ImGui:: 函数）
+    // 限制在同一个线程中执行。如果必须在单独的线程中处理输入，则需要仔细设计线程间通信机制，确保 ImGui 上下文只在一个线程中被访问和修改。
     std::thread it([&] { while(running) { imgui.ProcessInputEvent(); std::this_thread::yield(); } });
 
     while (running) {
         if (g_needUpdateFontSafe) { UpdateFontHD(true); g_needUpdateFontSafe = false; }
         imgui.BeginFrame(); 
         if (!g_resLoaded) { 
-            // 淇寤鸿锛氱‖缂栫爜璺緞 "/data/1/heroes/FUX/aurora.png" 搴旇琚厤缃寲锛屾垨鑰呬粠 assets 鍔犺浇銆�
+            // 修复建议：硬编码路径 "/data/1/heroes/FUX/aurora.png" 应该被配置化，或者从 assets 加载。
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); g_resLoaded = true; 
         }
@@ -430,7 +430,7 @@ int main() {
     running = false; 
     if (it.joinable()) it.join(); 
 
-    // 淇寤鸿锛氬湪绋嬪簭閫€鍑哄墠閲婃斁 OpenGL 璧勬簮
+    // 修复建议：在程序退出前释放 OpenGL 资源
     if (g_heroTexture != 0) {
         glDeleteTextures(1, &g_heroTexture);
         g_heroTexture = 0;
@@ -440,7 +440,7 @@ int main() {
         g_HexShader.program = 0;
     }
 
-    ImGui_ImplOpenGL3_Shutdown(); // 鍋囪鏈夎繖涓嚱鏁版潵娓呯悊 OpenGL 鍚庣
+    ImGui_ImplOpenGL3_Shutdown(); // 假设有这个函数来清理 OpenGL 后端
     ImGui::DestroyContext();
 
     return 0;
