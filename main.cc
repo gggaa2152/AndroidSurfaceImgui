@@ -180,7 +180,6 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     if (!g_textureLoaded) return;
     if (!g_HexShaderInited) { g_HexShader.Init(); g_HexShaderInited = true; }
     
-    // 恢复原始回调逻辑
     drawList->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd) {
         glUseProgram(g_HexShader.program);
         glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)cmd->UserCallbackData);
@@ -189,7 +188,6 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     
     drawList->AddImage((ImTextureID)(intptr_t)g_heroTexture, center - ImVec2(size, size), center + ImVec2(size, size));
     
-    // 恢复原始重置逻辑
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
@@ -277,7 +275,7 @@ void DrawBoard() {
 }
 
 // =================================================================
-// 6. 菜单 UI (完全恢复原始结构，仅修复折叠逻辑)
+// 6. 菜单 UI (优化缩放逻辑)
 // =================================================================
 bool Toggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -304,23 +302,19 @@ void DrawMenu() {
     float baseW = 320.0f * g_autoScale; float baseH = 500.0f * g_autoScale;
     float currentW = baseW * g_scale;
     
-    // 恢复原始 Begin 逻辑，不再使用 NoTitleBar
     ImGui::SetNextWindowSize(ImVec2(currentW, baseH * g_scale), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     
-    // 核心修复：同步折叠状态
     ImGui::SetNextWindowCollapsed(g_menuCollapsed, ImGuiCond_Appearing);
 
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
         
-        // 核心修复：当用户点击原生三角折叠时，同步回全局变量并保存
         bool currentCollapsed = ImGui::IsWindowCollapsed();
         if (currentCollapsed != g_menuCollapsed) {
             g_menuCollapsed = currentCollapsed;
             SaveConfig();
         }
 
-        // 核心修复：同步窗口位置到全局变量，确保拖动后能保存
         ImVec2 currentPos = ImGui::GetWindowPos();
         if (currentPos.x != g_menuX || currentPos.y != g_menuY) {
             g_menuX = currentPos.x;
@@ -344,14 +338,26 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存设置", ImVec2(-1, 45 * g_autoScale * g_scale))) SaveConfig();
 
+            // 优化缩放逻辑
             ImVec2 br = ImGui::GetWindowPos() + ImGui::GetWindowSize();
             float hSz = 50.0f * g_autoScale * g_scale; 
-            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { isScalingMenu = true; startMS = g_scale; startMP = io.MousePos; }
+            if (ImGui::IsMouseClicked(0) && ImRect(br - ImVec2(hSz, hSz), br).Contains(io.MousePos)) { 
+                isScalingMenu = true; 
+                startMS = g_scale; 
+                startMP = io.MousePos; 
+            }
+            
             if (isScalingMenu) { 
                 if (ImGui::IsMouseDown(0)) {
-                    float oldS = g_scale; g_scale = std::clamp(startMS + ((io.MousePos.x - startMP.x) / baseW), 0.5f, 5.0f);
-                    g_menuX -= (baseW * g_scale - baseW * oldS) * 0.5f; g_menuY -= (baseH * g_scale - baseH * oldS) * 0.5f;
-                } else { isScalingMenu = false; g_needUpdateFontSafe = true; SaveConfig(); } 
+                    // 1. 增大缩放灵敏度：将分母从 baseW 减小，或者乘以一个系数
+                    // 2. 固定左上角：移除对 g_menuX/Y 的修改
+                    float deltaX = io.MousePos.x - startMP.x;
+                    g_scale = std::clamp(startMS + (deltaX / (baseW * 0.5f)), 0.5f, 5.0f); 
+                } else { 
+                    isScalingMenu = false; 
+                    g_needUpdateFontSafe = true; 
+                    SaveConfig(); 
+                } 
             }
             ImGui::GetWindowDrawList()->AddTriangleFilled(br, br - ImVec2(hSz*0.6f, 0), br - ImVec2(0, hSz*0.6f), IM_COL32(0, 120, 215, 200));
         }
