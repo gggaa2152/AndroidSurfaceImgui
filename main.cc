@@ -358,6 +358,21 @@ void UpdateFontHD(bool force = false) {
     io.Fonts->Clear(); 
     
     ImFontConfig config;
+    
+    // ==============================================================
+    // 【核心修复】开启字体超采样 (Super-Sampling) 解决放大模糊
+    // ==============================================================
+    // 基础放大倍率设为 2.5，这样就算拖拽面板放大 2.5 倍，也是 1:1 像素完美渲染
+    float highResFactor = 2.5f; 
+    
+    // 显存安全锁：防止高分辨率设备（如 4K 屏）上烘焙极巨大的纹理导致内存溢出
+    if (targetSize * highResFactor > 90.0f) {
+        highResFactor = 90.0f / targetSize;
+    }
+    highResFactor = std::max(1.2f, highResFactor); // 保底系数
+
+    // 禁用 ImGui 默认的冗余横向过采样，因为我们已经在物理尺寸上整体放大了，
+    // 如果再开 Oversample 会导致宽度二次翻倍，浪费内存。
     config.OversampleH = 1; 
     config.OversampleV = 1; 
     config.PixelSnapH = true;
@@ -371,12 +386,21 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for(const char* path : fonts) {
         if (access(path, R_OK) == 0) { 
-            io.Fonts->AddFontFromFileTTF(path, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
-            loaded = true; 
-            break; 
+            // 步骤 1：以超高分辨率将字体烘焙到纹理上
+            ImFont* font = io.Fonts->AddFontFromFileTTF(path, targetSize * highResFactor, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
+            if (font) {
+                // 步骤 2：欺骗 ImGui，在逻辑计算排版尺寸时，将其缩小回正常尺寸。
+                // 这保证了所有菜单大小不发生形变，但却拥有高清抗锯齿贴图。
+                font->Scale = 1.0f / highResFactor; 
+                loaded = true; 
+                break; 
+            }
         }
     }
-    if(!loaded) io.Fonts->AddFontDefault();
+    if(!loaded) {
+        ImFont* font = io.Fonts->AddFontDefault();
+        if (font) font->Scale = 1.0f / highResFactor;
+    }
     
     io.Fonts->Build(); 
     ImGui_ImplOpenGL3_CreateFontsTexture(); 
@@ -1107,8 +1131,6 @@ void DrawShop() {
 // =================================================================
 // 7. 顶级定制菜单 UI 控件 (修复了回弹与重影问题)
 // =================================================================
-
-// 修复点1：即使在屏幕外被裁剪，也要计算动画，确保滚动回去的时候不再重影闪烁
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -1120,12 +1142,9 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + style.ItemInnerSpacing.x + label_size.x, h));
     
     ImGui::ItemSize(bb, style.FramePadding.y);
-    
-    // 我们记录下它是否被裁剪，但不要立刻 return false！
     bool is_clipped = !ImGui::ItemAdd(bb, id);
 
     bool pressed = false;
-    // 只有在视野内，才去处理点击交互
     if (!is_clipped) {
         bool hovered, held;
         pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
@@ -1134,10 +1153,8 @@ bool ModernToggle(const char* label, bool* v, int idx) {
         } 
     }
 
-    // [关键] 无论是否在视野外，我们始终让动画状态运行
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f; 
     
-    // 只有在视野内时，才进行消耗性能的渲染
     if (!is_clipped) {
         ImVec4 col_bg = ImLerp(ImVec4(0.20f, 0.22f, 0.27f, 1.0f), ImVec4(0.00f, 0.85f, 0.55f, 1.0f), g_anim[idx]);
         
@@ -1155,7 +1172,6 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     return pressed;
 }
 
-// 修复点2：解决了向下滑动导致高度塌陷及疯狂回弹跳跃的终极 Bug！
 bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     ImGuiID id = window->GetID(label);
@@ -1164,8 +1180,6 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
     
     const ImRect bb(pos, pos + size); 
     ImGui::ItemSize(bb);
-    
-    // 我们必须检查控件是否被裁剪，但绝对不能直接 return false！
     bool is_clipped = !ImGui::ItemAdd(bb, id);
 
     bool hovered = false, held = false; 
@@ -1176,7 +1190,6 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
         }
     }
 
-    // 独立出动画状态机，保持平稳更新
     static std::map<ImGuiID, float> anim_map; 
     float& anim = anim_map[id];
     anim = ImLerp(anim, *state ? 1.0f : 0.0f, 1.0f - expf(-18.0f * ImGui::GetIO().DeltaTime));
@@ -1197,8 +1210,6 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
         window->DrawList->AddText(ImVec2(cx + 15.0f * g_autoScale, bb.Min.y + (size.y - ImGui::GetFontSize())*0.5f), IM_COL32_WHITE, label);
     }
 
-    // [关键修复]：只要 anim 大于 0，即使整个标题在视野外，也必须返回 true 提供 BeginChild，
-    // 这样 ImGui 才会继续布局里面的子元素并保留总高度，滑动条就不会回弹了。
     if (anim > 0.01f) {
         float exact_target_height = (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y) * child_item_count + ImGui::GetStyle().ItemSpacing.y * 1.0f;
         float current_height = (float)(int)(exact_target_height * anim); 
@@ -1305,7 +1316,6 @@ void ModernFloatAdjuster(const char* label, float* v, float v_min, float v_max, 
     ImGui::PopID();
 }
 
-// 修复点3：等级选择器同样存在由于被裁剪而导致的重影，这里将其规范化
 void ModernTierSelector() {
     ImGuiWindow* window = ImGui::GetCurrentWindow(); 
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -1428,13 +1438,11 @@ void DrawMenu() {
             
             if (cardpool_anim > 0.01f) {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, cardpool_anim);
-                // 更新包含项为 3 个 (引入了透明度调节条)
                 float exact_h = (ImGui::GetFrameHeight() + style.ItemSpacing.y) * 3 + style.ItemSpacing.y * 1.0f;
-                float current_h = (float)(int)(exact_h * cardpool_anim); // 取整，防止安卓滚动产生模糊残影
+                float current_h = (float)(int)(exact_h * cardpool_anim); 
                 ImGui::BeginChild("cp_child", ImVec2(0, current_h), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
                 ModernNumberAdjuster((const char*)u8"牌库行数", &g_card_pool_rows, 1, 30);
                 ModernNumberAdjuster((const char*)u8"牌库列数", &g_card_pool_cols, 1, 30);
-                // 【需求4】加入牌库透明度
                 ModernFloatAdjuster((const char*)u8"牌库透明度", &g_cardPoolAlpha, 0.1f, 1.0f, 0.1f);
                 ImGui::EndChild(); 
                 ImGui::PopStyleVar();
@@ -1449,7 +1457,7 @@ void DrawMenu() {
             if (warn_anim > 0.01f) {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, warn_anim);
                 float exact_h = (ImGui::GetFrameHeight() + style.ItemSpacing.y) * 2 + style.ItemSpacing.y * 1.0f;
-                float current_h = (float)(int)(exact_h * warn_anim); // 取整，防止模糊
+                float current_h = (float)(int)(exact_h * warn_anim); 
                 ImGui::BeginChild("warn_child", ImVec2(0, current_h), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
                 ModernTierSelector(); 
                 ModernNumberAdjuster((const char*)u8"预警张数", &g_warning_threshold, 1, 30);
