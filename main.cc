@@ -25,11 +25,13 @@
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
-// 替换震动：底层异步系统提示音 (Beep)
+// 底层异步系统提示音 (Beep)
 void TriggerBeep() {
     std::thread([]() {
-        // 调用系统底层的蜂鸣器或提示音通道，不会阻塞 UI 线程
-        system("echo -e '\\a' > /dev/console 2>/dev/null || play -n synth 0.05 sine 880 > /dev/null 2>&1");
+        // 尝试通过标准输出蜂鸣，并模拟短促的音量键唤醒系统 UI 音效
+        printf("\a"); 
+        fflush(stdout);
+        system("input keyevent 24 && input keyevent 25 > /dev/null 2>&1");
     }).detach();
 }
 
@@ -55,8 +57,9 @@ float g_cardPoolX = 150.0f, g_cardPoolY = 150.0f, g_cardPoolScale = 1.0f;
 
 // 预警功能状态
 bool g_card_warning = false;
-int g_warning_tier = 4;        // 预警卡牌等级 (1-6)
-int g_warning_threshold = 6;   // 预警触发张数 (1-30)
+// 修复：将单选改为多选布尔数组，下标 1-6 对应等级
+bool g_warning_tiers[7] = {false, false, false, false, true, false, false}; 
+int g_warning_threshold = 6;   
 
 bool g_menuCollapsed = false; 
 float g_anim[25] = {0.0f}; 
@@ -75,7 +78,6 @@ float g_menuW = 350.0f, g_menuH = 550.0f;
 float g_benchX = 200.0f, g_benchY = 700.0f, g_benchScale = 1.0f;
 float g_shopX = 200.0f, g_shopY = 850.0f, g_shopScale = 1.0f;
 
-// 预测窗口的坐标与缩放
 float g_enemyW_X = 100.0f, g_enemyW_Y = 100.0f;
 float g_enemyW_W = 220.0f, g_enemyW_H = 120.0f, g_enemy_scale = 1.0f;
 
@@ -117,8 +119,10 @@ void SaveConfig() {
         out << "autoBuyChosen=" << g_auto_buy_chosen << "\n";
         
         out << "cardWarning=" << g_card_warning << "\n";
-        out << "warningTier=" << g_warning_tier << "\n";
         out << "warningThreshold=" << g_warning_threshold << "\n";
+        for (int i=1; i<=6; i++) {
+            out << "warningTier" << i << "=" << g_warning_tiers[i] << "\n";
+        }
 
         out << "instant=" << g_instant << "\n";
         out << "boardLocked=" << g_boardLocked << "\n";
@@ -187,8 +191,11 @@ void LoadConfig() {
                 else if (k == "autoBuyChosen") g_auto_buy_chosen = (v == "1");
                 
                 else if (k == "cardWarning") g_card_warning = (v == "1");
-                else if (k == "warningTier") g_warning_tier = std::stoi(v);
                 else if (k == "warningThreshold") g_warning_threshold = std::stoi(v);
+                else if (k.substr(0, 11) == "warningTier") {
+                    int idx = k[11] - '0';
+                    if (idx >= 1 && idx <= 6) g_warning_tiers[idx] = (v == "1");
+                }
 
                 else if (k == "instant") g_instant = (v == "1");
                 else if (k == "boardLocked") g_boardLocked = (v == "1");
@@ -742,7 +749,8 @@ void DrawExtraWindows() {
 }
 
 // =================================================================
-// 6.5 高级牌库显示窗口 (具备行列浮点增量生长动画)
+// 6.5 高级牌库显示窗口
+// 修复点：移除了大量的圆角渲染，采用纯正方形，彻底解决超过 16行导致顶点爆炸闪退的问题
 // =================================================================
 void DrawCardPool() {
     static float alpha = 0.0f;
@@ -768,7 +776,6 @@ void DrawCardPool() {
     float baseImgSz = 45.0f * g_autoScale;
     float gap = 5.0f * g_autoScale;
     
-    // 物理交互盒体依然用目标整型数据，防止手柄位置抖动
     float totalW_unscaled = g_card_pool_cols * baseImgSz + (g_card_pool_cols - 1) * gap;
     float totalH_unscaled = g_card_pool_rows * baseImgSz + (g_card_pool_rows - 1) * gap;
 
@@ -790,38 +797,34 @@ void DrawCardPool() {
     float curSz = baseImgSz * g_cardPoolScale;
     float curGap = gap * g_cardPoolScale;
     float time = (float)ImGui::GetTime();
-    float rounding = 8.0f * g_autoScale * g_cardPoolScale; 
 
     if (g_textureLoaded) {
-        // 使用 ceil() 进行迭代，确保正在出现/消失的小数位单元格能被渲染
         int draw_rows = std::ceil(current_rows);
         int draw_cols = std::ceil(current_cols);
 
         for (int r = 0; r < draw_rows; r++) {
             for (int c = 0; c < draw_cols; c++) {
-                // 计算每个单元格自身的浮点透明度和缩放（核心动画逻辑）
                 float cell_alpha_r = std::clamp(current_rows - r, 0.0f, 1.0f);
                 float cell_alpha_c = std::clamp(current_cols - c, 0.0f, 1.0f);
                 float cell_anim = cell_alpha_r * cell_alpha_c; 
                 if (cell_anim < 0.01f) continue;
                 
                 float final_alpha = alpha * cell_anim;
-                
-                // 生长动画：从小到大弹出
                 float offset_sz = curSz * cell_anim; 
                 float center_offset = (curSz - offset_sz) * 0.5f;
 
                 float x = g_cardPoolX + c * (curSz + curGap) + center_offset;
                 float y = g_cardPoolY + r * (curSz + curGap) + center_offset;
                 
-                d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding * cell_anim);
+                // 【修复核心】：使用普通的 AddImage 和 AddRect，极大减少顶点数，完美支持 30x30 渲染
+                d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
                 
                 float hue = fmodf(time * 0.3f + (x + y) * 0.001f, 1.0f);
                 float rC, gC, bC; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rC, gC, bC);
-                d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(rC*255, gC*255, bC*255, 180 * final_alpha), rounding * cell_anim, 0, 1.5f * g_autoScale * g_cardPoolScale);
+                d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(rC*255, gC*255, bC*255, 180 * final_alpha), 0.0f, 0, 1.5f * g_autoScale * g_cardPoolScale);
                 
                 float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha), rounding * cell_anim, ImDrawFlags_RoundCornersBottom);
+                d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha), 0.0f);
                 
                 ImFont* font = ImGui::GetFont();
                 float fsz = ImGui::GetFontSize() * g_cardPoolScale * 0.8f * cell_anim; 
@@ -857,8 +860,8 @@ void DrawPlayerWarnings() {
         d->AddCircleFilled(ImVec2(cx, cy), avatar_r, IM_COL32(30, 35, 45, 180));
         d->AddCircle(ImVec2(cx, cy), avatar_r, IM_COL32(80, 90, 100, 255), 32, 1.5f * g_autoScale);
         
-        // 演示：当预警开启且达到条件时（假定只对玩家 2 触发）
-        bool is_warned = (g_card_warning && i == 2);
+        // 当预警开启且达到条件时（此处演示为针对玩家 2，并要求选中了其对应的费用比如等级 4）
+        bool is_warned = (g_card_warning && i == 2 && g_warning_tiers[4]);
         
         static float warn_anim[8] = {0.0f};
         warn_anim[i] = ImLerp(warn_anim[i], is_warned ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
@@ -952,11 +955,10 @@ bool ModernAnimatedFolder(const char* label, bool* state, float target_height) {
     ImU32 bg_col = hovered ? IM_COL32(50, 60, 75, 200) : IM_COL32(40, 48, 60, 150);
     window->DrawList->AddRectFilled(bb.Min, bb.Max, bg_col, 8.0f * g_autoScale);
     
-    // 旋转箭头
     float cx = bb.Min.x + 15.0f * g_autoScale;
     float cy = bb.Min.y + size.y * 0.5f;
     float arrow_sz = 5.0f * g_autoScale;
-    float ang = anim * 1.5708f; // 0 到 90度
+    float ang = anim * 1.5708f; 
     ImVec2 p1(cx + cosf(ang)*arrow_sz, cy + sinf(ang)*arrow_sz);
     ImVec2 p2(cx + cosf(ang + 2.094f)*arrow_sz, cy + sinf(ang + 2.094f)*arrow_sz);
     ImVec2 p3(cx + cosf(ang - 2.094f)*arrow_sz, cy + sinf(ang - 2.094f)*arrow_sz);
@@ -965,11 +967,10 @@ bool ModernAnimatedFolder(const char* label, bool* state, float target_height) {
     window->DrawList->AddText(ImVec2(cx + 15.0f * g_autoScale, bb.Min.y + (size.y - ImGui::GetFontSize())*0.5f), IM_COL32_WHITE, label);
 
     if (anim > 0.01f) {
-        // 使用带有透明度和水平滑入双重效果的裁剪区域，打造顶级展开动画
+        // 【修复核心】：加入了 ImGuiWindowFlags_NoBackground 防止背景残留和重叠产生残影
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, anim);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 15.0f * (1.0f - anim));
-        // 创建一个子窗体来限制高度，实现物理展开
-        ImGui::BeginChild(id + 1, ImVec2(0, target_height * anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::BeginChild(id + 1, ImVec2(0, target_height * anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
         return true;
     }
     return false;
@@ -985,7 +986,9 @@ void ModernNumberAdjuster(const char* label, int* v, int v_min, int v_max) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
     
-    // 强制左侧对齐偏移，使其完美对齐上方 Toggle 的文字起点
+    // 【修复核心】：使用 PushID 防止同名按钮被 ImGui 内部哈希混淆，导致不同行互相影响
+    ImGui::PushID(label);
+
     float toggle_handle_w = ImGui::GetFrameHeight() * 0.85f * 2.1f + style.ItemInnerSpacing.x;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + toggle_handle_w);
     
@@ -1018,9 +1021,10 @@ void ModernNumberAdjuster(const char* label, int* v, int v_min, int v_max) {
     
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
+    ImGui::PopID();
 }
 
-// 4. 卡牌等级(Tier)单选光标组
+// 4. 卡牌等级(Tier)多选光标组
 void ModernTierSelector() {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -1038,17 +1042,16 @@ void ModernTierSelector() {
         ImVec2 pos = window->DC.CursorPos;
         ImRect bb(pos, pos + ImVec2(btn_sz*1.2f, btn_sz));
         ImGui::ItemSize(bb);
-        if (!ImGui::ItemAdd(bb, window->GetID(&g_warning_tier + i))) continue;
+        if (!ImGui::ItemAdd(bb, window->GetID(&g_warning_tiers + i))) continue;
         
         bool hovered, held;
-        if (ImGui::ButtonBehavior(bb, window->GetID(&g_warning_tier + i), &hovered, &held)) {
-            g_warning_tier = i;
+        if (ImGui::ButtonBehavior(bb, window->GetID(&g_warning_tiers + i), &hovered, &held)) {
+            g_warning_tiers[i] = !g_warning_tiers[i]; // 支持多选 Toggle
             TriggerBeep();
         }
         
-        // 每个按钮根据选中状态有独立的颜色和平滑动画
         static float anims[7] = {0};
-        anims[i] = ImLerp(anims[i], (g_warning_tier == i) ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
+        anims[i] = ImLerp(anims[i], g_warning_tiers[i] ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
         
         ImU32 bg_col = IM_COL32(30 + 70*anims[i], 35 + 100*anims[i], 45 + 50*anims[i], 255);
         window->DrawList->AddRectFilled(bb.Min, bb.Max, bg_col, 4.0f * g_autoScale);
@@ -1059,7 +1062,7 @@ void ModernTierSelector() {
 
         char buf[4]; snprintf(buf, sizeof(buf), "%d", i);
         ImVec2 t_sz = ImGui::CalcTextSize(buf);
-        window->DrawList->AddText(pos + ImVec2((bb.GetWidth() - t_sz.x)*0.5f, (bb.GetHeight() - t_sz.y)*0.5f), (g_warning_tier == i) ? IM_COL32(0,0,0,255) : IM_COL32_WHITE, buf);
+        window->DrawList->AddText(pos + ImVec2((bb.GetWidth() - t_sz.x)*0.5f, (bb.GetHeight() - t_sz.y)*0.5f), g_warning_tiers[i] ? IM_COL32(0,0,0,255) : IM_COL32_WHITE, buf);
     }
 }
 
@@ -1089,7 +1092,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.6", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.7", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
@@ -1113,6 +1116,7 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
+            // 预测系统
             static bool header_pred = true;
             if (ModernAnimatedFolder((const char*)u8"预测系统 (预知未来)", &header_pred, 95.0f * g_autoScale * g_scale)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
@@ -1120,6 +1124,7 @@ void DrawMenu() {
                 EndModernAnimatedFolder();
             }
             
+            // 投食透视
             static bool header_esp = true;
             if (ModernAnimatedFolder((const char*)u8"投食透视 (数据解析)", &header_esp, 180.0f * g_autoScale * g_scale)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
@@ -1140,14 +1145,16 @@ void DrawMenu() {
             cardpool_anim = ImLerp(cardpool_anim, g_show_card_pool ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             if (cardpool_anim > 0.01f) {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, cardpool_anim);
-                ImGui::BeginChild("cp_child", ImVec2(0, 85.0f * g_autoScale * g_scale * cardpool_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                // 精准计算高度，移除下方大量空隙残留
+                float child_h = (ImGui::GetFrameHeight() + style.ItemSpacing.y) * 2.1f;
+                ImGui::BeginChild("cp_child", ImVec2(0, child_h * cardpool_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
                 ModernNumberAdjuster((const char*)u8"牌库行数", &g_card_pool_rows, 1, 30);
                 ModernNumberAdjuster((const char*)u8"牌库列数", &g_card_pool_cols, 1, 30);
                 ImGui::EndChild();
                 ImGui::PopStyleVar();
             }
 
-            ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+            ImGui::Spacing(); 
 
             // 智能预警模块
             ModernToggle((const char*)u8"卡牌数量预警", &g_card_warning, 11);
@@ -1155,8 +1162,9 @@ void DrawMenu() {
             warn_anim = ImLerp(warn_anim, g_card_warning ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             if (warn_anim > 0.01f) {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, warn_anim);
-                ImGui::BeginChild("warn_child", ImVec2(0, 85.0f * g_autoScale * g_scale * warn_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-                ModernTierSelector();
+                float child_h = (ImGui::GetFrameHeight() + style.ItemSpacing.y) * 2.1f;
+                ImGui::BeginChild("warn_child", ImVec2(0, child_h * warn_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+                ModernTierSelector(); // 现在可以进行多选了
                 ModernNumberAdjuster((const char*)u8"预警张数", &g_warning_threshold, 1, 30);
                 ImGui::EndChild();
                 ImGui::PopStyleVar();
@@ -1188,6 +1196,7 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存当前配置", ImVec2(-1, 55 * g_autoScale))) {
                 SaveConfig();
+                TriggerBeep();
             }
         }
     }
