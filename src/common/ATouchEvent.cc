@@ -256,34 +256,20 @@ namespace android
             size_t ee = endIndex / WIDTH;   // End of element
             size_t si = startIndex % WIDTH; // Start index in start element
             size_t ei = endIndex % WIDTH;   // End index in end element
-            // Need to check first unaligned bitset for any non zero bit
             if (si > 0)
             {
                 size_t nBits = se == ee ? ei - si : WIDTH - si;
-                // Generate the mask of interested bit range
                 Element mask = ((1 << nBits) - 1) << si;
-                if (mData[se++].to_ulong() & mask)
-                {
-                    return true;
-                }
+                if (mData[se++].to_ulong() & mask) return true;
             }
-            // Check whole bitset for any bit set
             for (; se < ee; se++)
             {
-                if (mData[se].any())
-                {
-                    return true;
-                }
+                if (mData[se].any()) return true;
             }
-            // Need to check last unaligned bitset for any non zero bit
             if (ei > 0 && se <= ee)
             {
-                // Generate the mask of interested bit range
                 Element mask = (1 << ei) - 1;
-                if (mData[se].to_ulong() & mask)
-                {
-                    return true;
-                }
+                if (mData[se].to_ulong() & mask) return true;
             }
             return false;
         }
@@ -311,8 +297,8 @@ namespace android
             if (std::string::npos == devicePath.path().filename().string().find("event"))
                 continue;
 
-            // ★ 必须带有读写权限
-            m_deviceFd = open(devicePath.path().c_str(), O_RDWR | O_SYNC | O_NONBLOCK);
+            // 回退到只读权限，绝不注入假数据干扰自己
+            m_deviceFd = open(devicePath.path().c_str(), O_RDONLY | O_SYNC | O_NONBLOCK);
             if (-1 == m_deviceFd)
             {
                 LogDebug("[-] Could not open file %s due to error %d : %s", devicePath.path().c_str(), errno, strerror(errno));
@@ -365,8 +351,8 @@ namespace android
         static std::vector<input_event> cachedEventQueue;
         static int lastTouchPointX = 0, lastTouchPointY = 0;
         
+        static bool is_screen_pressed = false;
         static bool is_grabbed = false;
-        static bool hide_fake_touch_up = false; // ★ 核心暗号：用于藏匿假抬起信号
 
         if (-1 == m_deviceFd)
             return false;
@@ -375,15 +361,69 @@ namespace android
         if (0 >= read(m_deviceFd, &event, sizeof(input_event)))
             return false;
 
-        // 收集这一帧的所有事件
+        // =======================================================
+        // ★ 第 1 道防线：维护真实的按压状态，释放抓取权 ★
+        // =======================================================
+        if (event.type == EV_KEY && (event.code == BTN_TOUCH || event.code == BTN_TOOL_FINGER)) {
+            is_screen_pressed = (event.value == 1);
+            // 如果手指抬起，赶紧把设备控制权还给安卓系统，保证游戏正常
+            if (!is_screen_pressed && is_grabbed) {
+                ioctl(m_deviceFd, EVIOCGRAB, 0);
+                is_grabbed = false;
+            }
+        }
+
+        // =======================================================
+        // ★ 第 2 道防线：微秒级抢断（核心大招）★
+        // 当屏幕按着且坐标在更新时，一旦进入 UI 热区，瞬间独占屏幕！
+        // 速度快于安卓系统的读取，彻底饿死底层的触摸事件。
+        // =======================================================
+        if (event.type == EV_ABS && is_screen_pressed) {
+            if (event.code == ABS_MT_POSITION_X) lastTouchPointX = event.value;
+            if (event.code == ABS_MT_POSITION_Y) lastTouchPointY = event.value;
+
+            // 必须是没有被抢占的情况下才去判断，节省性能
+            if (!is_grabbed && g_ScreenWidth > 0) {
+                TouchEvent temp; 
+                temp.x = lastTouchPointX; 
+                temp.y = lastTouchPointY;
+                temp.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
+                
+                // 瞬间检测是否按在辅助 UI 上
+                if (IsPointInImGuiWindow(temp.x, temp.y)) {
+                    ioctl(m_deviceFd, EVIOCGRAB, 1);
+                    is_grabbed = true;
+                }
+            }
+        }
+
+        // --- 排队收集完整的一帧事件 ---
         if (EV_SYN != event.type || SYN_REPORT != event.code || 0 != event.value)
         {
             cachedEventQueue.push_back(event);
             return false;
         }
         else if (cachedEventQueue.empty())
+        {
             return false;
+        }
 
+        // =======================================================
+        // ★ 第 3 道防线：兜底拦截 ★
+        // 针对那种完全没有滑动，只在一帧内原像素点击的情况
+        // =======================================================
+        if (is_screen_pressed && !is_grabbed && g_ScreenWidth > 0) {
+            TouchEvent temp; 
+            temp.x = lastTouchPointX; 
+            temp.y = lastTouchPointY;
+            temp.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
+            if (IsPointInImGuiWindow(temp.x, temp.y)) {
+                ioctl(m_deviceFd, EVIOCGRAB, 1);
+                is_grabbed = true;
+            }
+        }
+
+        // --- 解析数据发给 ImGui (绝对没有任何假数据污染) ---
         touchEvent->type = EventType::Move;
         touchEvent->x = lastTouchPointX;
         touchEvent->y = lastTouchPointY;
@@ -406,7 +446,6 @@ namespace android
                     touchEvent->keyCode = g_scanCodeMapping[touchEvent->scanCode];
                     touchEvent->type = 1 == processEvent.value ? EventType::KeyDown : EventType::KeyUp;
                 }
-
                 break;
             }
             case EV_REL:
@@ -425,7 +464,7 @@ namespace android
             }
             case EV_ABS:
             {
-                if (ABS_MT_SLOT == processEvent.code && 0 != processEvent.value)
+                if (ABS_MT_SLOT == processEvent.code && 0 != processEvent.value) 
                 {
                     cachedEventQueue.clear();
                     return false;
@@ -434,64 +473,16 @@ namespace android
                 if (ABS_MT_POSITION_X == processEvent.code)
                 {
                     touchEvent->x = processEvent.value;
-                    lastTouchPointX = touchEvent->x;
                 }
                 else if (ABS_MT_POSITION_Y == processEvent.code)
                 {
                     touchEvent->y = processEvent.value;
-                    lastTouchPointY = touchEvent->y;
                 }
                 break;
             }
             }
         }
         cachedEventQueue.clear();
-
-        // =======================================================
-        // ★ 核心逻辑：精准拦截与双向骗局 ★
-        // =======================================================
-        
-        // 1. 过滤：如果是我们自己注入的“假抬起”，果断丢弃！不给 ImGui 看！
-        if (touchEvent->type == EventType::TouchUp) {
-            if (hide_fake_touch_up) {
-                hide_fake_touch_up = false;
-                return false; // 丢弃这个数据，让 ImGui 继续觉得手指按着！
-            }
-            
-            // 如果是真正的物理手指抬起，我们要归还控制权
-            if (is_grabbed) {
-                ioctl(m_deviceFd, EVIOCGRAB, 0);
-                is_grabbed = false;
-            }
-        }
-
-        // 2. 截胡：如果检测到是按下的第一帧
-        if (touchEvent->type == EventType::TouchDown) {
-            if (!is_grabbed && g_ScreenWidth > 0) 
-            {
-                TouchEvent temp = *touchEvent;
-                temp.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
-                
-                // 如果刚好点在了辅助的菜单或格子上
-                if (IsPointInImGuiWindow(temp.x, temp.y)) 
-                {
-                    // A. 先往系统里写一个“手指已抬起”的信号，骗游戏立刻终止触摸
-                    input_event cancel_ev[3] = {};
-                    cancel_ev[0].type = EV_ABS; cancel_ev[0].code = ABS_MT_TRACKING_ID; cancel_ev[0].value = -1;
-                    cancel_ev[1].type = EV_KEY; cancel_ev[1].code = BTN_TOUCH; cancel_ev[1].value = 0;
-                    cancel_ev[2].type = EV_SYN; cancel_ev[2].code = SYN_REPORT; cancel_ev[2].value = 0;
-                    write(m_deviceFd, cancel_ev, sizeof(cancel_ev));
-                    
-                    // B. 设置暗号，让下一次循环读到这包数据时，直接过滤掉，别坑了 ImGui
-                    hide_fake_touch_up = true;
-
-                    // C. 立刻彻底锁死物理屏幕，接下来的滑动只属于辅助！
-                    ioctl(m_deviceFd, EVIOCGRAB, 1);
-                    is_grabbed = true;
-                }
-            }
-        }
-        // =======================================================
 
         return true;
     }
