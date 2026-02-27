@@ -4,8 +4,37 @@
 #include "ANativeWindowCreator.h"
 #include "ATouchEvent.h"
 
+#include "imgui_internal.h" // ★ 新增：用于访问内部窗口尺寸
+#include <mutex>            // ★ 新增：用于线程安全
+
 #include <ImGui-SharedDrawData/modules/ImGuiSharedDrawData.h>
 #include <zstd.h>
+
+// =================================================================
+// ★ 跨文件暴露给底层的全局变量，用于微秒级预判
+// =================================================================
+int g_ScreenWidth = -1;
+int g_ScreenHeight = -1;
+int g_RotateTheta = 0;
+
+std::vector<ImRect> g_ImGuiUIBoxes;
+std::mutex g_UIBoxesMutex;
+
+// 供 ATouchEvent 调用的终极预判函数
+bool IsPointInImGuiWindow(int x, int y) {
+    std::lock_guard<std::mutex> lock(g_UIBoxesMutex);
+    ImVec2 pos(x, y);
+    for (const auto& rect : g_ImGuiUIBoxes) {
+        // 为了防止边缘漏触，稍微向外扩展20像素的防误触安全区
+        ImRect expanded = rect;
+        expanded.Expand(20.0f); 
+        if (expanded.Contains(pos)) {
+            return true;
+        }
+    }
+    return false;
+}
+// =================================================================
 
 size_t android::anative_window_creator::detail::compat::SystemVersion = 13;
 
@@ -421,6 +450,7 @@ namespace android
         if (RenderType::RenderClient == m_options.renderType || RenderType::RenderNative == m_options.renderType)
             ImGui::NewFrame();
     }
+    
     void AImGui::EndFrame()
     {
         if (!m_state)
@@ -429,6 +459,20 @@ namespace android
         if (RenderType::RenderClient == m_options.renderType)
         {
             ImGui::Render();
+            
+            // ★ 新增逻辑：提取并保存窗口大小区域给防穿透内核拦截器用 ★
+            if (ImGuiContext* g = ImGui::GetCurrentContext()) {
+                std::lock_guard<std::mutex> lock(g_UIBoxesMutex);
+                g_ImGuiUIBoxes.clear();
+                for (int i = 0; i < g->Windows.Size; i++) {
+                    ImGuiWindow* win = g->Windows[i];
+                    // 剔除隐藏窗口和提示框，其余都作为阻挡区
+                    if (win->Active && !win->Hidden && win->Type != ImGuiWindowType_Tooltip) {
+                        g_ImGuiUIBoxes.push_back(win->Rect());
+                    }
+                }
+            }
+            
             const auto &sharedData = ImGui::GetSharedDrawData();
             if (!sharedData.empty())
             {
@@ -520,6 +564,19 @@ namespace android
         else if (RenderType::RenderNative == m_options.renderType)
         {
             ImGui::Render();
+            
+            // ★ 新增逻辑：提取并保存窗口大小区域给防穿透内核拦截器用 ★
+            if (ImGuiContext* g = ImGui::GetCurrentContext()) {
+                std::lock_guard<std::mutex> lock(g_UIBoxesMutex);
+                g_ImGuiUIBoxes.clear();
+                for (int i = 0; i < g->Windows.Size; i++) {
+                    ImGuiWindow* win = g->Windows[i];
+                    if (win->Active && !win->Hidden && win->Type != ImGuiWindowType_Tooltip) {
+                        g_ImGuiUIBoxes.push_back(win->Rect());
+                    }
+                }
+            }
+
             glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             eglSwapBuffers(m_defaultDisplay, m_eglSurface);
@@ -831,6 +888,11 @@ namespace android
         m_rotateTheta = displayInfo.theta;
         m_screenWidth = displayInfo.width;
         m_screenHeight = displayInfo.height;
+
+        // ★ 暴露给外部预判器
+        g_RotateTheta = m_rotateTheta;
+        g_ScreenWidth = m_screenWidth;
+        g_ScreenHeight = m_screenHeight;
 
         return (m_state = true);
     }
