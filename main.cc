@@ -110,7 +110,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 (保持不变)
+// 2. 配置管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -362,28 +362,25 @@ void UpdateFontHD(bool force = false) {
     g_hugeNumFont = nullptr;
     
     // ==============================================================
-    // 🚀 【双引擎 16K 超采样系统】突破位图渲染显存瓶颈
+    // ⚡ 【8K 特化轻量级双引擎架构】: 极致流畅，极低显存占用
     // ==============================================================
     
-    // 引擎1：主文字体（含中文）
-    // 为了防止 3000 多字的中文撑爆显存，我们将分辨率锁在 2.5倍。
+    // 1. 中文主字体（菜单用，不需要过度放大）
+    // 策略：1.5倍基础放大，关闭所有抗锯齿过采样。省下惊人的显存空间，告别卡顿！
     ImFontConfig configMain;
-    float mainResFactor = 2.5f; 
-    if (targetSize * mainResFactor > 120.0f) mainResFactor = 120.0f / targetSize; // 显存保险
-    configMain.OversampleH = 2; // 二次过采样
-    configMain.OversampleV = 2;
-    configMain.PixelSnapH = false; // 关闭对齐防抖动
-    configMain.RasterizerMultiply = 1.15f; 
+    float mainResFactor = 1.5f; 
+    configMain.OversampleH = 1; // 绝对不开启过采样，保证贴图极小
+    configMain.OversampleV = 1;
+    configMain.PixelSnapH = true; 
     
-    // 引擎2：终极高清数字体（专治各种强迫症放大）
-    // 仅挂载数字和符号，无视显存限制，直接拉到变态级的 8倍大小 + 3x3矩阵过采样！
+    // 2. 棋盘专属数字字体（会被频繁放大）
+    // 策略：4.0倍基础放大 + 2x2过采样。只处理英文字母和数字，不足 1MB 显存！
     ImFontConfig configNum;
-    float numResFactor = 8.0f;
-    if (targetSize * numResFactor > 400.0f) numResFactor = 400.0f / targetSize; 
-    configNum.OversampleH = 3; 
-    configNum.OversampleV = 3;
+    float numResFactor = 4.0f; // 4倍物理放大对于 8K 屏幕已经足够锐利
+    if (targetSize * numResFactor > 200.0f) numResFactor = 200.0f / targetSize; 
+    configNum.OversampleH = 2; // 数字单独享受 2x2 高级平滑
+    configNum.OversampleV = 2;
     configNum.PixelSnapH = false;
-    configNum.RasterizerMultiply = 1.25f; 
     static const ImWchar numRanges[] = { 0x0020, 0x00FF, 0 }; // 极小体积基础英数符范围
     
     const char* fonts[] = { 
@@ -395,11 +392,11 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for(const char* path : fonts) {
         if (access(path, R_OK) == 0) { 
-            // 独立加载主字体
+            // 独立加载主字体 (省显存模式)
             g_mainFont = io.Fonts->AddFontFromFileTTF(path, targetSize * mainResFactor, &configMain, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
             if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
             
-            // 独立挂载特大数字字体
+            // 独立挂载特大数字字体 (电竞级清晰度模式)
             g_hugeNumFont = io.Fonts->AddFontFromFileTTF(path, targetSize * numResFactor, &configNum, numRanges);
             if (g_hugeNumFont) g_hugeNumFont->Scale = 1.0f / numResFactor;
             
