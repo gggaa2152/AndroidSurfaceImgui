@@ -1,6 +1,13 @@
 #include "ATouchEvent.h"
-
 #include "Global.h"
+
+#include <sys/ioctl.h> // ★ 新增：用于执行 EVIOCGRAB 独占触摸设备
+
+// ★ 新增：跨文件引入在 AImGui.cpp 中记录的全局防穿透变量
+extern int g_ScreenWidth;
+extern int g_ScreenHeight;
+extern int g_RotateTheta;
+extern bool IsPointInImGuiWindow(int x, int y);
 
 int g_scanCodeMapping[] = {
     AKEYCODE_UNKNOWN, // Make scan codes mapping array start index with 1
@@ -363,6 +370,42 @@ namespace android
         input_event event{};
         if (0 >= read(m_deviceFd, &event, sizeof(input_event)))
             return false;
+
+        // =======================================================
+        // ★ 终极防穿透核心：内核级微秒截胡 ★
+        // 当内核刚刚报出坐标流 (EV_ABS)，但还没打出完成动作 (SYN_REPORT) 之前进行光速判断！
+        // =======================================================
+        if (event.type == EV_ABS)
+        {
+            if (event.code == ABS_MT_POSITION_X) lastTouchPointX = event.value;
+            if (event.code == ABS_MT_POSITION_Y) lastTouchPointY = event.value;
+            
+            // 我们光速把这个还没上报的坐标算出屏幕位置
+            if (g_ScreenWidth > 0)
+            {
+                TouchEvent tempEvent{};
+                tempEvent.x = lastTouchPointX;
+                tempEvent.y = lastTouchPointY;
+                tempEvent.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
+                
+                // 关键点：如果按下的位置在咱们的 UI 热区里面
+                if (IsPointInImGuiWindow(tempEvent.x, tempEvent.y)) {
+                    // 咔！立刻独占触屏！(EVIOCGRAB 设为 1)
+                    // 接下来游戏和系统完全收不到这个手指的任何信号，彻底瘫痪！
+                    ioctl(m_deviceFd, EVIOCGRAB, 1); 
+                } else {
+                    // 没砸中，赶紧放行给游戏
+                    ioctl(m_deviceFd, EVIOCGRAB, 0); 
+                }
+            }
+        }
+        
+        // ★ 防死锁保险：当彻底松开手指时，强制归还控制权给安卓系统
+        if (event.type == EV_KEY && (event.code == BTN_TOUCH || event.code == BTN_TOOL_FINGER) && event.value == 0)
+        {
+            ioctl(m_deviceFd, EVIOCGRAB, 0);
+        }
+        // =======================================================
 
         // Check if event is not a submit event
         if (EV_SYN != event.type || SYN_REPORT != event.code || 0 != event.value)
