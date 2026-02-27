@@ -1,9 +1,9 @@
 #include "ATouchEvent.h"
 #include "Global.h"
 
-#include <sys/ioctl.h> // ★ 新增：用于执行 EVIOCGRAB 独占触摸设备
+#include <sys/ioctl.h> // 用于执行 EVIOCGRAB
 
-// ★ 新增：跨文件引入在 AImGui.cpp 中记录的全局防穿透变量
+// ★ 跨文件引入在 AImGui.cpp 中记录的全局防穿透变量
 extern int g_ScreenWidth;
 extern int g_ScreenHeight;
 extern int g_RotateTheta;
@@ -311,7 +311,8 @@ namespace android
             if (std::string::npos == devicePath.path().filename().string().find("event"))
                 continue;
 
-            m_deviceFd = open(devicePath.path().c_str(), O_RDONLY | O_SYNC | O_NONBLOCK);
+            // ★ 核心改动 1：使用 O_RDWR 权限打开，允许我们注入虚假信号
+            m_deviceFd = open(devicePath.path().c_str(), O_RDWR | O_SYNC | O_NONBLOCK);
             if (-1 == m_deviceFd)
             {
                 LogDebug("[-] Could not open file %s due to error %d : %s", devicePath.path().c_str(), errno, strerror(errno));
@@ -363,6 +364,10 @@ namespace android
     {
         static std::vector<input_event> cachedEventQueue;
         static int lastTouchPointX = 0, lastTouchPointY = 0;
+        
+        // 用于跟踪当前手指是否按压，以及我们是否霸占了设备
+        static bool is_screen_pressed = false;
+        static bool is_grabbed = false;
 
         if (-1 == m_deviceFd)
             return false;
@@ -370,42 +375,6 @@ namespace android
         input_event event{};
         if (0 >= read(m_deviceFd, &event, sizeof(input_event)))
             return false;
-
-        // =======================================================
-        // ★ 终极防穿透核心：内核级微秒截胡 ★
-        // 当内核刚刚报出坐标流 (EV_ABS)，但还没打出完成动作 (SYN_REPORT) 之前进行光速判断！
-        // =======================================================
-        if (event.type == EV_ABS)
-        {
-            if (event.code == ABS_MT_POSITION_X) lastTouchPointX = event.value;
-            if (event.code == ABS_MT_POSITION_Y) lastTouchPointY = event.value;
-            
-            // 我们光速把这个还没上报的坐标算出屏幕位置
-            if (g_ScreenWidth > 0)
-            {
-                TouchEvent tempEvent{};
-                tempEvent.x = lastTouchPointX;
-                tempEvent.y = lastTouchPointY;
-                tempEvent.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
-                
-                // 关键点：如果按下的位置在咱们的 UI 热区里面
-                if (IsPointInImGuiWindow(tempEvent.x, tempEvent.y)) {
-                    // 咔！立刻独占触屏！(EVIOCGRAB 设为 1)
-                    // 接下来游戏和系统完全收不到这个手指的任何信号，彻底瘫痪！
-                    ioctl(m_deviceFd, EVIOCGRAB, 1); 
-                } else {
-                    // 没砸中，赶紧放行给游戏
-                    ioctl(m_deviceFd, EVIOCGRAB, 0); 
-                }
-            }
-        }
-        
-        // ★ 防死锁保险：当彻底松开手指时，强制归还控制权给安卓系统
-        if (event.type == EV_KEY && (event.code == BTN_TOUCH || event.code == BTN_TOOL_FINGER) && event.value == 0)
-        {
-            ioctl(m_deviceFd, EVIOCGRAB, 0);
-        }
-        // =======================================================
 
         // Check if event is not a submit event
         if (EV_SYN != event.type || SYN_REPORT != event.code || 0 != event.value)
@@ -420,6 +389,7 @@ namespace android
         touchEvent->x = lastTouchPointX;
         touchEvent->y = lastTouchPointY;
         touchEvent->keyCode = 0;
+        
         for (const auto &processEvent : cachedEventQueue)
         {
             switch (processEvent.type)
@@ -429,6 +399,15 @@ namespace android
                 if (BTN_TOUCH == processEvent.code || BTN_TOOL_FINGER == processEvent.code)
                 {
                     touchEvent->type = 1 == processEvent.value ? EventType::TouchDown : EventType::TouchUp;
+                    
+                    // 记录真实的按压状态
+                    is_screen_pressed = (processEvent.value == 1);
+                    
+                    // ★ 核心改动 2：当你抬起手指时，如果我们当前独占了屏幕，赶紧归还控制权！
+                    if (!is_screen_pressed && is_grabbed) {
+                        ioctl(m_deviceFd, EVIOCGRAB, 0);
+                        is_grabbed = false;
+                    }
                     break;
                 }
                 else if (KEY_RESERVED <= processEvent.code && sizeof(g_scanCodeMapping) > processEvent.code)
@@ -479,6 +458,34 @@ namespace android
             }
         }
         cachedEventQueue.clear();
+
+        // =======================================================
+        // ★ 核心改动 3：注射毒药 + 内核截胡 ★
+        // 当我们解析完完整的一帧触摸数据后，如果是按下状态且还没有抢占：
+        // =======================================================
+        if (is_screen_pressed && !is_grabbed && g_ScreenWidth > 0) 
+        {
+            TouchEvent temp; 
+            temp.x = lastTouchPointX; 
+            temp.y = lastTouchPointY;
+            temp.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
+            
+            // 如果砸中了辅助 UI 的热区
+            if (IsPointInImGuiWindow(temp.x, temp.y)) 
+            {
+                // 第一步：向游戏强行注入一个“立刻抬起手指”的取消信号
+                // 这能让系统引擎以为你只摸了 1 毫秒就放开了，绝对不可能触发拖拽或点击！
+                input_event cancel_ev[2] = {};
+                cancel_ev[0].type = EV_KEY; cancel_ev[0].code = BTN_TOUCH; cancel_ev[0].value = 0;
+                cancel_ev[1].type = EV_SYN; cancel_ev[1].code = SYN_REPORT; cancel_ev[1].value = 0;
+                write(m_deviceFd, cancel_ev, sizeof(cancel_ev));
+                
+                // 第二步：立刻锁死物理触摸屏，接下来的所有移动和松手只属于辅助！
+                ioctl(m_deviceFd, EVIOCGRAB, 1);
+                is_grabbed = true;
+            }
+        }
+        // =======================================================
 
         return true;
     }
