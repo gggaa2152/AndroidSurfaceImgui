@@ -25,6 +25,23 @@
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
+// 新增：底层异步震动马达反馈函数 (不阻塞UI渲染)
+void TriggerVibration(int ms = 20) {
+    std::thread([ms]() {
+        // 尝试 1：直接操作底层硬件节点 (适用于旧版或标准内核)
+        std::ofstream sysfs("/sys/class/timed_output/vibrator/enable");
+        if (sysfs.is_open()) {
+            sysfs << ms;
+            sysfs.close();
+        } else {
+            // 尝试 2：调用系统底层命令 (适用于 Android 12+)
+            char cmd[128];
+            snprintf(cmd, sizeof(cmd), "cmd vibrator vibrate %d > /dev/null 2>&1", ms);
+            system(cmd);
+        }
+    }).detach();
+}
+
 bool g_predict_enemy = false;
 bool g_predict_hex = false;
 bool g_esp_board = true;
@@ -346,6 +363,7 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
             // Check Close Button Hit
             if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
                 *isOpen = false;
+                TriggerVibration(20); // 触发关闭按钮震动
                 return; 
             }
             // Check Scale Handle Hit
@@ -435,6 +453,7 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
     if (hovered && ImGui::IsMouseClicked(0)) {
         clicked = true;
         if (v) *v = !(*v);
+        TriggerVibration(20); // 触发霓虹按钮震动
     }
     bool held = hovered && ImGui::IsMouseDown(0);
 
@@ -863,7 +882,10 @@ bool ModernToggle(const char* label, bool* v, int idx) {
 
     bool hovered, held;
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    if (pressed) { *v = !(*v); } // 无操作不自动保存
+    if (pressed) { 
+        *v = !(*v); 
+        TriggerVibration(20); // 触发拨动开关震动
+    } // 无操作不自动保存
 
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f; 
     
@@ -942,13 +964,18 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            if (ImGui::CollapsingHeader((const char*)u8" 预测功能 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            bool header1 = ImGui::CollapsingHeader((const char*)u8" 预测功能 ", ImGuiTreeNodeFlags_DefaultOpen);
+            if (ImGui::IsItemToggledOpen()) TriggerVibration(15); // 折叠菜单震动
+            if (header1) {
                 ImGui::Indent(); 
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
                 ImGui::Unindent();
             }
-            if (ImGui::CollapsingHeader((const char*)u8" 投食功能 ", ImGuiTreeNodeFlags_DefaultOpen)) {
+            
+            bool header2 = ImGui::CollapsingHeader((const char*)u8" 投食功能 ", ImGuiTreeNodeFlags_DefaultOpen);
+            if (ImGui::IsItemToggledOpen()) TriggerVibration(15); // 折叠菜单震动
+            if (header2) {
                 ImGui::Indent(); 
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
