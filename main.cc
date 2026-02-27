@@ -30,10 +30,20 @@ bool g_predict_hex = false;
 bool g_esp_board = true;
 bool g_esp_bench = false; 
 bool g_esp_shop = false;  
-bool g_esp_level = false; // 新增：金币等级投食
+bool g_esp_level = false; 
 bool g_auto_buy = false;
 bool g_instant = false;
 bool g_boardLocked = false; 
+
+// 新增：自动拿牌悬浮窗的具体功能状态
+bool g_auto_refresh = false;
+bool g_auto_buy_chosen = false;
+
+// 新增：牌库显示状态与行列配置
+bool g_show_card_pool = false;
+int g_card_pool_rows = 2;
+int g_card_pool_cols = 5;
+float g_cardPoolX = 150.0f, g_cardPoolY = 150.0f;
 
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
@@ -82,8 +92,13 @@ void SaveConfig() {
         out << "espBoard=" << g_esp_board << "\n";
         out << "espBench=" << g_esp_bench << "\n";
         out << "espShop=" << g_esp_shop << "\n";
-        out << "espLevel=" << g_esp_level << "\n"; // 保存金币等级投食状态
+        out << "espLevel=" << g_esp_level << "\n"; 
+        out << "showCardPool=" << g_show_card_pool << "\n";
+        out << "cardPoolRows=" << g_card_pool_rows << "\n";
+        out << "cardPoolCols=" << g_card_pool_cols << "\n";
         out << "autoBuy=" << g_auto_buy << "\n";
+        out << "autoRefresh=" << g_auto_refresh << "\n";
+        out << "autoBuyChosen=" << g_auto_buy_chosen << "\n";
         out << "instant=" << g_instant << "\n";
         out << "boardLocked=" << g_boardLocked << "\n";
         
@@ -140,7 +155,12 @@ void LoadConfig() {
                 else if (k == "espBench") g_esp_bench = (v == "1");
                 else if (k == "espShop") g_esp_shop = (v == "1");
                 else if (k == "espLevel") g_esp_level = (v == "1");
+                else if (k == "showCardPool") g_show_card_pool = (v == "1");
+                else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
+                else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
                 else if (k == "autoBuy") g_auto_buy = (v == "1");
+                else if (k == "autoRefresh") g_auto_refresh = (v == "1");
+                else if (k == "autoBuyChosen") g_auto_buy_chosen = (v == "1");
                 else if (k == "instant") g_instant = (v == "1");
                 else if (k == "boardLocked") g_boardLocked = (v == "1");
                 
@@ -398,18 +418,23 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     }
 }
 
-// 完美缩放字体的霓虹按钮
-bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 size, int id, float scale) {
+// 完美缩放字体的霓虹按钮（已修改为支持记忆状态的Toggle开关）
+bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 size, int id, float scale, bool* v = nullptr) {
     ImGuiIO& io = ImGui::GetIO();
     ImRect bb(pos, pos + size);
     bool hovered = bb.Contains(io.MousePos);
     bool clicked = false;
     
-    if (hovered && ImGui::IsMouseClicked(0)) clicked = true;
+    // 如果点击了此区域，则触发并切换状态
+    if (hovered && ImGui::IsMouseClicked(0)) {
+        clicked = true;
+        if (v) *v = !(*v);
+    }
     bool held = hovered && ImGui::IsMouseDown(0);
 
+    // 动画状态：如果状态v为true，则目标维持在1.0f，否则根据悬停情况动态变化
     static std::map<int, float> anims;
-    float target = held ? 1.0f : (hovered ? 0.6f : 0.0f);
+    float target = (v && *v) ? 1.0f : (held ? 1.0f : (hovered ? 0.6f : 0.0f));
     anims[id] = ImLerp(anims[id], target, 1.0f - expf(-20.0f * io.DeltaTime));
     float a = anims[id];
 
@@ -419,6 +444,7 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
     d->AddRectFilled(bb.Min, bb.Max, bg, size.y * 0.5f);
     d->AddRect(bb.Min, bb.Max, border, size.y * 0.5f, 0, 1.5f * scale * g_autoScale); 
     
+    // 发光外发散效果
     if (a > 0.01f) {
         d->AddRect(bb.Min, bb.Max, IM_COL32(0, 200, 255, 80 * a), size.y * 0.5f, 0, 4.0f * scale * g_autoScale);
     }
@@ -704,13 +730,63 @@ void DrawExtraWindows() {
         ImVec2 b1_pos = p_min + ImVec2(15.0f * g_autoScale * g_autoW_Scale, 10.0f * g_autoScale * g_autoW_Scale);
         ImVec2 b2_pos = b1_pos + ImVec2(btnW + gap, 0);
         
-        if (AnimatedNeonButton(d, (const char*)u8"自动刷新", b1_pos, ImVec2(btnW, btnH), 101, g_autoW_Scale)) {
-            // 点击触发逻辑
+        // 传入状态指针，实现 Toggle 拨动开关的效果
+        if (AnimatedNeonButton(d, (const char*)u8"自动刷新", b1_pos, ImVec2(btnW, btnH), 101, g_autoW_Scale, &g_auto_refresh)) {
+            // 这里可以处理开启/关闭瞬间的逻辑
         }
-        if (AnimatedNeonButton(d, (const char*)u8"自动拿天选", b2_pos, ImVec2(btnW, btnH), 102, g_autoW_Scale)) {
-            // 点击触发逻辑
+        if (AnimatedNeonButton(d, (const char*)u8"自动拿天选", b2_pos, ImVec2(btnW, btnH), 102, g_autoW_Scale, &g_auto_buy_chosen)) {
+            // 这里可以处理开启/关闭瞬间的逻辑
         }
     }
+}
+
+// =================================================================
+// 6.5 牌库显示窗口
+// =================================================================
+void DrawCardPool() {
+    if (!g_show_card_pool) return;
+    
+    ImGui::SetNextWindowPos(ImVec2(g_cardPoolX, g_cardPoolY), ImGuiCond_FirstUseEver);
+    
+    // 增加一点赛博朋克发光边框效果
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.85f, 0.55f, 0.6f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * g_autoScale);
+    
+    if (ImGui::Begin((const char*)u8"游戏牌库", &g_show_card_pool, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+        
+        ImVec2 pos = ImGui::GetWindowPos();
+        if (pos.x != g_cardPoolX || pos.y != g_cardPoolY) { g_cardPoolX = pos.x; g_cardPoolY = pos.y; }
+
+        float fontScaleVal = (18.0f * g_autoScale * g_scale) / g_current_rendered_size;
+        ImGui::SetWindowFontScale(fontScaleVal);
+
+        // --- 上半部分：动态网格绘制英雄图片 ---
+        if (g_textureLoaded) {
+            float imgSize = 45.0f * g_autoScale * g_scale; 
+            for (int r = 0; r < g_card_pool_rows; r++) {
+                for (int c = 0; c < g_card_pool_cols; c++) {
+                    ImGui::Image((ImTextureID)(intptr_t)g_heroTexture, ImVec2(imgSize, imgSize));
+                    if (c < g_card_pool_cols - 1) ImGui::SameLine();
+                }
+            }
+        } else {
+            ImGui::Text((const char*)u8"正在加载英雄图片资源...");
+        }
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        // --- 下半部分：独立两行的行列滑条控制 ---
+        ImGui::PushItemWidth(180.0f * g_autoScale * g_scale);
+        ImGui::SliderInt((const char*)u8"行数", &g_card_pool_rows, 1, 10);
+        ImGui::SliderInt((const char*)u8"列数", &g_card_pool_cols, 1, 15);
+        ImGui::PopItemWidth();
+    }
+    ImGui::End();
+    
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 // =================================================================
@@ -821,7 +897,8 @@ void DrawMenu() {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
                 ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
-                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); // 新增金币等级投食
+                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
+                ModernToggle((const char*)u8"牌库显示", &g_show_card_pool, 10); // 新增牌库菜单开关
                 ImGui::Unindent();
             }
             ImGui::Separator();
@@ -898,6 +975,7 @@ int main() {
         DrawBench();
         DrawShop();
         DrawExtraWindows();
+        DrawCardPool(); // 每一帧调用牌库渲染
         DrawMenu();
         
         imgui.EndFrame(); 
