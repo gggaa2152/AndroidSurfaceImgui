@@ -31,7 +31,7 @@ bool g_esp_board = true;
 bool g_esp_bench = false; 
 bool g_esp_shop = false;  
 bool g_esp_level = false; 
-bool g_esp_equip = true;   // 新增：装备显示开关
+bool g_esp_equip = true;   // 装备显示开关
 bool g_auto_buy = false;
 bool g_instant = false;
 bool g_boardLocked = false; 
@@ -119,7 +119,7 @@ void SaveConfig() {
         out << "espBench=" << g_esp_bench << "\n";
         out << "espShop=" << g_esp_shop << "\n";
         out << "espLevel=" << g_esp_level << "\n"; 
-        out << "espEquip=" << g_esp_equip << "\n"; // 保存装备开关
+        out << "espEquip=" << g_esp_equip << "\n"; 
         out << "showCardPool=" << g_show_card_pool << "\n";
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
@@ -194,7 +194,7 @@ void LoadConfig() {
                 else if (k == "espBench") g_esp_bench = (v == "1");
                 else if (k == "espShop") g_esp_shop = (v == "1");
                 else if (k == "espLevel") g_esp_level = (v == "1");
-                else if (k == "espEquip") g_esp_equip = (v == "1"); // 读取装备开关
+                else if (k == "espEquip") g_esp_equip = (v == "1"); 
                 else if (k == "showCardPool") g_show_card_pool = (v == "1");
                 else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
@@ -521,7 +521,7 @@ void DrawPurePredictEnemy() {
     float curW = baseW * g_enemy_Scale;
     float curH = baseH * g_enemy_Scale;
 
-    // 【需求4】预测对手添加全彩色薄边框胶囊形状
+    // 预测对手添加全彩色薄边框胶囊形状
     d->AddRectFilled(ImVec2(g_enemy_X, g_enemy_Y), ImVec2(g_enemy_X + curW, g_enemy_Y + curH), IM_COL32(10, 15, 20, 160 * alpha), curH * 0.5f);
     
     float r, g, b;
@@ -876,7 +876,7 @@ void DrawCardPool() {
                 float x = g_cardPoolX + c * (curSz + curGap) + center_offset;
                 float y = g_cardPoolY + r * (curSz + curGap) + center_offset;
                 
-                // 【需求3】计算四角圆弧彩色薄边框颜色
+                // 计算四角圆弧彩色薄边框颜色
                 float hue = fmodf((float)ImGui::GetTime() * 0.2f + (r * draw_cols + c) * 0.1f, 1.0f);
                 float br, bg, bb_col;
                 ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, br, bg, bb_col);
@@ -934,17 +934,18 @@ void DrawBoard() {
     float baseYStep = baseSz * 1.5f;
 
     float h_dx = 6 * baseXStep + (3 % 2 == 1 ? baseXStep * 0.5f : 0) + baseSz;
-    // 为下方装备栏留出空间，否则下拖块会被盖住
-    float h_dy = 3 * baseYStep + baseSz * 0.5f + 60.0f * g_autoScale; 
+    // 为下方超长装备栏留出空间，否则下拖块会被盖住
+    float h_dy = 3 * baseYStep + baseSz * 0.5f + 80.0f * g_autoScale; 
     
     float c_dx = -baseXStep * 0.5f; 
     float c_dy = -baseYStep * 0.5f;
 
+    // 扩大交互检测区域，容纳上下部拉长到棋盘外的装备区
     HandleGridInteraction(g_startX, g_startY, g_boardManualScale, t_x, t_y, t_scale,
                           isDragging, isScaling, dragOffset, scaleDragOffset,
                           h_dx, h_dy, c_dx, c_dy, 
-                          -baseSz*2 - 40.0f*g_autoScale, -baseSz*2 - 40.0f*g_autoScale, // 扩大检测区容纳上部装备区
-                          6.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2 + 60.0f*g_autoScale, // 容纳下部装备区
+                          -baseSz*2 - 80.0f*g_autoScale, -baseSz*2 - 80.0f*g_autoScale, 
+                          6.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2 + 80.0f*g_autoScale, 
                           g_boardLocked, &g_esp_board);
 
     if (!g_esp_board) return;
@@ -964,62 +965,65 @@ void DrawBoard() {
             float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
             float cy = g_startY + r * curYStep;
             
+            // 提前计算彩色，用于装备线、装备边框和六边形
+            float hue = fmodf(time * 0.3f + (cx + cy) * 0.0008f, 1.0f);
+            float rf, gf, bf; 
+            ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
+            ImU32 themeColor = IM_COL32(rf*255, gf*255, bf*255, 255);
+            ImU32 themeColorAlpha = IM_COL32(rf*255, gf*255, bf*255, 180);
+
             if(g_enemyBoard[r][c]) {
                 if (g_textureLoaded) {
                     DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
                 }
                 
-                // 【需求7】在英雄下方绘制英雄等级标识预留数字 '3'
+                // 大幅放大英雄下方等级数字，并加入黑色阴影让其更醒目
                 ImFont* font = ImGui::GetFont();
-                float lvlFsz = ImGui::GetFontSize() * 1.2f * g_boardManualScale;
+                float lvlFsz = ImGui::GetFontSize() * 2.5f * g_boardManualScale; // 将大小提升到 2.5 倍
                 const char* lvlTxt = "3";
                 ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
-                ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.4f);
-                d->AddText(font, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255), lvlTxt); // 阴影
-                d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); // 主字
+                ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.35f);
+                d->AddText(font, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
+                d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
 
-                // 【需求6】引出一条线和三个同步缩放的方框放置装备
+                // 彩色装备连接线和圆角彩色方框，向外拉长
                 if (g_esp_equip) {
                     float hexRadius = curSz;
-                    float equipSz = 14.0f * g_autoScale * g_boardManualScale; 
-                    float equipGap = 2.0f * g_autoScale * g_boardManualScale;
+                    float equipSz = 18.0f * g_autoScale * g_boardManualScale; // 可缩放的装备格子大小
+                    float equipGap = 4.0f * g_autoScale * g_boardManualScale;
+                    float rounding = 4.0f * g_autoScale * g_boardManualScale; // 四角圆弧
                     
-                    ImU32 lineColor = IM_COL32(200, 200, 200, 150);
                     ImU32 boxBg = IM_COL32(20, 25, 30, 200);
-                    ImU32 boxBorder = IM_COL32(150, 150, 150, 255);
-                    float startX = cx - (1.5f * equipSz + equipGap); // 让三个方框完美居中于 cx
+                    float startX = cx - (1.5f * equipSz + equipGap); // 让三个格子完美居中对齐线
+                    float lineThick = 2.0f * g_autoScale * g_boardManualScale; // 线条也跟随缩放
                     
                     if (r == 0 || r == 1) {
-                        float topY = g_startY - 35.0f * g_autoScale * g_boardManualScale;
-                        // 从格子的最上面顶点(cx, cy - hexRadius)引出线向上
-                        d->AddLine(ImVec2(cx, cy - hexRadius), ImVec2(cx, topY), lineColor, 1.5f * g_autoScale);
+                        // 向上拉长，基于棋盘最顶部的绝对坐标，彻底移出棋盘
+                        float topY = g_startY - curSz * 1.5f - 20.0f * g_autoScale * g_boardManualScale;
+                        float boxY = topY - equipSz; // 格子画在引出线上方
                         
-                        // 绘制3个方框
+                        d->AddLine(ImVec2(cx, cy - hexRadius), ImVec2(cx, topY), themeColorAlpha, lineThick);
+                        
                         for(int i = 0; i < 3; i++) {
                             float bx = startX + i * (equipSz + equipGap);
-                            float by = topY - equipSz; // 画在引线末端上方
-                            d->AddRectFilled(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBg, 2.0f * g_autoScale);
-                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBorder, 2.0f * g_autoScale, 0, 1.0f * g_autoScale);
+                            d->AddRectFilled(ImVec2(bx, boxY), ImVec2(bx + equipSz, boxY + equipSz), boxBg, rounding);
+                            d->AddRect(ImVec2(bx, boxY), ImVec2(bx + equipSz, boxY + equipSz), themeColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_boardManualScale);
                         }
                     } else if (r == 2 || r == 3) {
-                        float bottomY = g_startY + 3 * curYStep + hexRadius + 35.0f * g_autoScale * g_boardManualScale;
-                        // 从格子的最下面交点(cx, cy + hexRadius)引出线下向
-                        d->AddLine(ImVec2(cx, cy + hexRadius), ImVec2(cx, bottomY), lineColor, 1.5f * g_autoScale);
+                        // 向下拉长，基于棋盘最底部的绝对坐标
+                        float bottomY = g_startY + 3 * curYStep + curSz * 1.5f + 20.0f * g_autoScale * g_boardManualScale;
+                        float boxY = bottomY; // 格子画在引出线下方
                         
-                        // 绘制3个方框
+                        d->AddLine(ImVec2(cx, cy + hexRadius), ImVec2(cx, bottomY), themeColorAlpha, lineThick);
+                        
                         for(int i = 0; i < 3; i++) {
                             float bx = startX + i * (equipSz + equipGap);
-                            float by = bottomY; // 画在引线末端下方
-                            d->AddRectFilled(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBg, 2.0f * g_autoScale);
-                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBorder, 2.0f * g_autoScale, 0, 1.0f * g_autoScale);
+                            d->AddRectFilled(ImVec2(bx, boxY), ImVec2(bx + equipSz, boxY + equipSz), boxBg, rounding);
+                            d->AddRect(ImVec2(bx, boxY), ImVec2(bx + equipSz, boxY + equipSz), themeColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_boardManualScale);
                         }
                     }
                 }
             }
-            
-            float hue = fmodf(time * 0.3f + (cx + cy) * 0.0008f, 1.0f);
-            float rf, gf, bf; 
-            ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
             
             ImVec2 pts[6];
             for(int i = 0; i < 6; i++) {
@@ -1084,13 +1088,13 @@ void DrawBench() {
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
         d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
         
-        // 【需求7】备战席也同理在下方写英雄等级，为演示效果暂时全绘出预留的3
+        // 备战席同步放大英雄下方星级数字
         ImFont* font = ImGui::GetFont();
-        float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
+        float lvlFsz = ImGui::GetFontSize() * 2.5f * g_benchScale; // 放大倍数提升至 2.5 倍
         const char* lvlTxt = "3";
         ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
-        ImVec2 txtPos(x + curSz * 0.5f - tSz.x * 0.5f, y + curSz - tSz.y - 2.0f * g_autoScale);
-        d->AddText(font, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
+        ImVec2 txtPos(x + curSz * 0.5f - tSz.x * 0.5f, y + curSz - tSz.y + 8.0f * g_autoScale * g_benchScale);
+        d->AddText(font, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
         d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
     }
 }
@@ -1366,14 +1370,14 @@ void DrawMenu() {
                 g_menuW = curW; 
                 g_menuH = curH; 
                 g_scale = curW / (350.0f * g_autoScale); 
-                // 【已优化】此处不再抛出重绘全局字体事件，实现毫秒级拉伸响应
+                // 此处不再抛出重绘全局字体事件，实现毫秒级拉伸响应
             }
         }
         
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
         if (!g_menuCollapsed) {
-            // 【需求2】使全局缩放率(g_scale)唯一且仅作用于菜单内的元素排版，不再干扰其他独立悬浮窗大小
+            // 使全局缩放率(g_scale)唯一且仅作用于菜单内的元素排版，不再干扰其他独立悬浮窗大小
             ImGui::SetWindowFontScale(g_scale);
             
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
@@ -1387,13 +1391,11 @@ void DrawMenu() {
             }
             
             static bool header_esp = true;
-            // 更新该文件夹包含的子控件数量以确保动画平滑 (由4改为5)
             if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 5)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
                 ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
                 ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
-                // 【需求5】透视功能里增加对手装备投食显示
                 ModernToggle((const char*)u8"对手装备投食", &g_esp_equip, 12); 
                 EndModernAnimatedFolder();
             }
@@ -1510,7 +1512,7 @@ int main() {
         
         imgui.BeginFrame(); 
         
-        // 【需求8核心修补】解决因为裁剪测试 (Scissor Test) 没关导致半透明残影滞留的Bug
+        // 解决因为裁剪测试 (Scissor Test) 没关导致半透明残影滞留的Bug
         glDisable(GL_SCISSOR_TEST); // 强制关闭裁剪区域限制，确保清屏清到每一寸像素
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); // 保持全局透明度，不会影响背后的游戏画面
         glClear(GL_COLOR_BUFFER_BIT);
