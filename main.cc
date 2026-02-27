@@ -294,7 +294,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 4. 核心物理交互引擎 (防点击穿透拦截层 + 极度丝滑)
+// 4. 核心物理交互引擎 (终极防点击穿透拦截层 + 极度丝滑)
 // =================================================================
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
@@ -317,7 +317,8 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         float closeHandleY = out_y + c_dy_unscaled * out_scale;
         ImVec2 p_close(closeHandleX, closeHandleY);
 
-        // --- 防点击穿透：自动生成隐形边界拦截窗口 ---
+        // --- 终极防点击穿透：InvisibleButton 绝对拦截法 ---
+        // 只有在未锁定时，我们才生成拦截背景，保证操作顺滑且绝不漏给游戏
         ImRect blockArea(
             ImVec2(out_x + hitMinX_unscaled * out_scale, out_y + hitMinY_unscaled * out_scale), 
             ImVec2(out_x + hitMaxX_unscaled * out_scale, out_y + hitMaxY_unscaled * out_scale)
@@ -336,10 +337,17 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         ImGui::SetNextWindowSize(blockArea.GetSize());
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        ImGui::Begin(winName, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        // 使用 1% 透明度的几乎不可见黑色，骗过部分底层注入引擎
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.01f)); 
+        ImGui::Begin(winName, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        
+        // 核心：铺满一个隐形按钮，只要鼠标在这里，ImGui必将 io.WantCaptureMouse 置为 true，彻底切断底层触摸
+        ImGui::InvisibleButton("##AbsBlockerBtn", blockArea.GetSize()); 
+        
         ImGui::End();
+        ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
-        // ---------------------------------------------
+        // ----------------------------------------------------
 
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
             if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
@@ -417,23 +425,11 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     }
 }
 
-// 完美缩放字体的防穿透霓虹按钮
+// 防穿透霓虹按钮
 bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 size, int id, float scale) {
     ImGuiIO& io = ImGui::GetIO();
     ImRect bb(pos, pos + size);
     
-    // --- 防点击穿透拦截层 ---
-    ImGui::SetNextWindowPos(pos);
-    ImGui::SetNextWindowSize(size);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    char winName[64];
-    sprintf(winName, "##BtnBlocker_%d", id);
-    ImGui::Begin(winName, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus);
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-    // ------------------------
-
     bool hovered = bb.Contains(io.MousePos);
     bool clicked = false;
     
@@ -619,7 +615,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 6. 悬浮窗面板 (无点击穿透保障)
+// 6. 悬浮窗面板 (带有强制拦截底板)
 // =================================================================
 void DrawExtraWindows() {
     float time = (float)ImGui::GetTime();
@@ -692,7 +688,7 @@ void DrawExtraWindows() {
         ImGui::PopStyleColor();
     }
     
-    // 自动拿牌胶囊窗
+    // 自动拿牌胶囊窗 (无论是否锁定棋盘，这里强制生成防穿透层)
     if (g_auto_buy) {
         ImDrawList* d = ImGui::GetForegroundDrawList();
         
@@ -718,17 +714,22 @@ void DrawExtraWindows() {
         ImVec2 p_max(g_autoW_X + curW, g_autoW_Y + curH);
         float rounding = curH * 0.5f;
 
-        // --- 防点击穿透：胶囊背景拦截层 ---
+        // --- 强力防点击穿透：为胶囊单独生成底板 ---
         char winNameCap[64];
         sprintf(winNameCap, "##CapBlocker_%p", &g_autoW_X);
         ImGui::SetNextWindowPos(p_min);
-        ImGui::SetNextWindowSize(p_max - p_min);
+        // 如果未锁定，把缩放手柄也囊括进防穿透区域
+        ImVec2 capBlockSize = g_boardLocked ? (p_max - p_min) : (p_max - p_min + ImVec2(45.0f * g_autoScale * g_autoW_Scale, 0));
+        ImGui::SetNextWindowSize(capBlockSize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        ImGui::Begin(winNameCap, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.01f)); // 骗过安卓系统的1%透明度
+        ImGui::Begin(winNameCap, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGui::InvisibleButton("##CapAbsBlocker", capBlockSize); 
         ImGui::End();
+        ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
-        // -----------------------------------
+        // -------------------------------------------
         
         d->AddRectFilled(p_min, p_max, IM_COL32(15, 20, 25, 240), rounding);
         d->AddRect(p_min, p_max, IM_COL32(0, 255, 150, 200), rounding, 0, 2.0f * g_autoScale * g_autoW_Scale);
