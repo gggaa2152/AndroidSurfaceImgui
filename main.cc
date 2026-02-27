@@ -1480,7 +1480,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver); 
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.1 (极速纯净版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         g_menuX = ImGui::GetWindowPos().x; 
         g_menuY = ImGui::GetWindowPos().y;
         
