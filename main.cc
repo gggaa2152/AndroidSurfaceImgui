@@ -77,7 +77,6 @@ float g_shopX = 200.0f;
 float g_shopY = 850.0f;
 float g_shopScale = 1.0f;
 
-// 全新纯悬浮预测坐标
 float g_enemy_X = 100.0f;
 float g_enemy_Y = 100.0f;
 float g_enemy_Scale = 1.0f;
@@ -90,7 +89,6 @@ float g_autoW_X = 300.0f;
 float g_autoW_Y = 1000.0f;
 float g_autoW_Scale = 1.0f;
 
-// 整合的 8 人玩家信息覆盖层坐标 (头像、金币等级、预警)
 float g_players_X = 1500.0f;
 float g_players_Y = 200.0f;
 float g_players_Scale = 1.0f;
@@ -100,6 +98,10 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 bool g_needUpdateFontSafe = false;
 
+// 【终极方案】：独立分离出特大号数字专属贴图，无视任何屏幕的极限放大
+ImFont* g_mainFont = nullptr;
+ImFont* g_hugeNumFont = nullptr;
+
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, 
     {0, 1, 0, 1, 0, 0, 0},
@@ -108,7 +110,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理
+// 2. 配置管理 (保持不变)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -350,32 +352,39 @@ void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f; 
     g_autoScale = screenH / 1080.0f;
-    float targetSize = std::clamp(18.0f * g_autoScale, 12.0f, 100.0f); 
+    float targetSize = std::clamp(18.0f * g_autoScale, 12.0f, 60.0f); 
     
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     
     ImGui_ImplOpenGL3_DestroyFontsTexture(); 
     io.Fonts->Clear(); 
-    
-    ImFontConfig config;
+    g_mainFont = nullptr;
+    g_hugeNumFont = nullptr;
     
     // ==============================================================
-    // 【核心修复】开启字体超采样 (Super-Sampling) 解决放大模糊
+    // 🚀 【双引擎 16K 超采样系统】突破位图渲染显存瓶颈
     // ==============================================================
-    // 基础放大倍率设为 2.5，这样就算拖拽面板放大 2.5 倍，也是 1:1 像素完美渲染
-    float highResFactor = 2.5f; 
     
-    // 显存安全锁：防止高分辨率设备（如 4K 屏）上烘焙极巨大的纹理导致内存溢出
-    if (targetSize * highResFactor > 90.0f) {
-        highResFactor = 90.0f / targetSize;
-    }
-    highResFactor = std::max(1.2f, highResFactor); // 保底系数
-
-    // 禁用 ImGui 默认的冗余横向过采样，因为我们已经在物理尺寸上整体放大了，
-    // 如果再开 Oversample 会导致宽度二次翻倍，浪费内存。
-    config.OversampleH = 1; 
-    config.OversampleV = 1; 
-    config.PixelSnapH = true;
+    // 引擎1：主文字体（含中文）
+    // 为了防止 3000 多字的中文撑爆显存，我们将分辨率锁在 2.5倍。
+    ImFontConfig configMain;
+    float mainResFactor = 2.5f; 
+    if (targetSize * mainResFactor > 120.0f) mainResFactor = 120.0f / targetSize; // 显存保险
+    configMain.OversampleH = 2; // 二次过采样
+    configMain.OversampleV = 2;
+    configMain.PixelSnapH = false; // 关闭对齐防抖动
+    configMain.RasterizerMultiply = 1.15f; 
+    
+    // 引擎2：终极高清数字体（专治各种强迫症放大）
+    // 仅挂载数字和符号，无视显存限制，直接拉到变态级的 8倍大小 + 3x3矩阵过采样！
+    ImFontConfig configNum;
+    float numResFactor = 8.0f;
+    if (targetSize * numResFactor > 400.0f) numResFactor = 400.0f / targetSize; 
+    configNum.OversampleH = 3; 
+    configNum.OversampleV = 3;
+    configNum.PixelSnapH = false;
+    configNum.RasterizerMultiply = 1.25f; 
+    static const ImWchar numRanges[] = { 0x0020, 0x00FF, 0 }; // 极小体积基础英数符范围
     
     const char* fonts[] = { 
         "/system/fonts/SysSans-Hans-Regular.ttf", 
@@ -386,20 +395,23 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for(const char* path : fonts) {
         if (access(path, R_OK) == 0) { 
-            // 步骤 1：以超高分辨率将字体烘焙到纹理上
-            ImFont* font = io.Fonts->AddFontFromFileTTF(path, targetSize * highResFactor, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
-            if (font) {
-                // 步骤 2：欺骗 ImGui，在逻辑计算排版尺寸时，将其缩小回正常尺寸。
-                // 这保证了所有菜单大小不发生形变，但却拥有高清抗锯齿贴图。
-                font->Scale = 1.0f / highResFactor; 
-                loaded = true; 
-                break; 
-            }
+            // 独立加载主字体
+            g_mainFont = io.Fonts->AddFontFromFileTTF(path, targetSize * mainResFactor, &configMain, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
+            if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
+            
+            // 独立挂载特大数字字体
+            g_hugeNumFont = io.Fonts->AddFontFromFileTTF(path, targetSize * numResFactor, &configNum, numRanges);
+            if (g_hugeNumFont) g_hugeNumFont->Scale = 1.0f / numResFactor;
+            
+            loaded = true; 
+            break; 
         }
     }
-    if(!loaded) {
-        ImFont* font = io.Fonts->AddFontDefault();
-        if (font) font->Scale = 1.0f / highResFactor;
+    
+    // 兜底方案
+    if(!loaded || !g_mainFont) {
+        g_mainFont = io.Fonts->AddFontDefault();
+        if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
     }
     
     io.Fonts->Build(); 
@@ -522,7 +534,8 @@ void DrawPurePredictEnemy() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    ImFont* font = ImGui::GetFont();
+    // 此处包含中文“玩家”，因此调用主字体引擎
+    ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
     const char* txt = (const char*)u8"玩家 3";
     float fsz = ImGui::GetFontSize() * 1.5f; 
     ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, txt);
@@ -575,7 +588,8 @@ void DrawPurePredictHex() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    ImFont* font = ImGui::GetFont();
+    // 此处包含中文，调用主字体引擎
+    ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
     float fsz = ImGui::GetFontSize() * 1.5f; 
     const char* t1 = (const char*)u8"银色"; 
     const char* t2 = (const char*)u8"金色"; 
@@ -668,7 +682,9 @@ void DrawPlayersOverlay() {
 
     float curAvatarR = avatar_r * g_players_Scale;
     float curRowH = row_h * g_players_Scale;
-    ImFont* font = ImGui::GetFont();
+    
+    // 采用特大号数字字体，保证 G:28/LV5 等文本完美锐利
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     for (int i = 0; i < 8; i++) {
         float cx = g_players_X + curAvatarR;
@@ -686,10 +702,10 @@ void DrawPlayersOverlay() {
             float fsz = ImGui::GetFontSize() * g_players_Scale * 1.1f;
             char buf[32]; 
             snprintf(buf, sizeof(buf), "G:28/LV5");
-            ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+            ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
             
             d->AddRectFilled(ImVec2(draw_x, cy - tSz.y*0.6f), ImVec2(draw_x + tSz.x + 10.0f*g_autoScale*g_players_Scale, cy + tSz.y*0.6f), IM_COL32(15, 20, 25, 160 * alpha * esp_anim[i]), 4.0f * g_autoScale);
-            d->AddText(font, fsz, ImVec2(draw_x + 5.0f*g_autoScale*g_players_Scale, cy - tSz.y*0.5f), IM_COL32(255, 215, 0, 255 * alpha * esp_anim[i]), buf);
+            d->AddText(numFont, fsz, ImVec2(draw_x + 5.0f*g_autoScale*g_players_Scale, cy - tSz.y*0.5f), IM_COL32(255, 215, 0, 255 * alpha * esp_anim[i]), buf);
             
             draw_x += 120.0f * g_autoScale * g_players_Scale * esp_anim[i];
         }
@@ -712,9 +728,9 @@ void DrawPlayersOverlay() {
             float fsz = ImGui::GetFontSize() * 0.8f * g_players_Scale;
             char buf[16]; 
             snprintf(buf, sizeof(buf), "7/12");
-            ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+            ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
             
-            d->AddText(font, fsz, ImVec2(draw_x + (img_sz - tSz.x)*0.5f, img_y + img_sz - bg_h + (bg_h - tSz.y)*0.5f), IM_COL32(255, 100, 100, 255*final_a), buf);
+            d->AddText(numFont, fsz, ImVec2(draw_x + (img_sz - tSz.x)*0.5f, img_y + img_sz - bg_h + (bg_h - tSz.y)*0.5f), IM_COL32(255, 100, 100, 255*final_a), buf);
         }
     }
 }
@@ -876,6 +892,9 @@ void DrawCardPool() {
     float curSz = baseImgSz * g_cardPoolScale; 
     float curGap = gap * g_cardPoolScale;
 
+    // 获取数字特供高清字体
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
+
     if (g_textureLoaded) {
         int draw_rows = std::ceil(current_rows); 
         int draw_cols = std::ceil(current_cols);
@@ -912,13 +931,12 @@ void DrawCardPool() {
                     d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, 0, 0, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
                 }
                 
-                ImFont* font = ImGui::GetFont();
                 float fsz = ImGui::GetFontSize() * g_cardPoolScale * 0.8f * cell_anim; 
                 char buf[16]; 
                 snprintf(buf, sizeof(buf), "5/12");
-                ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+                ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
                 float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                d->AddText(font, fsz, ImVec2(x + (offset_sz - tSz.x) * 0.5f, y + offset_sz - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
+                d->AddText(numFont, fsz, ImVec2(x + (offset_sz - tSz.x) * 0.5f, y + offset_sz - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
             }
         }
     }
@@ -971,6 +989,9 @@ void DrawBoard() {
         DrawScaleHandle(d, ImVec2(g_startX + h_dx * g_boardManualScale, g_startY + h_dy * g_boardManualScale), isScaling);
         DrawCloseHandle(d, ImVec2(g_startX + c_dx * g_boardManualScale, g_startY + c_dy * g_boardManualScale), &g_esp_board);
     }
+    
+    // 强制挂载极高清晰数字专属字体
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     for(int r = 0; r < 4; r++) {
         for(int c = 0; c < 7; c++) {
@@ -986,13 +1007,12 @@ void DrawBoard() {
                     DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
                 }
                 
-                ImFont* font = ImGui::GetFont();
                 float lvlFsz = ImGui::GetFontSize() * 2.5f * g_boardManualScale; 
                 const char* lvlTxt = "1/3";
-                ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+                ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
                 ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.4f);
-                d->AddText(font, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
-                d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
+                d->AddText(numFont, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
+                d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
             }
             
             ImVec2 pts[6];
@@ -1047,6 +1067,8 @@ void DrawBench() {
         DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
     }
 
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
+
     for (int i = 0; i < 9; i++) {
         float x = g_benchX + i * curSpacing; 
         float y = g_benchY;
@@ -1058,13 +1080,12 @@ void DrawBench() {
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
         d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
         
-        ImFont* font = ImGui::GetFont();
         float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
         const char* lvlTxt = "3";
-        ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+        ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
         ImVec2 txtPos(x + curSz * 0.5f - tSz.x * 0.5f, y + curSz - tSz.y + 2.0f * g_autoScale * g_benchScale);
-        d->AddText(font, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
-        d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
+        d->AddText(numFont, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
+        d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
     }
 }
 
