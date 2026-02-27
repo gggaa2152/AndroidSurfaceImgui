@@ -4,8 +4,8 @@
 #include "ANativeWindowCreator.h"
 #include "ATouchEvent.h"
 
-#include "imgui_internal.h" // ★ 新增：用于访问内部窗口尺寸
-#include <mutex>            // ★ 新增：用于线程安全
+#include "imgui_internal.h" // 用于访问内部窗口尺寸
+#include <mutex>            // 用于线程安全
 
 #include <ImGui-SharedDrawData/modules/ImGuiSharedDrawData.h>
 #include <zstd.h>
@@ -466,8 +466,8 @@ namespace android
                 g_ImGuiUIBoxes.clear();
                 for (int i = 0; i < g->Windows.Size; i++) {
                     ImGuiWindow* win = g->Windows[i];
-                    // 剔除隐藏窗口和提示框，其余都作为阻挡区
-                    if (win->Active && !win->Hidden && win->Type != ImGuiWindowType_Tooltip) {
+                    // 完美修复：使用 ImGuiWindowFlags_Tooltip 掩码匹配
+                    if (win->Active && !win->Hidden && !(win->Flags & ImGuiWindowFlags_Tooltip)) {
                         g_ImGuiUIBoxes.push_back(win->Rect());
                     }
                 }
@@ -571,7 +571,8 @@ namespace android
                 g_ImGuiUIBoxes.clear();
                 for (int i = 0; i < g->Windows.Size; i++) {
                     ImGuiWindow* win = g->Windows[i];
-                    if (win->Active && !win->Hidden && win->Type != ImGuiWindowType_Tooltip) {
+                    // 完美修复：使用 ImGuiWindowFlags_Tooltip 掩码匹配
+                    if (win->Active && !win->Hidden && !(win->Flags & ImGuiWindowFlags_Tooltip)) {
                         g_ImGuiUIBoxes.push_back(win->Rect());
                     }
                 }
