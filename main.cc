@@ -31,6 +31,7 @@ bool g_esp_board = true;
 bool g_esp_bench = false; 
 bool g_esp_shop = false;  
 bool g_esp_level = false; 
+bool g_esp_equip = true;   // 新增：装备显示开关
 bool g_auto_buy = false;
 bool g_instant = false;
 bool g_boardLocked = false; 
@@ -118,6 +119,7 @@ void SaveConfig() {
         out << "espBench=" << g_esp_bench << "\n";
         out << "espShop=" << g_esp_shop << "\n";
         out << "espLevel=" << g_esp_level << "\n"; 
+        out << "espEquip=" << g_esp_equip << "\n"; // 保存装备开关
         out << "showCardPool=" << g_show_card_pool << "\n";
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
@@ -192,6 +194,7 @@ void LoadConfig() {
                 else if (k == "espBench") g_esp_bench = (v == "1");
                 else if (k == "espShop") g_esp_shop = (v == "1");
                 else if (k == "espLevel") g_esp_level = (v == "1");
+                else if (k == "espEquip") g_esp_equip = (v == "1"); // 读取装备开关
                 else if (k == "showCardPool") g_show_card_pool = (v == "1");
                 else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
@@ -343,11 +346,12 @@ void DrawHero(ImDrawList* drawList, ImVec2 center, float size) {
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
+// 【修复1＆2】极致优化启动速度：彻底剥离全局缩放g_scale影响，使用固定基准字号以防菜单拉伸时卡死重绘
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f; 
     g_autoScale = screenH / 1080.0f;
-    float targetSize = std::clamp(18.0f * g_autoScale * g_scale, 12.0f, 100.0f);
+    float targetSize = std::clamp(18.0f * g_autoScale, 12.0f, 100.0f); // 取消绑定 g_scale
     
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     
@@ -355,8 +359,9 @@ void UpdateFontHD(bool force = false) {
     io.Fonts->Clear(); 
     
     ImFontConfig config;
-    config.OversampleH = 2; 
-    config.OversampleV = 2; 
+    // 采用更轻量的采样策略，瞬间极速启动
+    config.OversampleH = 1; 
+    config.OversampleV = 1; 
     config.PixelSnapH = true;
     
     const char* fonts[] = { 
@@ -516,7 +521,13 @@ void DrawPurePredictEnemy() {
     float curW = baseW * g_enemy_Scale;
     float curH = baseH * g_enemy_Scale;
 
+    // 【需求4】预测对手添加全彩色薄边框胶囊形状
     d->AddRectFilled(ImVec2(g_enemy_X, g_enemy_Y), ImVec2(g_enemy_X + curW, g_enemy_Y + curH), IM_COL32(10, 15, 20, 160 * alpha), curH * 0.5f);
+    
+    float r, g, b;
+    ImGui::ColorConvertHSVtoRGB(fmodf((float)ImGui::GetTime() * 0.5f, 1.0f), 0.8f, 1.0f, r, g, b);
+    d->AddRect(ImVec2(g_enemy_X, g_enemy_Y), ImVec2(g_enemy_X + curW, g_enemy_Y + curH), IM_COL32(r*255, g*255, b*255, 255 * alpha), curH * 0.5f, 0, 2.0f * g_autoScale * g_enemy_Scale);
+
     d->AddText(font, fsz * g_enemy_Scale, ImVec2(g_enemy_X + pad * g_enemy_Scale, g_enemy_Y + pad * g_enemy_Scale), IM_COL32(255, 80, 80, 255 * alpha), txt);
 
     if (!g_boardLocked && alpha > 0.9f) {
@@ -865,15 +876,25 @@ void DrawCardPool() {
                 float x = g_cardPoolX + c * (curSz + curGap) + center_offset;
                 float y = g_cardPoolY + r * (curSz + curGap) + center_offset;
                 
+                // 【需求3】计算四角圆弧彩色薄边框颜色
+                float hue = fmodf((float)ImGui::GetTime() * 0.2f + (r * draw_cols + c) * 0.1f, 1.0f);
+                float br, bg, bb_col;
+                ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, br, bg, bb_col);
+                ImU32 borderColor = IM_COL32(br*255, bg*255, bb_col*255, 255 * final_alpha);
+
                 if (use_rounding_safeguard) {
                     float rounding = 6.0f * g_autoScale * g_cardPoolScale * cell_anim;
                     d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding, ImDrawFlags_RoundCornersAll);
                     float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
                     d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
+                    // 加上边框
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
                 } else {
                     d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
                     float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
                     d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha));
+                    // 加上边框
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, 0, 0, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
                 }
                 
                 ImFont* font = ImGui::GetFont();
@@ -913,14 +934,17 @@ void DrawBoard() {
     float baseYStep = baseSz * 1.5f;
 
     float h_dx = 6 * baseXStep + (3 % 2 == 1 ? baseXStep * 0.5f : 0) + baseSz;
-    float h_dy = 3 * baseYStep + baseSz * 0.5f;
+    // 为下方装备栏留出空间，否则下拖块会被盖住
+    float h_dy = 3 * baseYStep + baseSz * 0.5f + 60.0f * g_autoScale; 
     
     float c_dx = -baseXStep * 0.5f; 
     float c_dy = -baseYStep * 0.5f;
 
     HandleGridInteraction(g_startX, g_startY, g_boardManualScale, t_x, t_y, t_scale,
                           isDragging, isScaling, dragOffset, scaleDragOffset,
-                          h_dx, h_dy, c_dx, c_dy, -baseSz*2, -baseSz*2, 6.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2, 
+                          h_dx, h_dy, c_dx, c_dy, 
+                          -baseSz*2 - 40.0f*g_autoScale, -baseSz*2 - 40.0f*g_autoScale, // 扩大检测区容纳上部装备区
+                          6.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2 + 60.0f*g_autoScale, // 容纳下部装备区
                           g_boardLocked, &g_esp_board);
 
     if (!g_esp_board) return;
@@ -940,8 +964,57 @@ void DrawBoard() {
             float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
             float cy = g_startY + r * curYStep;
             
-            if(g_enemyBoard[r][c] && g_textureLoaded) {
-                DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
+            if(g_enemyBoard[r][c]) {
+                if (g_textureLoaded) {
+                    DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
+                }
+                
+                // 【需求7】在英雄下方绘制英雄等级标识预留数字 '3'
+                ImFont* font = ImGui::GetFont();
+                float lvlFsz = ImGui::GetFontSize() * 1.2f * g_boardManualScale;
+                const char* lvlTxt = "3";
+                ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+                ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.4f);
+                d->AddText(font, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255), lvlTxt); // 阴影
+                d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); // 主字
+
+                // 【需求6】引出一条线和三个同步缩放的方框放置装备
+                if (g_esp_equip) {
+                    float hexRadius = curSz;
+                    float equipSz = 14.0f * g_autoScale * g_boardManualScale; 
+                    float equipGap = 2.0f * g_autoScale * g_boardManualScale;
+                    
+                    ImU32 lineColor = IM_COL32(200, 200, 200, 150);
+                    ImU32 boxBg = IM_COL32(20, 25, 30, 200);
+                    ImU32 boxBorder = IM_COL32(150, 150, 150, 255);
+                    float startX = cx - (1.5f * equipSz + equipGap); // 让三个方框完美居中于 cx
+                    
+                    if (r == 0 || r == 1) {
+                        float topY = g_startY - 35.0f * g_autoScale * g_boardManualScale;
+                        // 从格子的最上面顶点(cx, cy - hexRadius)引出线向上
+                        d->AddLine(ImVec2(cx, cy - hexRadius), ImVec2(cx, topY), lineColor, 1.5f * g_autoScale);
+                        
+                        // 绘制3个方框
+                        for(int i = 0; i < 3; i++) {
+                            float bx = startX + i * (equipSz + equipGap);
+                            float by = topY - equipSz; // 画在引线末端上方
+                            d->AddRectFilled(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBg, 2.0f * g_autoScale);
+                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBorder, 2.0f * g_autoScale, 0, 1.0f * g_autoScale);
+                        }
+                    } else if (r == 2 || r == 3) {
+                        float bottomY = g_startY + 3 * curYStep + hexRadius + 35.0f * g_autoScale * g_boardManualScale;
+                        // 从格子的最下面交点(cx, cy + hexRadius)引出线下向
+                        d->AddLine(ImVec2(cx, cy + hexRadius), ImVec2(cx, bottomY), lineColor, 1.5f * g_autoScale);
+                        
+                        // 绘制3个方框
+                        for(int i = 0; i < 3; i++) {
+                            float bx = startX + i * (equipSz + equipGap);
+                            float by = bottomY; // 画在引线末端下方
+                            d->AddRectFilled(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBg, 2.0f * g_autoScale);
+                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBorder, 2.0f * g_autoScale, 0, 1.0f * g_autoScale);
+                        }
+                    }
+                }
             }
             
             float hue = fmodf(time * 0.3f + (cx + cy) * 0.0008f, 1.0f);
@@ -1010,6 +1083,15 @@ void DrawBench() {
         
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
         d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
+        
+        // 【需求7】备战席也同理在下方写英雄等级，为演示效果暂时全绘出预留的3
+        ImFont* font = ImGui::GetFont();
+        float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
+        const char* lvlTxt = "3";
+        ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+        ImVec2 txtPos(x + curSz * 0.5f - tSz.x * 0.5f, y + curSz - tSz.y - 2.0f * g_autoScale);
+        d->AddText(font, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
+        d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
     }
 }
 
@@ -1273,7 +1355,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver); 
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.1 (极速纯净版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         g_menuX = ImGui::GetWindowPos().x; 
         g_menuY = ImGui::GetWindowPos().y;
         
@@ -1284,31 +1366,35 @@ void DrawMenu() {
                 g_menuW = curW; 
                 g_menuH = curH; 
                 g_scale = curW / (350.0f * g_autoScale); 
-                g_needUpdateFontSafe = true; 
+                // 【已优化】此处不再抛出重绘全局字体事件，实现毫秒级拉伸响应
             }
         }
         
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
         if (!g_menuCollapsed) {
-            float fontScaleVal = (18.0f * g_autoScale * g_scale) / g_current_rendered_size; 
-            ImGui::SetWindowFontScale(fontScaleVal);
+            // 【需求2】使全局缩放率(g_scale)唯一且仅作用于菜单内的元素排版，不再干扰其他独立悬浮窗大小
+            ImGui::SetWindowFontScale(g_scale);
+            
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
             static bool header_pred = true;
-            if (ModernAnimatedFolder((const char*)u8"预测功能", &header_pred, 2)) {
+            if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
                 EndModernAnimatedFolder();
             }
             
             static bool header_esp = true;
-            if (ModernAnimatedFolder((const char*)u8"透视功能", &header_esp, 4)) {
+            // 更新该文件夹包含的子控件数量以确保动画平滑 (由4改为5)
+            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 5)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
-                ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 4); 
-                ModernToggle((const char*)u8"商店透视", &g_esp_shop, 5);
-                ModernToggle((const char*)u8"金币等级透视", &g_esp_level, 9); 
+                ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
+                ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
+                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
+                // 【需求5】透视功能里增加对手装备投食显示
+                ModernToggle((const char*)u8"对手装备投食", &g_esp_equip, 12); 
                 EndModernAnimatedFolder();
             }
 
@@ -1316,10 +1402,10 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
             
-            ModernToggle((const char*)u8"锁定所有窗口", &g_boardLocked, 8); 
-            ModernToggle((const char*)u8"自动拿牌", &g_auto_buy, 6); 
+            ModernToggle((const char*)u8"锁定所有窗体", &g_boardLocked, 8); 
+            ModernToggle((const char*)u8"云端自动拿牌", &g_auto_buy, 6); 
             
-            ModernToggle((const char*)u8"牌库显示", &g_show_card_pool, 10);
+            ModernToggle((const char*)u8"牌库透视显示", &g_show_card_pool, 10);
             static float cardpool_anim = 0.0f; 
             cardpool_anim = ImLerp(cardpool_anim, g_show_card_pool ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1335,7 +1421,7 @@ void DrawMenu() {
 
             ImGui::Spacing(); 
 
-            ModernToggle((const char*)u8"卡牌预警数量", &g_card_warning, 11);
+            ModernToggle((const char*)u8"卡牌数量预警", &g_card_warning, 11);
             static float warn_anim = 0.0f; 
             warn_anim = ImLerp(warn_anim, g_card_warning ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1353,7 +1439,7 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
 
-            if (ModernToggle((const char*)u8"极速退游", &g_instant, 7)) {
+            if (ModernToggle((const char*)u8"极速退游 (秒退)", &g_instant, 7)) {
                 if (g_instant) {
                     ImGui::OpenPopup((const char*)u8"警告: 确认退出?");
                 }
@@ -1361,7 +1447,7 @@ void DrawMenu() {
             
             ImGui::SetNextWindowSize(ImVec2(320 * g_autoScale * g_scale, 0));
             if (ImGui::BeginPopupModal((const char*)u8"警告: 确认退出?", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) {
-                ImGui::SetWindowFontScale(fontScaleVal);
+                ImGui::SetWindowFontScale(g_scale);
                 
                 const char* warn_txt = (const char*)u8"你确定要立即强制退出游戏吗？";
                 float txt_w = ImGui::CalcTextSize(warn_txt).x;
@@ -1424,7 +1510,8 @@ int main() {
         
         imgui.BeginFrame(); 
         
-        // 【核心修复修复：清理上一帧残留的画面，防止半透明背景出现残影】
+        // 【需求8核心修补】解决因为裁剪测试 (Scissor Test) 没关导致半透明残影滞留的Bug
+        glDisable(GL_SCISSOR_TEST); // 强制关闭裁剪区域限制，确保清屏清到每一寸像素
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); // 保持全局透明度，不会影响背后的游戏画面
         glClear(GL_COLOR_BUFFER_BIT);
         
