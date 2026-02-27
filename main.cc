@@ -39,11 +39,11 @@ bool g_boardLocked = false;
 bool g_auto_refresh = false;
 bool g_auto_buy_chosen = false;
 
-// 新增：牌库显示状态与行列配置
+// 牌库显示状态与行列配置
 bool g_show_card_pool = false;
 int g_card_pool_rows = 2;
 int g_card_pool_cols = 5;
-float g_cardPoolX = 150.0f, g_cardPoolY = 150.0f;
+float g_cardPoolX = 150.0f, g_cardPoolY = 150.0f, g_cardPoolScale = 1.0f; // 增加牌库的独立缩放记录
 
 bool g_menuCollapsed = false; 
 float g_anim[15] = {0.0f}; 
@@ -96,6 +96,9 @@ void SaveConfig() {
         out << "showCardPool=" << g_show_card_pool << "\n";
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
+        out << "cardPoolScale=" << g_cardPoolScale << "\n"; // 保存牌库缩放
+        out << "cardPoolX=" << g_cardPoolX << "\n";         // 保存牌库X坐标
+        out << "cardPoolY=" << g_cardPoolY << "\n";         // 保存牌库Y坐标
         out << "autoBuy=" << g_auto_buy << "\n";
         out << "autoRefresh=" << g_auto_refresh << "\n";
         out << "autoBuyChosen=" << g_auto_buy_chosen << "\n";
@@ -158,6 +161,9 @@ void LoadConfig() {
                 else if (k == "showCardPool") g_show_card_pool = (v == "1");
                 else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
+                else if (k == "cardPoolScale") g_cardPoolScale = std::stof(v);
+                else if (k == "cardPoolX") g_cardPoolX = std::stof(v);
+                else if (k == "cardPoolY") g_cardPoolY = std::stof(v);
                 else if (k == "autoBuy") g_auto_buy = (v == "1");
                 else if (k == "autoRefresh") g_auto_refresh = (v == "1");
                 else if (k == "autoBuyChosen") g_auto_buy_chosen = (v == "1");
@@ -741,52 +747,77 @@ void DrawExtraWindows() {
 }
 
 // =================================================================
-// 6.5 牌库显示窗口
+// 6.5 纯悬浮牌库显示窗口 (带有独立拖拽与缩放手柄)
 // =================================================================
 void DrawCardPool() {
     if (!g_show_card_pool) return;
     
-    ImGui::SetNextWindowPos(ImVec2(g_cardPoolX, g_cardPoolY), ImGuiCond_FirstUseEver);
+    ImDrawList* d = ImGui::GetForegroundDrawList();
     
-    // 增加一点赛博朋克发光边框效果
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.85f, 0.55f, 0.6f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * g_autoScale);
+    static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scale = g_cardPoolScale;
+    static bool first = true;
+    if (first) { t_x = g_cardPoolX; t_y = g_cardPoolY; t_scale = g_cardPoolScale; first = false; }
     
-    if (ImGui::Begin((const char*)u8"游戏牌库", &g_show_card_pool, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-        
-        ImVec2 pos = ImGui::GetWindowPos();
-        if (pos.x != g_cardPoolX || pos.y != g_cardPoolY) { g_cardPoolX = pos.x; g_cardPoolY = pos.y; }
+    static bool isDragging = false, isScaling = false;
+    static ImVec2 dragOffset, scaleDragOffset;
 
-        float fontScaleVal = (18.0f * g_autoScale * g_scale) / g_current_rendered_size;
-        ImGui::SetWindowFontScale(fontScaleVal);
+    // 每张英雄头像的基础尺寸和间距
+    float baseImgSz = 45.0f * g_autoScale;
+    float gap = 5.0f * g_autoScale;
+    
+    // 计算网格整体的宽高
+    float totalW_unscaled = g_card_pool_cols * baseImgSz + (g_card_pool_cols - 1) * gap;
+    float totalH_unscaled = g_card_pool_rows * baseImgSz + (g_card_pool_rows - 1) * gap;
 
-        // --- 上半部分：动态网格绘制英雄图片 ---
-        if (g_textureLoaded) {
-            float imgSize = 45.0f * g_autoScale * g_scale; 
-            for (int r = 0; r < g_card_pool_rows; r++) {
-                for (int c = 0; c < g_card_pool_cols; c++) {
-                    ImGui::Image((ImTextureID)(intptr_t)g_heroTexture, ImVec2(imgSize, imgSize));
-                    if (c < g_card_pool_cols - 1) ImGui::SameLine();
-                }
-            }
-        } else {
-            ImGui::Text((const char*)u8"正在加载英雄图片资源...");
-        }
-        
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        
-        // --- 下半部分：独立两行的行列滑条控制 ---
-        ImGui::PushItemWidth(180.0f * g_autoScale * g_scale);
-        ImGui::SliderInt((const char*)u8"行数", &g_card_pool_rows, 1, 10);
-        ImGui::SliderInt((const char*)u8"列数", &g_card_pool_cols, 1, 15);
-        ImGui::PopItemWidth();
+    // 缩放手柄位于右下角
+    float h_dx = totalW_unscaled + 10.0f * g_autoScale;
+    float h_dy = totalH_unscaled + 10.0f * g_autoScale;
+    
+    // 关闭按钮位于左上角
+    float c_dx = -10.0f * g_autoScale;
+    float c_dy = -10.0f * g_autoScale;
+
+    // 传递给底层的物理交互引擎
+    HandleGridInteraction(g_cardPoolX, g_cardPoolY, g_cardPoolScale, t_x, t_y, t_scale,
+                          isDragging, isScaling, dragOffset, scaleDragOffset,
+                          h_dx, h_dy, c_dx, c_dy, -15.0f * g_autoScale, -15.0f * g_autoScale, 
+                          totalW_unscaled + 15.0f * g_autoScale, totalH_unscaled + 15.0f * g_autoScale, 
+                          g_boardLocked, &g_show_card_pool);
+
+    if (!g_show_card_pool) return;
+
+    // 绘制手柄
+    if (!g_boardLocked) {
+        DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScale, g_cardPoolY + h_dy * g_cardPoolScale), isScaling);
+        DrawCloseHandle(d, ImVec2(g_cardPoolX + c_dx * g_cardPoolScale, g_cardPoolY + c_dy * g_cardPoolScale), &g_show_card_pool);
     }
-    ImGui::End();
-    
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+
+    float curSz = baseImgSz * g_cardPoolScale;
+    float curGap = gap * g_cardPoolScale;
+    float time = (float)ImGui::GetTime();
+
+    // 在网格中直接绘制头像
+    if (g_textureLoaded) {
+        for (int r = 0; r < g_card_pool_rows; r++) {
+            for (int c = 0; c < g_card_pool_cols; c++) {
+                float x = g_cardPoolX + c * (curSz + curGap);
+                float y = g_cardPoolY + r * (curSz + curGap);
+                
+                // 直接绘制图片贴图，没有任何窗体和底色
+                d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + curSz, y + curSz));
+                
+                // 加一个轻微的炫彩边框增加质感
+                float hue = fmodf(time * 0.3f + (x + y) * 0.001f, 1.0f);
+                float rC, gC, bC; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rC, gC, bC);
+                d->AddRect(ImVec2(x, y), ImVec2(x + curSz, y + curSz), IM_COL32(rC*255, gC*255, bC*255, 180), 4.0f * g_autoScale * g_cardPoolScale, 0, 1.5f * g_autoScale * g_cardPoolScale);
+            }
+        }
+    } else {
+        // 如果资源还没加载成功，绘制提示文字
+        ImFont* font = ImGui::GetFont();
+        float fsz = ImGui::GetFontSize() * g_cardPoolScale;
+        d->AddText(font, fsz, ImVec2(g_cardPoolX, g_cardPoolY), IM_COL32_WHITE, (const char*)u8"正在加载英雄图片资源...", NULL);
+    }
 }
 
 // =================================================================
@@ -898,13 +929,27 @@ void DrawMenu() {
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
                 ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
                 ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
-                ModernToggle((const char*)u8"牌库显示", &g_show_card_pool, 10); // 新增牌库菜单开关
                 ImGui::Unindent();
             }
             ImGui::Separator();
+            
             ModernToggle((const char*)u8"锁定位置", &g_boardLocked, 8); 
             ModernToggle((const char*)u8"自动拿牌", &g_auto_buy, 6); 
             
+            // 将牌库显示单独放置，并控制其子菜单
+            ModernToggle((const char*)u8"牌库显示", &g_show_card_pool, 10);
+            if (g_show_card_pool) {
+                ImGui::Indent();
+                ImGui::PushItemWidth(150.0f * g_autoScale * g_scale);
+                // 使用Slider控制悬浮牌库的行列数
+                ImGui::SliderInt((const char*)u8"牌库行数", &g_card_pool_rows, 1, 10);
+                ImGui::SliderInt((const char*)u8"牌库列数", &g_card_pool_cols, 1, 15);
+                ImGui::PopItemWidth();
+                ImGui::Unindent();
+            }
+            
+            ImGui::Separator();
+
             if (ModernToggle((const char*)u8"极速退游", &g_instant, 7)) {
                 if (g_instant) ImGui::OpenPopup((const char*)u8"警告: 确认退出?");
             }
@@ -975,7 +1020,7 @@ int main() {
         DrawBench();
         DrawShop();
         DrawExtraWindows();
-        DrawCardPool(); // 每一帧调用牌库渲染
+        DrawCardPool(); // 每一帧调用纯悬浮牌库渲染
         DrawMenu();
         
         imgui.EndFrame(); 
