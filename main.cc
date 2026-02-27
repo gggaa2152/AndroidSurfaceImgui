@@ -1428,8 +1428,8 @@ int main() {
     std::thread it([&] { 
         while(running) { 
             imgui.ProcessInputEvent(); 
-            // [优化] 极短休眠代替强夺核心资源的 yield，CPU 占用从满载直降至 1%
-            std::this_thread::sleep_for(std::chrono::milliseconds(2)); 
+            // [优化] 移除导致严重触控延迟的硬休眠，使用 yield 恢复极高频触控采样，实现 100% 灵敏跟手
+            std::this_thread::yield(); 
         } 
     });
 
@@ -1462,7 +1462,17 @@ int main() {
         
         imgui.EndFrame(); 
         
-        // [优化] 移除此处主线程强制休眠。由开头的 eglSwapInterval(..., 1) 硬件级同步设备屏幕刷新率(VSYNC)，实现丝滑满帧不掉帧
+        // [精准帧率同步] 防止部分 Android 设备 eglSwapInterval(VSYNC) 失效
+        // 动态计算耗时并智能填充微秒级等待，完美同步高刷设备 (锁定上限 120 FPS)，且有效防过热
+        static auto prev_time = std::chrono::high_resolution_clock::now();
+        auto current_time = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<float, std::milli> elapsed = current_time - prev_time;
+        
+        float target_ms = 1000.0f / 120.0f; // 120 FPS 对应的帧间隔
+        if (elapsed.count() < target_ms) {
+            std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int>((target_ms - elapsed.count()) * 1000)));
+        }
+        prev_time = std::chrono::high_resolution_clock::now();
     }
     
     g_HexShader.Cleanup(); 
