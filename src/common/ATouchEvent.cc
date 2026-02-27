@@ -311,7 +311,7 @@ namespace android
             if (std::string::npos == devicePath.path().filename().string().find("event"))
                 continue;
 
-            // ★ 核心改动 1：使用 O_RDWR 权限打开，允许我们注入虚假信号
+            // ★ 必须带有读写权限
             m_deviceFd = open(devicePath.path().c_str(), O_RDWR | O_SYNC | O_NONBLOCK);
             if (-1 == m_deviceFd)
             {
@@ -365,9 +365,8 @@ namespace android
         static std::vector<input_event> cachedEventQueue;
         static int lastTouchPointX = 0, lastTouchPointY = 0;
         
-        // 用于跟踪当前手指是否按压，以及我们是否霸占了设备
-        static bool is_screen_pressed = false;
         static bool is_grabbed = false;
+        static bool hide_fake_touch_up = false; // ★ 核心暗号：用于藏匿假抬起信号
 
         if (-1 == m_deviceFd)
             return false;
@@ -376,7 +375,7 @@ namespace android
         if (0 >= read(m_deviceFd, &event, sizeof(input_event)))
             return false;
 
-        // Check if event is not a submit event
+        // 收集这一帧的所有事件
         if (EV_SYN != event.type || SYN_REPORT != event.code || 0 != event.value)
         {
             cachedEventQueue.push_back(event);
@@ -399,15 +398,6 @@ namespace android
                 if (BTN_TOUCH == processEvent.code || BTN_TOOL_FINGER == processEvent.code)
                 {
                     touchEvent->type = 1 == processEvent.value ? EventType::TouchDown : EventType::TouchUp;
-                    
-                    // 记录真实的按压状态
-                    is_screen_pressed = (processEvent.value == 1);
-                    
-                    // ★ 核心改动 2：当你抬起手指时，如果我们当前独占了屏幕，赶紧归还控制权！
-                    if (!is_screen_pressed && is_grabbed) {
-                        ioctl(m_deviceFd, EVIOCGRAB, 0);
-                        is_grabbed = false;
-                    }
                     break;
                 }
                 else if (KEY_RESERVED <= processEvent.code && sizeof(g_scanCodeMapping) > processEvent.code)
@@ -430,13 +420,12 @@ namespace android
                 case 8:
                     touchEvent->x = processEvent.value;
                     break;
-                default:
-                    break;
                 }
+                break;
             }
             case EV_ABS:
             {
-                if (ABS_MT_SLOT == processEvent.code && 0 != processEvent.value) // Filter multi touch(Unsupported)
+                if (ABS_MT_SLOT == processEvent.code && 0 != processEvent.value)
                 {
                     cachedEventQueue.clear();
                     return false;
@@ -452,37 +441,54 @@ namespace android
                     touchEvent->y = processEvent.value;
                     lastTouchPointY = touchEvent->y;
                 }
-            }
-            default:
                 break;
+            }
             }
         }
         cachedEventQueue.clear();
 
         // =======================================================
-        // ★ 核心改动 3：注射毒药 + 内核截胡 ★
-        // 当我们解析完完整的一帧触摸数据后，如果是按下状态且还没有抢占：
+        // ★ 核心逻辑：精准拦截与双向骗局 ★
         // =======================================================
-        if (is_screen_pressed && !is_grabbed && g_ScreenWidth > 0) 
-        {
-            TouchEvent temp; 
-            temp.x = lastTouchPointX; 
-            temp.y = lastTouchPointY;
-            temp.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
+        
+        // 1. 过滤：如果是我们自己注入的“假抬起”，果断丢弃！不给 ImGui 看！
+        if (touchEvent->type == EventType::TouchUp) {
+            if (hide_fake_touch_up) {
+                hide_fake_touch_up = false;
+                return false; // 丢弃这个数据，让 ImGui 继续觉得手指按着！
+            }
             
-            // 如果砸中了辅助 UI 的热区
-            if (IsPointInImGuiWindow(temp.x, temp.y)) 
+            // 如果是真正的物理手指抬起，我们要归还控制权
+            if (is_grabbed) {
+                ioctl(m_deviceFd, EVIOCGRAB, 0);
+                is_grabbed = false;
+            }
+        }
+
+        // 2. 截胡：如果检测到是按下的第一帧
+        if (touchEvent->type == EventType::TouchDown) {
+            if (!is_grabbed && g_ScreenWidth > 0) 
             {
-                // 第一步：向游戏强行注入一个“立刻抬起手指”的取消信号
-                // 这能让系统引擎以为你只摸了 1 毫秒就放开了，绝对不可能触发拖拽或点击！
-                input_event cancel_ev[2] = {};
-                cancel_ev[0].type = EV_KEY; cancel_ev[0].code = BTN_TOUCH; cancel_ev[0].value = 0;
-                cancel_ev[1].type = EV_SYN; cancel_ev[1].code = SYN_REPORT; cancel_ev[1].value = 0;
-                write(m_deviceFd, cancel_ev, sizeof(cancel_ev));
+                TouchEvent temp = *touchEvent;
+                temp.TransformToScreen(g_ScreenWidth, g_ScreenHeight, g_RotateTheta);
                 
-                // 第二步：立刻锁死物理触摸屏，接下来的所有移动和松手只属于辅助！
-                ioctl(m_deviceFd, EVIOCGRAB, 1);
-                is_grabbed = true;
+                // 如果刚好点在了辅助的菜单或格子上
+                if (IsPointInImGuiWindow(temp.x, temp.y)) 
+                {
+                    // A. 先往系统里写一个“手指已抬起”的信号，骗游戏立刻终止触摸
+                    input_event cancel_ev[3] = {};
+                    cancel_ev[0].type = EV_ABS; cancel_ev[0].code = ABS_MT_TRACKING_ID; cancel_ev[0].value = -1;
+                    cancel_ev[1].type = EV_KEY; cancel_ev[1].code = BTN_TOUCH; cancel_ev[1].value = 0;
+                    cancel_ev[2].type = EV_SYN; cancel_ev[2].code = SYN_REPORT; cancel_ev[2].value = 0;
+                    write(m_deviceFd, cancel_ev, sizeof(cancel_ev));
+                    
+                    // B. 设置暗号，让下一次循环读到这包数据时，直接过滤掉，别坑了 ImGui
+                    hide_fake_touch_up = true;
+
+                    // C. 立刻彻底锁死物理屏幕，接下来的滑动只属于辅助！
+                    ioctl(m_deviceFd, EVIOCGRAB, 1);
+                    is_grabbed = true;
+                }
             }
         }
         // =======================================================
