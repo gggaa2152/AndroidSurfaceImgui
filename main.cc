@@ -30,7 +30,7 @@ bool g_predict_hex = false;
 bool g_esp_board = true;
 bool g_esp_bench = false; 
 bool g_esp_shop = false;  
-bool g_esp_level = false; 
+bool g_esp_level = false; // 新增：金币等级投食
 bool g_auto_buy = false;
 bool g_instant = false;
 bool g_boardLocked = false; 
@@ -72,7 +72,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 (无点击不保存，全面支持缩放记录)
+// 2. 配置管理 (全面支持高度与各种缩放)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -82,7 +82,7 @@ void SaveConfig() {
         out << "espBoard=" << g_esp_board << "\n";
         out << "espBench=" << g_esp_bench << "\n";
         out << "espShop=" << g_esp_shop << "\n";
-        out << "espLevel=" << g_esp_level << "\n"; 
+        out << "espLevel=" << g_esp_level << "\n"; // 保存金币等级投食状态
         out << "autoBuy=" << g_auto_buy << "\n";
         out << "instant=" << g_instant << "\n";
         out << "boardLocked=" << g_boardLocked << "\n";
@@ -294,7 +294,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 4. 核心物理交互引擎 (全隐形拦截，为 AImGui.cpp 提供准确的包围盒)
+// 4. 核心物理交互引擎 (多实例复用，防跳变 + 极度丝滑)
 // =================================================================
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
@@ -307,7 +307,6 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
                            bool locked, bool* isOpen) 
 {
     ImGuiIO& io = ImGui::GetIO();
-    
     if (!locked) {
         float scaleHandleX = out_x + h_dx_unscaled * out_scale;
         float scaleHandleY = out_y + h_dy_unscaled * out_scale;
@@ -317,45 +316,19 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         float closeHandleY = out_y + c_dy_unscaled * out_scale;
         ImVec2 p_close(closeHandleX, closeHandleY);
 
-        ImRect blockArea(
-            ImVec2(out_x + hitMinX_unscaled * out_scale, out_y + hitMinY_unscaled * out_scale), 
-            ImVec2(out_x + hitMaxX_unscaled * out_scale, out_y + hitMaxY_unscaled * out_scale)
-        );
-        float hr = 25.0f * g_autoScale;
-        blockArea.Add(p_scale - ImVec2(hr, hr));
-        blockArea.Add(p_scale + ImVec2(hr, hr));
-        if (isOpen) {
-            blockArea.Add(p_close - ImVec2(hr, hr));
-            blockArea.Add(p_close + ImVec2(hr, hr));
-        }
-        
-        // ★ 生成隐形窗口：这个窗口会被 AImGui.cpp 的 g->Windows 检测到并加入防穿透热区 ★
-        char winName[64];
-        sprintf(winName, "##GridBlocker_%p", &out_x);
-        ImGui::SetNextWindowPos(blockArea.Min);
-        ImGui::SetNextWindowSize(blockArea.GetSize());
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        // 背景完全透明
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); 
-        ImGui::Begin(winName, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
-        
-        ImGui::InvisibleButton("##AbsBlockerBtn", blockArea.GetSize()); 
-        
-        ImGui::End();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar(2);
-
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
+            // Check Close Button Hit
             if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
                 *isOpen = false;
                 return; 
             }
+            // Check Scale Handle Hit
             else if (ImLengthSqr(io.MousePos - p_scale) < (4900.0f * g_autoScale * g_autoScale)) { 
                 isScaling = true;
                 ImVec2 targetHandleCenter(t_x + h_dx_unscaled * t_scale, t_y + h_dy_unscaled * t_scale);
                 scaleDragOffset = io.MousePos - targetHandleCenter;
             } 
+            // Check Drag Area Hit
             else {
                 ImRect area(
                     ImVec2(out_x + hitMinX_unscaled * out_scale, out_y + hitMinY_unscaled * out_scale), 
@@ -390,13 +363,14 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         }
     }
 
+    // 丝滑指数衰减阻尼
     float smoothness = 1.0f - expf(-20.0f * io.DeltaTime);
     out_x = ImLerp(out_x, t_x, smoothness);
     out_y = ImLerp(out_y, t_y, smoothness);
     out_scale = ImLerp(out_scale, t_scale, smoothness);
 }
 
-// ★ 静态的黄金缩放手柄（去掉了脉冲呼吸，保持沉稳）
+// 静态的黄金缩放手柄
 void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
     ImU32 coreColor = isScaling ? IM_COL32(0, 255, 180, 255) : IM_COL32(255, 255, 255, 255);
     d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
@@ -404,6 +378,7 @@ void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
     d->AddCircle(p_handle, 20.0f * g_autoScale, IM_COL32(255, 215, 0, 150), 32, 2.5f * g_autoScale);
 }
 
+// 渲染红色贴片关闭按钮
 void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     if (!isOpen) return;
     ImGuiIO& io = ImGui::GetIO();
@@ -423,15 +398,13 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     }
 }
 
-// ★ 字体完美自适应缩放、且支持同时按下的霓虹按钮
+// 完美缩放字体的霓虹按钮
 bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 size, int id, float scale) {
     ImGuiIO& io = ImGui::GetIO();
     ImRect bb(pos, pos + size);
-    
     bool hovered = bb.Contains(io.MousePos);
     bool clicked = false;
     
-    // 利用独立的 Contains 判定，完美支持两个按钮分别、或者被不同手指同时触发
     if (hovered && ImGui::IsMouseClicked(0)) clicked = true;
     bool held = hovered && ImGui::IsMouseDown(0);
 
@@ -452,7 +425,6 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
 
     ImFont* font = ImGui::GetFont();
     float scaledFontSize = ImGui::GetFontSize() * scale;
-    // CalcTextSizeA 能确保字体无论怎么拉伸都绝对不会超出边框
     ImVec2 textSize = font->CalcTextSizeA(scaledFontSize, FLT_MAX, 0.0f, label);
     
     ImVec2 textPos = pos + ImVec2((size.x - textSize.x)*0.5f, (size.y - textSize.y)*0.5f);
@@ -463,7 +435,7 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
 
 
 // =================================================================
-// 5. 棋盘、备战席、商店渲染 (彻底去除了灰色背景底板)
+// 5. 棋盘、备战席、商店渲染 (彻底去掉了所有灰色背景)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -518,6 +490,7 @@ void DrawBoard() {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
                 pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
+            // 完全去除了背景填充，仅渲染彩色发光边框
             d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 220), ImDrawFlags_Closed, 2.5f * g_autoScale);
         }
     }
@@ -617,7 +590,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 6. 悬浮窗面板 (带有强制拦截底板)
+// 6. 悬浮窗面板 (预测窗口全局缩放与动画胶囊菜单)
 // =================================================================
 void DrawExtraWindows() {
     float time = (float)ImGui::GetTime();
@@ -632,6 +605,7 @@ void DrawExtraWindows() {
         
         if (ImGui::Begin((const char*)u8"预测对手", &g_predict_enemy, ImGuiWindowFlags_NoSavedSettings)) {
             
+            // 全局缩放检测 (跟随拖动框体大小自适应)
             if (ImGui::IsMouseReleased(0)) {
                 float curW = ImGui::GetWindowSize().x;
                 float curH = ImGui::GetWindowSize().y;
@@ -690,7 +664,7 @@ void DrawExtraWindows() {
         ImGui::PopStyleColor();
     }
     
-    // ★ 自动拿牌胶囊窗 (无论是否锁定棋盘，这里强制生成底板以便 AImGui 拦截)
+    // 自动拿牌 - 纯手工霓虹动画胶囊窗
     if (g_auto_buy) {
         ImDrawList* d = ImGui::GetForegroundDrawList();
         
@@ -705,7 +679,6 @@ void DrawExtraWindows() {
         float h_dx = baseW + 20.0f * g_autoScale; 
         float h_dy = baseH * 0.5f;
 
-        // 注意左侧关闭按钮已移除（参数置0，指针传nullptr）
         HandleGridInteraction(g_autoW_X, g_autoW_Y, g_autoW_Scale, t_x, t_y, t_scale,
                               isDragging, isScaling, dragOffset, scaleDragOffset,
                               h_dx, h_dy, 0, 0, 0, 0, baseW, baseH, g_boardLocked, nullptr);
@@ -716,22 +689,6 @@ void DrawExtraWindows() {
         ImVec2 p_min(g_autoW_X, g_autoW_Y);
         ImVec2 p_max(g_autoW_X + curW, g_autoW_Y + curH);
         float rounding = curH * 0.5f;
-
-        // --- 生成隐形包裹层让 AImGui 识别到，触发底层 EVIOCGRAB ---
-        char winNameCap[64];
-        sprintf(winNameCap, "##CapBlocker_%p", &g_autoW_X);
-        ImGui::SetNextWindowPos(p_min);
-        ImVec2 capBlockSize = g_boardLocked ? (p_max - p_min) : (p_max - p_min + ImVec2(45.0f * g_autoScale * g_autoW_Scale, 0));
-        ImGui::SetNextWindowSize(capBlockSize);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); 
-        ImGui::Begin(winNameCap, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
-        ImGui::InvisibleButton("##CapAbsBlocker", capBlockSize); 
-        ImGui::End();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar(2);
-        // --------------------------------------------------------
         
         d->AddRectFilled(p_min, p_max, IM_COL32(15, 20, 25, 240), rounding);
         d->AddRect(p_min, p_max, IM_COL32(0, 255, 150, 200), rounding, 0, 2.0f * g_autoScale * g_autoW_Scale);
@@ -748,10 +705,10 @@ void DrawExtraWindows() {
         ImVec2 b2_pos = b1_pos + ImVec2(btnW + gap, 0);
         
         if (AnimatedNeonButton(d, (const char*)u8"自动刷新", b1_pos, ImVec2(btnW, btnH), 101, g_autoW_Scale)) {
-            // 点击触发
+            // 点击触发逻辑
         }
         if (AnimatedNeonButton(d, (const char*)u8"自动拿天选", b2_pos, ImVec2(btnW, btnH), 102, g_autoW_Scale)) {
-            // 点击触发
+            // 点击触发逻辑
         }
     }
 }
@@ -774,7 +731,7 @@ bool ModernToggle(const char* label, bool* v, int idx) {
 
     bool hovered, held;
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    if (pressed) { *v = !(*v); } 
+    if (pressed) { *v = !(*v); } // 无操作不自动保存
 
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f; 
     
@@ -806,6 +763,7 @@ void DrawMenu() {
     style.WindowPadding = ImVec2(16 * g_autoScale, 16 * g_autoScale);
     style.WindowBorderSize = 1.0f;
 
+    // 修改菜单背景透明度为 0.85f
     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.09f, 0.11f, 0.85f);
     style.Colors[ImGuiCol_Border] = ImVec4(1.0f, 1.0f, 1.0f, 0.08f);
     style.Colors[ImGuiCol_TitleBg] = ImVec4(0.08f, 0.09f, 0.11f, 0.90f);
@@ -831,6 +789,7 @@ void DrawMenu() {
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
         
+        // 动态监听尺寸拖动，保存并实时计算缩放
         if (ImGui::IsMouseReleased(0)) {
             float curW = ImGui::GetWindowSize().x;
             float curH = ImGui::GetWindowSize().y;
@@ -862,7 +821,7 @@ void DrawMenu() {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
                 ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
-                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
+                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); // 新增金币等级投食
                 ImGui::Unindent();
             }
             ImGui::Separator();
@@ -902,7 +861,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 8. 主循环
+// 8. 主循环 (帧率同步模式)
 // =================================================================
 int main() {
     ImGui::CreateContext();
