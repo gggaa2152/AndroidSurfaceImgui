@@ -19,6 +19,8 @@
 #include <android/log.h>
 #include <algorithm>
 #include <unistd.h>
+#include <mutex>        // 新增：用于多线程数据保护
+#include <atomic>       // 新增：用于无锁布尔开关
 
 // =================================================================
 // 1. 全局配置与状态
@@ -44,9 +46,7 @@ int g_card_pool_rows = 2;
 int g_card_pool_cols = 5;
 float g_cardPoolX = 150.0f;
 float g_cardPoolY = 150.0f;
-// 【更新】将牌库的等比缩放拆分为 X轴 和 Y轴 独立缩放，实现全方向拉伸
-float g_cardPoolScaleX = 1.0f; 
-float g_cardPoolScaleY = 1.0f; 
+float g_cardPoolScale = 1.0f; 
 float g_cardPoolAlpha = 1.0f; 
 
 // 预警功能状态
@@ -79,6 +79,7 @@ float g_shopX = 200.0f;
 float g_shopY = 850.0f;
 float g_shopScale = 1.0f;
 
+// 全新纯悬浮预测坐标
 float g_enemy_X = 100.0f;
 float g_enemy_Y = 100.0f;
 float g_enemy_Scale = 1.0f;
@@ -91,6 +92,7 @@ float g_autoW_X = 300.0f;
 float g_autoW_Y = 1000.0f;
 float g_autoW_Scale = 1.0f;
 
+// 整合的 8 人玩家信息覆盖层坐标 (头像、金币等级、预警)
 float g_players_X = 1500.0f;
 float g_players_Y = 200.0f;
 float g_players_Scale = 1.0f;
@@ -100,15 +102,52 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 bool g_needUpdateFontSafe = false;
 
-ImFont* g_mainFont = nullptr;
-ImFont* g_hugeNumFont = nullptr;
-
+// 全局棋盘数据（将被逻辑线程实时更新）
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, 
     {0, 1, 0, 1, 0, 0, 0},
     {0, 0, 0, 0, 0, 1, 0}, 
     {1, 0, 1, 0, 1, 0, 1}
 };
+
+
+// =================================================================
+// [新增] 1.5 游戏底层逻辑与通信数据结构
+// =================================================================
+std::mutex g_dataMutex; // 保护所有跨线程共享的 UI 数据
+
+struct PlayerData {
+    uint64_t objAddr;
+    uint64_t dynAddr;
+    int playerId;
+    char name[64];
+    int money;
+    bool isAI;
+};
+
+// 存放8个玩家的数据
+PlayerData g_playersInfo[8];
+int g_myPlayerId = -1;
+uint64_t g_chessBattleModelAddr = 0;
+
+// 下个对手预测信息
+int g_nextOpponentId = -1;
+char g_nextOpponentName[64] = u8"等待回合开始...";
+uint64_t g_nextOpponentDynArrayAddr = 0; // 下个对手场上英雄数组地址
+
+// 卡池数据记录
+std::map<int, int> g_heroLeftMap; // hero_id -> 剩余量
+
+// 退游相关指令变量
+uint64_t g_newTurnRoundBeginArg0 = 0;
+std::atomic<bool> g_triggerUserExit{false};
+
+// 假设基址已经获取
+uint64_t GetGameLibBase() {
+    // 你需要自己实现获取 libil2cpp.so 或 libtersafe.so 的基址
+    return 0; 
+}
+
 
 // =================================================================
 // 2. 配置管理
@@ -125,8 +164,7 @@ void SaveConfig() {
         out << "showCardPool=" << g_show_card_pool << "\n";
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
-        out << "cardPoolScaleX=" << g_cardPoolScaleX << "\n";
-        out << "cardPoolScaleY=" << g_cardPoolScaleY << "\n";
+        out << "cardPoolScale=" << g_cardPoolScale << "\n";
         out << "cardPoolAlpha=" << g_cardPoolAlpha << "\n"; 
         out << "cardPoolX=" << g_cardPoolX << "\n";         
         out << "cardPoolY=" << g_cardPoolY << "\n";         
@@ -201,12 +239,7 @@ void LoadConfig() {
                 else if (k == "showCardPool") g_show_card_pool = (v == "1");
                 else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
-                else if (k == "cardPoolScaleX") g_cardPoolScaleX = std::stof(v);
-                else if (k == "cardPoolScaleY") g_cardPoolScaleY = std::stof(v);
-                else if (k == "cardPoolScale") { // 兼容老版本配置文件
-                    g_cardPoolScaleX = std::stof(v);
-                    g_cardPoolScaleY = std::stof(v);
-                }
+                else if (k == "cardPoolScale") g_cardPoolScale = std::stof(v);
                 else if (k == "cardPoolAlpha") g_cardPoolAlpha = std::stof(v); 
                 else if (k == "cardPoolX") g_cardPoolX = std::stof(v);
                 else if (k == "cardPoolY") g_cardPoolY = std::stof(v);
@@ -359,28 +392,24 @@ void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f; 
     g_autoScale = screenH / 1080.0f;
-    float targetSize = std::clamp(18.0f * g_autoScale, 12.0f, 60.0f); 
+    float targetSize = std::clamp(18.0f * g_autoScale, 12.0f, 100.0f); 
     
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     
     ImGui_ImplOpenGL3_DestroyFontsTexture(); 
     io.Fonts->Clear(); 
-    g_mainFont = nullptr;
-    g_hugeNumFont = nullptr;
     
-    ImFontConfig configMain;
-    float mainResFactor = 1.5f; 
-    configMain.OversampleH = 1; 
-    configMain.OversampleV = 1;
-    configMain.PixelSnapH = true; 
+    ImFontConfig config;
     
-    ImFontConfig configNum;
-    float numResFactor = 4.0f; 
-    if (targetSize * numResFactor > 200.0f) numResFactor = 200.0f / targetSize; 
-    configNum.OversampleH = 2; 
-    configNum.OversampleV = 2;
-    configNum.PixelSnapH = false;
-    static const ImWchar numRanges[] = { 0x0020, 0x00FF, 0 }; 
+    float highResFactor = 2.5f; 
+    if (targetSize * highResFactor > 90.0f) {
+        highResFactor = 90.0f / targetSize;
+    }
+    highResFactor = std::max(1.2f, highResFactor);
+
+    config.OversampleH = 1; 
+    config.OversampleV = 1; 
+    config.PixelSnapH = true;
     
     const char* fonts[] = { 
         "/system/fonts/SysSans-Hans-Regular.ttf", 
@@ -391,20 +420,17 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for(const char* path : fonts) {
         if (access(path, R_OK) == 0) { 
-            g_mainFont = io.Fonts->AddFontFromFileTTF(path, targetSize * mainResFactor, &configMain, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
-            if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
-            
-            g_hugeNumFont = io.Fonts->AddFontFromFileTTF(path, targetSize * numResFactor, &configNum, numRanges);
-            if (g_hugeNumFont) g_hugeNumFont->Scale = 1.0f / numResFactor;
-            
-            loaded = true; 
-            break; 
+            ImFont* font = io.Fonts->AddFontFromFileTTF(path, targetSize * highResFactor, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
+            if (font) {
+                font->Scale = 1.0f / highResFactor; 
+                loaded = true; 
+                break; 
+            }
         }
     }
-    
-    if(!loaded || !g_mainFont) {
-        g_mainFont = io.Fonts->AddFontDefault();
-        if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
+    if(!loaded) {
+        ImFont* font = io.Fonts->AddFontDefault();
+        if (font) font->Scale = 1.0f / highResFactor;
     }
     
     io.Fonts->Build(); 
@@ -415,8 +441,6 @@ void UpdateFontHD(bool force = false) {
 // =================================================================
 // 4. 核心物理交互引擎
 // =================================================================
-
-// 【引擎 1】 等比缩放物理引擎 (用于棋盘、商店等必须保持比例的组件)
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
                            bool& isDragging, bool& isScaling, 
@@ -485,78 +509,6 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
     out_scale = ImLerp(out_scale, t_scale, smoothness);
 }
 
-// 【引擎 2：全新加入】 二维独立伸缩引擎 (专门提供全方向独立缩放体验，如牌库)
-void HandleGridInteractionXY(float& out_x, float& out_y, float& out_scaleX, float& out_scaleY, 
-                             float& t_x, float& t_y, float& t_scaleX, float& t_scaleY,
-                             bool& isDragging, bool& isScaling, 
-                             ImVec2& dragOffset, ImVec2& scaleDragOffset,
-                             float h_dx_unscaled, float h_dy_unscaled, 
-                             float c_dx_unscaled, float c_dy_unscaled,
-                             float hitMinX_unscaled, float hitMinY_unscaled, 
-                             float hitMaxX_unscaled, float hitMaxY_unscaled, 
-                             bool locked, bool* isOpen) 
-{
-    ImGuiIO& io = ImGui::GetIO();
-    if (!locked) {
-        float scaleHandleX = out_x + h_dx_unscaled * out_scaleX;
-        float scaleHandleY = out_y + h_dy_unscaled * out_scaleY;
-        ImVec2 p_scale(scaleHandleX, scaleHandleY);
-        
-        float closeHandleX = out_x + c_dx_unscaled * out_scaleX;
-        float closeHandleY = out_y + c_dy_unscaled * out_scaleY;
-        ImVec2 p_close(closeHandleX, closeHandleY);
-
-        if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
-            if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
-                *isOpen = false; 
-                return; 
-            }
-            else if (ImLengthSqr(io.MousePos - p_scale) < (4900.0f * g_autoScale * g_autoScale)) { 
-                isScaling = true;
-                ImVec2 targetHandleCenter(t_x + h_dx_unscaled * t_scaleX, t_y + h_dy_unscaled * t_scaleY);
-                scaleDragOffset = io.MousePos - targetHandleCenter;
-            } 
-            else {
-                ImRect area(ImVec2(out_x + hitMinX_unscaled * out_scaleX, out_y + hitMinY_unscaled * out_scaleY), 
-                            ImVec2(out_x + hitMaxX_unscaled * out_scaleX, out_y + hitMaxY_unscaled * out_scaleY));
-                if (area.Contains(io.MousePos)) {
-                    isDragging = true; 
-                    dragOffset = ImVec2(t_x - io.MousePos.x, t_y - io.MousePos.y);
-                }
-            }
-        }
-        
-        if (isScaling) {
-            if (ImGui::IsMouseDown(0)) {
-                ImVec2 targetHandleCenter = io.MousePos - scaleDragOffset;
-                // 分别计算水平方向(X轴)和垂直方向(Y轴)的拉伸系数
-                float newSx = (targetHandleCenter.x - t_x) / (h_dx_unscaled > 0.01f ? h_dx_unscaled : 0.01f);
-                float newSy = (targetHandleCenter.y - t_y) / (h_dy_unscaled > 0.01f ? h_dy_unscaled : 0.01f);
-                t_scaleX = std::clamp(newSx, 0.2f, 5.0f);
-                t_scaleY = std::clamp(newSy, 0.2f, 5.0f);
-            } else { 
-                isScaling = false; 
-            }
-        }
-        
-        if (isDragging && !isScaling) {
-            if (ImGui::IsMouseDown(0)) { 
-                t_x = io.MousePos.x + dragOffset.x; 
-                t_y = io.MousePos.y + dragOffset.y; 
-            } 
-            else { 
-                isDragging = false; 
-            }
-        }
-    }
-
-    float smoothness = 1.0f - expf(-20.0f * io.DeltaTime);
-    out_x = ImLerp(out_x, t_x, smoothness); 
-    out_y = ImLerp(out_y, t_y, smoothness); 
-    out_scaleX = ImLerp(out_scaleX, t_scaleX, smoothness);
-    out_scaleY = ImLerp(out_scaleY, t_scaleY, smoothness);
-}
-
 void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
     ImU32 coreColor = isScaling ? IM_COL32(0, 255, 180, 255) : IM_COL32(255, 255, 255, 255);
     d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
@@ -580,7 +532,7 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
 }
 
 // =================================================================
-// 5. 纯悬浮预测模块 
+// 5. 纯悬浮预测模块 (接入多线程动态读取的名字)
 // =================================================================
 void DrawPurePredictEnemy() {
     static float alpha = 0.0f;
@@ -601,10 +553,16 @@ void DrawPurePredictEnemy() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
-    const char* txt = (const char*)u8"玩家 3";
+    // [逻辑接入点] 动态读取在 Hook 和线程里算出来的对手名字
+    char currentOpponentName[128];
+    {
+        std::lock_guard<std::mutex> lock(g_dataMutex);
+        snprintf(currentOpponentName, sizeof(currentOpponentName), "%s", g_nextOpponentName);
+    }
+
+    ImFont* font = ImGui::GetFont();
     float fsz = ImGui::GetFontSize() * 1.5f; 
-    ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, txt);
+    ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, currentOpponentName);
     
     float pad = 15.0f * g_autoScale;
     float baseW = tSz.x + pad * 2.0f;
@@ -628,7 +586,7 @@ void DrawPurePredictEnemy() {
     ImGui::ColorConvertHSVtoRGB(fmodf((float)ImGui::GetTime() * 0.5f, 1.0f), 0.8f, 1.0f, r, g, b);
     d->AddRect(ImVec2(g_enemy_X, g_enemy_Y), ImVec2(g_enemy_X + curW, g_enemy_Y + curH), IM_COL32(r*255, g*255, b*255, 255 * alpha), curH * 0.5f, 0, 2.0f * g_autoScale * g_enemy_Scale);
 
-    d->AddText(font, fsz * g_enemy_Scale, ImVec2(g_enemy_X + pad * g_enemy_Scale, g_enemy_Y + pad * g_enemy_Scale), IM_COL32(255, 80, 80, 255 * alpha), txt);
+    d->AddText(font, fsz * g_enemy_Scale, ImVec2(g_enemy_X + pad * g_enemy_Scale, g_enemy_Y + pad * g_enemy_Scale), IM_COL32(255, 80, 80, 255 * alpha), currentOpponentName);
 
     if (!g_boardLocked && alpha > 0.9f) {
         DrawScaleHandle(d, ImVec2(g_enemy_X + h_dx * g_enemy_Scale, g_enemy_Y + h_dy * g_enemy_Scale), isScaling);
@@ -654,7 +612,7 @@ void DrawPurePredictHex() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
+    ImFont* font = ImGui::GetFont();
     float fsz = ImGui::GetFontSize() * 1.5f; 
     const char* t1 = (const char*)u8"银色"; 
     const char* t2 = (const char*)u8"金色"; 
@@ -747,8 +705,7 @@ void DrawPlayersOverlay() {
 
     float curAvatarR = avatar_r * g_players_Scale;
     float curRowH = row_h * g_players_Scale;
-    
-    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
+    ImFont* font = ImGui::GetFont();
 
     for (int i = 0; i < 8; i++) {
         float cx = g_players_X + curAvatarR;
@@ -765,11 +722,12 @@ void DrawPlayersOverlay() {
         if (esp_anim[i] > 0.01f) {
             float fsz = ImGui::GetFontSize() * g_players_Scale * 1.1f;
             char buf[32]; 
+            // 如果你想把读取到的真实金币显示出来，可以在这里通过 g_playersInfo[i].money 读取
             snprintf(buf, sizeof(buf), "G:28/LV5");
-            ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+            ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
             
             d->AddRectFilled(ImVec2(draw_x, cy - tSz.y*0.6f), ImVec2(draw_x + tSz.x + 10.0f*g_autoScale*g_players_Scale, cy + tSz.y*0.6f), IM_COL32(15, 20, 25, 160 * alpha * esp_anim[i]), 4.0f * g_autoScale);
-            d->AddText(numFont, fsz, ImVec2(draw_x + 5.0f*g_autoScale*g_players_Scale, cy - tSz.y*0.5f), IM_COL32(255, 215, 0, 255 * alpha * esp_anim[i]), buf);
+            d->AddText(font, fsz, ImVec2(draw_x + 5.0f*g_autoScale*g_players_Scale, cy - tSz.y*0.5f), IM_COL32(255, 215, 0, 255 * alpha * esp_anim[i]), buf);
             
             draw_x += 120.0f * g_autoScale * g_players_Scale * esp_anim[i];
         }
@@ -792,9 +750,9 @@ void DrawPlayersOverlay() {
             float fsz = ImGui::GetFontSize() * 0.8f * g_players_Scale;
             char buf[16]; 
             snprintf(buf, sizeof(buf), "7/12");
-            ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+            ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
             
-            d->AddText(numFont, fsz, ImVec2(draw_x + (img_sz - tSz.x)*0.5f, img_y + img_sz - bg_h + (bg_h - tSz.y)*0.5f), IM_COL32(255, 100, 100, 255*final_a), buf);
+            d->AddText(font, fsz, ImVec2(draw_x + (img_sz - tSz.x)*0.5f, img_y + img_sz - bg_h + (bg_h - tSz.y)*0.5f), IM_COL32(255, 100, 100, 255*final_a), buf);
         }
     }
 }
@@ -905,7 +863,7 @@ void DrawAutoBuyWindow() {
 }
 
 // =================================================================
-// 6.5 高级牌库显示窗口 (【更新核心】采用独立XY拉伸引擎)
+// 6.5 高级牌库显示窗口 
 // =================================================================
 void DrawCardPool() {
     static float alpha = 0.0f;
@@ -915,15 +873,13 @@ void DrawCardPool() {
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
-    // 独立 X和Y 缩放变量
-    static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scaleX = g_cardPoolScaleX, t_scaleY = g_cardPoolScaleY;
+    static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scale = g_cardPoolScale;
     static bool first = true; 
     
     if (first) { 
         t_x = g_cardPoolX; 
         t_y = g_cardPoolY; 
-        t_scaleX = g_cardPoolScaleX; 
-        t_scaleY = g_cardPoolScaleY;
+        t_scale = g_cardPoolScale; 
         first = false; 
     }
     
@@ -944,8 +900,7 @@ void DrawCardPool() {
     float h_dy = totalH_unscaled + 10.0f * g_autoScale;
     
     if (g_show_card_pool) {
-        // 调用全新二维伸缩引擎 HandleGridInteractionXY
-        HandleGridInteractionXY(g_cardPoolX, g_cardPoolY, g_cardPoolScaleX, g_cardPoolScaleY, t_x, t_y, t_scaleX, t_scaleY,
+        HandleGridInteraction(g_cardPoolX, g_cardPoolY, g_cardPoolScale, t_x, t_y, t_scale,
                               isDragging, isScaling, dragOffset, scaleDragOffset,
                               h_dx, h_dy, 0, 0, -15.0f * g_autoScale, -15.0f * g_autoScale, 
                               totalW_unscaled + 15.0f * g_autoScale, totalH_unscaled + 15.0f * g_autoScale, 
@@ -953,16 +908,11 @@ void DrawCardPool() {
     }
 
     if (!g_boardLocked && alpha > 0.9f) {
-        // 调节把手同样适用独立坐标
-        DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScaleX, g_cardPoolY + h_dy * g_cardPoolScaleY), isScaling);
+        DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScale, g_cardPoolY + h_dy * g_cardPoolScale), isScaling);
     }
 
-    float curSzX = baseImgSz * g_cardPoolScaleX; 
-    float curSzY = baseImgSz * g_cardPoolScaleY;
-    float curGapX = gap * g_cardPoolScaleX;
-    float curGapY = gap * g_cardPoolScaleY;
-
-    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
+    float curSz = baseImgSz * g_cardPoolScale; 
+    float curGap = gap * g_cardPoolScale;
 
     if (g_textureLoaded) {
         int draw_rows = std::ceil(current_rows); 
@@ -976,40 +926,37 @@ void DrawCardPool() {
                 if (cell_anim < 0.01f) continue;
                 
                 float final_alpha = alpha * cell_anim * g_cardPoolAlpha;
-                float offset_szX = curSzX * cell_anim; 
-                float offset_szY = curSzY * cell_anim; 
-                float center_offsetX = (curSzX - offset_szX) * 0.5f;
-                float center_offsetY = (curSzY - offset_szY) * 0.5f;
+                float offset_sz = curSz * cell_anim; 
+                float center_offset = (curSz - offset_sz) * 0.5f;
 
-                float x = g_cardPoolX + c * (curSzX + curGapX) + center_offsetX;
-                float y = g_cardPoolY + r * (curSzY + curGapY) + center_offsetY;
+                float x = g_cardPoolX + c * (curSz + curGap) + center_offset;
+                float y = g_cardPoolY + r * (curSz + curGap) + center_offset;
                 
                 float hue = fmodf((float)ImGui::GetTime() * 0.2f + (r * draw_cols + c) * 0.1f, 1.0f);
                 float br, bg, bb_col;
                 ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, br, bg, bb_col);
                 ImU32 borderColor = IM_COL32(br*255, bg*255, bb_col*255, 255 * final_alpha);
-                
-                float avgScale = (g_cardPoolScaleX + g_cardPoolScaleY) * 0.5f;
 
                 if (use_rounding_safeguard) {
-                    float rounding = 6.0f * g_autoScale * avgScale * cell_anim;
-                    d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding, ImDrawFlags_RoundCornersAll);
-                    float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
-                    d->AddRectFilled(ImVec2(x, y + offset_szY - textBgH), ImVec2(x + offset_szX, y + offset_szY), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
-                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), borderColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * avgScale * cell_anim);
+                    float rounding = 6.0f * g_autoScale * g_cardPoolScale * cell_anim;
+                    d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding, ImDrawFlags_RoundCornersAll);
+                    float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
+                    d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
                 } else {
-                    d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
-                    float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
-                    d->AddRectFilled(ImVec2(x, y + offset_szY - textBgH), ImVec2(x + offset_szX, y + offset_szY), IM_COL32(0, 0, 0, 200 * final_alpha));
-                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), borderColor, 0, 0, 1.5f * g_autoScale * avgScale * cell_anim);
+                    d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
+                    float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
+                    d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha));
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, 0, 0, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
                 }
                 
-                float fsz = ImGui::GetFontSize() * avgScale * 0.8f * cell_anim; 
+                ImFont* font = ImGui::GetFont();
+                float fsz = ImGui::GetFontSize() * g_cardPoolScale * 0.8f * cell_anim; 
                 char buf[16]; 
-                snprintf(buf, sizeof(buf), "5/12");
-                ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
-                float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
-                d->AddText(numFont, fsz, ImVec2(x + (offset_szX - tSz.x) * 0.5f, y + offset_szY - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
+                snprintf(buf, sizeof(buf), "5/12"); // 这里可以根据 g_heroLeftMap 读取剩余数量
+                ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+                float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
+                d->AddText(font, fsz, ImVec2(x + (offset_sz - tSz.x) * 0.5f, y + offset_sz - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
             }
         }
     }
@@ -1062,8 +1009,13 @@ void DrawBoard() {
         DrawScaleHandle(d, ImVec2(g_startX + h_dx * g_boardManualScale, g_startY + h_dy * g_boardManualScale), isScaling);
         DrawCloseHandle(d, ImVec2(g_startX + c_dx * g_boardManualScale, g_startY + c_dy * g_boardManualScale), &g_esp_board);
     }
-    
-    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
+
+    // [逻辑接入点] 拷贝出一份当前帧的棋盘数据，避免和异步更新线程死锁
+    int localBoard[4][7];
+    {
+        std::lock_guard<std::mutex> lock(g_dataMutex);
+        memcpy(localBoard, g_enemyBoard, sizeof(g_enemyBoard));
+    }
 
     for(int r = 0; r < 4; r++) {
         for(int c = 0; c < 7; c++) {
@@ -1074,17 +1026,18 @@ void DrawBoard() {
             float rf, gf, bf; 
             ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
 
-            if(g_enemyBoard[r][c]) {
+            if(localBoard[r][c]) {
                 if (g_textureLoaded) {
                     DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
                 }
                 
+                ImFont* font = ImGui::GetFont();
                 float lvlFsz = ImGui::GetFontSize() * 2.5f * g_boardManualScale; 
                 const char* lvlTxt = "1/3";
-                ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+                ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
                 ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.4f);
-                d->AddText(numFont, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
-                d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
+                d->AddText(font, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
+                d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
             }
             
             ImVec2 pts[6];
@@ -1139,8 +1092,6 @@ void DrawBench() {
         DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
     }
 
-    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
-
     for (int i = 0; i < 9; i++) {
         float x = g_benchX + i * curSpacing; 
         float y = g_benchY;
@@ -1152,12 +1103,13 @@ void DrawBench() {
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
         d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
         
+        ImFont* font = ImGui::GetFont();
         float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
         const char* lvlTxt = "3";
-        ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+        ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
         ImVec2 txtPos(x + curSz * 0.5f - tSz.x * 0.5f, y + curSz - tSz.y + 2.0f * g_autoScale * g_benchScale);
-        d->AddText(numFont, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
-        d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
+        d->AddText(font, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
+        d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
     }
 }
 
@@ -1222,7 +1174,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件
+// 7. 顶级定制菜单 UI 控件 (修复了回弹与重影问题)
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -1480,7 +1432,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver); 
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.1 (极速纯净版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         g_menuX = ImGui::GetWindowPos().x; 
         g_menuY = ImGui::GetWindowPos().y;
         
@@ -1503,18 +1455,18 @@ void DrawMenu() {
             ImGui::Separator();
             
             static bool header_pred = true;
-            if (ModernAnimatedFolder((const char*)u8"预测功能", &header_pred, 2)) {
+            if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
                 EndModernAnimatedFolder();
             }
             
             static bool header_esp = true;
-            if (ModernAnimatedFolder((const char*)u8"透视功能", &header_esp, 4)) {
+            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 4)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
-                ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 4); 
-                ModernToggle((const char*)u8"商店透视", &g_esp_shop, 5);
-                ModernToggle((const char*)u8"金币等级透视", &g_esp_level, 9); 
+                ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
+                ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
+                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
                 EndModernAnimatedFolder();
             }
 
@@ -1522,10 +1474,10 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
             
-            ModernToggle((const char*)u8"锁定所有窗口", &g_boardLocked, 8); 
-            ModernToggle((const char*)u8"自动拿牌", &g_auto_buy, 6); 
+            ModernToggle((const char*)u8"锁定所有窗体", &g_boardLocked, 8); 
+            ModernToggle((const char*)u8"云端自动拿牌", &g_auto_buy, 6); 
             
-            ModernToggle((const char*)u8"牌库显示", &g_show_card_pool, 10);
+            ModernToggle((const char*)u8"牌库透视显示", &g_show_card_pool, 10);
             static float cardpool_anim = 0.0f; 
             cardpool_anim = ImLerp(cardpool_anim, g_show_card_pool ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1543,7 +1495,7 @@ void DrawMenu() {
 
             ImGui::Spacing(); 
 
-            ModernToggle((const char*)u8"卡牌预警数量", &g_card_warning, 11);
+            ModernToggle((const char*)u8"卡牌数量预警", &g_card_warning, 11);
             static float warn_anim = 0.0f; 
             warn_anim = ImLerp(warn_anim, g_card_warning ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1562,7 +1514,7 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
 
-            if (ModernToggle((const char*)u8"极速退游", &g_instant, 7)) {
+            if (ModernToggle((const char*)u8"极速退游 (秒退)", &g_instant, 7)) {
                 if (g_instant) {
                     ImGui::OpenPopup((const char*)u8"警告: 确认退出?");
                 }
@@ -1586,7 +1538,10 @@ void DrawMenu() {
                 ImGui::SetCursorPosX((ImGui::GetWindowSize().x - btn_total_w) * 0.5f);
                 
                 if (ImGui::Button((const char*)u8"确定退出", ImVec2(btnW, btnH))) { 
-                    exit(0); 
+                    // [逻辑接入点] 当点击确定退出时，触发线程安全退出指令
+                    g_triggerUserExit = true; 
+                    g_instant = false;
+                    ImGui::CloseCurrentPopup(); 
                 }
                 ImGui::SameLine();
                 if (ImGui::Button((const char*)u8"取消", ImVec2(btnW, btnH))) { 
@@ -1607,9 +1562,144 @@ void DrawMenu() {
     ImGui::End();
 }
 
+
 // =================================================================
-// 8. 主循环
+// [新增] 8. 游戏内存读写与逻辑挂载引擎 (Hook 占位与独立线程)
 // =================================================================
+
+// 【模拟读取内存的宏，你需要替换成你自己的 ReadMemory 函数】
+template<typename T>
+T ReadMem(uint64_t addr) {
+    // return Memory::Read<T>(addr);
+    return T(); 
+}
+
+// 逻辑 1：Hook UpdateTurnStart
+void (*old_UpdateTurnStart)(void* instance);
+void hook_UpdateTurnStart(void* instance) {
+    if (old_UpdateTurnStart) old_UpdateTurnStart(instance);
+    
+    // 你需要在这里实现：获取 8 个玩家对象地址 -> 读取 0x58 (isAI) -> 读取 0x50 (dynAddr) 
+    // -> 读取 dynAddr + 0x18 (name), dynAddr + 0x20 (playerId)
+    // 最后加锁写入 g_playersInfo 数组
+    {
+        std::lock_guard<std::mutex> lock(g_dataMutex);
+        // for(int i=0; i<8; i++) { g_playersInfo[i].playerId = ... }
+    }
+}
+
+// 逻辑 3：Hook set_Money
+void (*old_set_Money)(uint64_t player_dyn_addr, int money);
+void hook_set_Money(uint64_t player_dyn_addr, int money) {
+    if (old_set_Money) old_set_Money(player_dyn_addr, money);
+    
+    std::lock_guard<std::mutex> lock(g_dataMutex);
+    for (int i = 0; i < 8; i++) {
+        if (g_playersInfo[i].dynAddr == player_dyn_addr) {
+            g_playersInfo[i].money = money;
+            break;
+        }
+    }
+}
+
+// 逻辑 3：Hook NewTurnRoundBegin 与 预测下个对手
+void (*old_NewTurnRoundBegin)(uint64_t arg0);
+void hook_NewTurnRoundBegin(uint64_t arg0) {
+    if (old_NewTurnRoundBegin) old_NewTurnRoundBegin(arg0);
+    g_newTurnRoundBeginArg0 = arg0; // 存起来给 UserExit 用
+    
+    // 延迟 2 秒执行 GetMatchPlayerId
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        
+        // 调用 GetMatchPlayerId (0x3fd7a80)
+        // typedef int(*GetMatchPlayerId_t)(uint64_t, int);
+        // GetMatchPlayerId_t GetMatchPlayerId = (GetMatchPlayerId_t)(GetGameLibBase() + 0x3fd7a80);
+        // int nextId = GetMatchPlayerId(g_chessBattleModelAddr, g_myPlayerId);
+        
+        int nextId = -1; // 这里替换为你实际调用的返回值
+        
+        std::lock_guard<std::mutex> lock(g_dataMutex);
+        g_nextOpponentId = nextId;
+        for (int i = 0; i < 8; i++) {
+            if (g_playersInfo[i].playerId == nextId) {
+                snprintf(g_nextOpponentName, sizeof(g_nextOpponentName), "%s", g_playersInfo[i].name);
+                g_nextOpponentDynArrayAddr = ReadMem<uint64_t>(g_playersInfo[i].objAddr + 0x2b0); // 提前保存读取用的地址
+                break;
+            }
+        }
+    }).detach();
+}
+
+// 逻辑 5：Hook GetHeroLeftAndTota
+void (*old_GetHeroLeftAndTota)(int hero_id, int left_count);
+void hook_GetHeroLeftAndTota(int hero_id, int left_count) {
+    if (old_GetHeroLeftAndTota) old_GetHeroLeftAndTota(hero_id, left_count);
+    
+    std::lock_guard<std::mutex> lock(g_dataMutex);
+    g_heroLeftMap[hero_id] = left_count;
+}
+
+
+// 【这是核心异步线程】：处理定时扫描与极速退游
+extern bool g_running_flag; // 如果需要在线程中结束
+void GameLogicThread() {
+    auto lastScanTime = std::chrono::steady_clock::now();
+
+    while (g_running_flag) {
+        auto now = std::chrono::steady_clock::now();
+        
+        // 逻辑 4：每 10 秒读取一次对手的数组，刷新棋盘透视坐标
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - lastScanTime).count() >= 10) {
+            lastScanTime = now;
+            
+            uint64_t arrayAddr = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_dataMutex);
+                arrayAddr = g_nextOpponentDynArrayAddr;
+            }
+            
+            if (arrayAddr != 0) {
+                // 读取 arrayAddr + 0x20 开始，跨度为 8 字节的 56 行数据
+                // 解析每行的 0x108 (id) 和 0x120 (名字)，并更新临时数组 tempBoard
+                int tempBoard[4][7] = {0};
+                
+                // TODO: 在此填入你的内存遍历循环
+                // tempBoard[row][col] = heroId;
+
+                // 算完之后，加锁覆盖给全局变量供 UI 读取
+                {
+                    std::lock_guard<std::mutex> lock(g_dataMutex);
+                    memcpy(g_enemyBoard, tempBoard, sizeof(tempBoard));
+                }
+            }
+        }
+
+        // 逻辑 6：处理极速退游
+        if (g_triggerUserExit.load()) {
+            g_triggerUserExit.store(false);
+            
+            // typedef void(*UserExit_t)(uint64_t, int, int);
+            // UserExit_t UserExit = (UserExit_t)(GetGameLibBase() + 0x3da60c0);
+            // if (g_newTurnRoundBeginArg0 != 0 && g_myPlayerId != -1) {
+            //     UserExit(g_newTurnRoundBeginArg0, g_myPlayerId, 0); // 0 为投降
+            // }
+            
+            // 为了防止投降函数调用失败，给一个兜底的物理强退
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            exit(0); 
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 防止CPU空转，降低发热
+    }
+}
+
+
+// =================================================================
+// 9. 主循环
+// =================================================================
+bool g_running_flag = true; // 声明为全局以便线程可以读取
+
 int main() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
@@ -1619,15 +1709,21 @@ int main() {
     LoadConfig(); 
     UpdateFontHD(true);  
     
-    static bool running = true; 
+    // 【逻辑接入点】：启动你自己的游戏逻辑线程
+    std::thread logicThread(GameLogicThread);
+    
     std::thread it([&] { 
-        while(running) { 
+        while(g_running_flag) { 
             imgui.ProcessInputEvent(); 
             std::this_thread::yield(); 
         } 
     });
 
-    while (running) {
+    // 这里可以初始化你的 Hook 引擎，比如：
+    // DobbyHook((void*)(GetGameLibBase() + 0x3f7f704), (void*)hook_UpdateTurnStart, (void**)&old_UpdateTurnStart);
+    // ...
+
+    while (g_running_flag) {
         if (g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false; 
@@ -1635,10 +1731,8 @@ int main() {
         
         imgui.BeginFrame(); 
         
-        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
-        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
@@ -1665,7 +1759,10 @@ int main() {
     }
     
     g_HexShader.Cleanup(); 
-    running = false; 
+    g_running_flag = false; 
+    
     if (it.joinable()) it.join(); 
+    if (logicThread.joinable()) logicThread.join(); // 等待逻辑线程安全结束
+    
     return 0;
 }
