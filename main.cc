@@ -25,12 +25,6 @@
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
-// 极速静默控制台唤醒 (彻底抛弃 system 避免 fork 导致进程内存克隆引发卡顿残影)
-void TriggerBeep() {
-    printf("\a"); 
-    fflush(stdout);
-}
-
 bool g_predict_enemy = false;
 bool g_predict_hex = false;
 bool g_esp_board = true;
@@ -412,7 +406,6 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
             if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
                 *isOpen = false; 
-                TriggerBeep(); 
                 return; 
             }
             else if (ImLengthSqr(io.MousePos - p_scale) < (4900.0f * g_autoScale * g_autoScale)) { 
@@ -709,7 +702,6 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
     if (hovered && ImGui::IsMouseClicked(0)) {
         clicked = true;
         if (v) *v = !(*v);
-        TriggerBeep();
     }
     bool held = hovered && ImGui::IsMouseDown(0);
 
@@ -1082,7 +1074,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件 (全面重算高度，防掉帧与残影)
+// 7. 顶级定制菜单 UI 控件 (纯净去发声版本)
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -1101,7 +1093,6 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
     if (pressed) { 
         *v = !(*v); 
-        TriggerBeep(); 
     } 
 
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f; 
@@ -1119,7 +1110,6 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     return pressed;
 }
 
-// 采用数量精算模式，彻底解决收起时多余空白卡顿的问题
 bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     ImGuiID id = window->GetID(label);
@@ -1134,7 +1124,6 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
     if (pressed) { 
         *state = !(*state); 
-        TriggerBeep(); 
     }
 
     static std::map<ImGuiID, float> anim_map; 
@@ -1159,7 +1148,6 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
         float exact_target_height = (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y) * child_item_count;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, anim);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 15.0f * (1.0f - anim));
-        // 完全精准的物理限高窗体，确保毫无滚动条与排版抖动
         ImGui::BeginChild(id + 1, ImVec2(0, exact_target_height * anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
         return true;
     }
@@ -1191,7 +1179,6 @@ void ModernNumberAdjuster(const char* label, int* v, int v_min, int v_max) {
     if (ImGui::Button("-", ImVec2(btn_sz, btn_sz))) { 
         if (*v > v_min) { 
             (*v)--; 
-            TriggerBeep(); 
         } 
     } 
     ImGui::SameLine();
@@ -1211,7 +1198,6 @@ void ModernNumberAdjuster(const char* label, int* v, int v_min, int v_max) {
     if (ImGui::Button("+", ImVec2(btn_sz, btn_sz))) { 
         if (*v < v_max) { 
             (*v)++; 
-            TriggerBeep(); 
         } 
     }
     
@@ -1244,7 +1230,6 @@ void ModernTierSelector() {
         bool hovered, held;
         if (ImGui::ButtonBehavior(bb, window->GetID(&g_warning_tiers + i), &hovered, &held)) { 
             g_warning_tiers[i] = !g_warning_tiers[i]; 
-            TriggerBeep(); 
         }
         
         static float anims[7] = {0}; 
@@ -1288,7 +1273,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver); 
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.0 (防卡顿版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.1 (极速纯净版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         g_menuX = ImGui::GetWindowPos().x; 
         g_menuY = ImGui::GetWindowPos().y;
         
@@ -1312,7 +1297,6 @@ void DrawMenu() {
             ImGui::Separator();
             
             static bool header_pred = true;
-            // 第二个参数准确传入里面有 "2" 个 Toggle 控件，确保展开高度分毫不差，告别卡顿闪动
             if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
@@ -1406,7 +1390,6 @@ void DrawMenu() {
             ImGui::Spacing();
             if (ImGui::Button((const char*)u8"保存当前配置", ImVec2(-1, 55 * g_autoScale))) { 
                 SaveConfig(); 
-                TriggerBeep(); 
             }
         }
     }
