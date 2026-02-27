@@ -45,7 +45,7 @@ int g_card_pool_cols = 5;
 float g_cardPoolX = 150.0f;
 float g_cardPoolY = 150.0f;
 float g_cardPoolScale = 1.0f; 
-float g_cardPoolAlpha = 1.0f; // 【需求4】新增的牌库透明度变量
+float g_cardPoolAlpha = 1.0f; 
 
 // 预警功能状态
 bool g_card_warning = false;
@@ -123,7 +123,7 @@ void SaveConfig() {
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
         out << "cardPoolScale=" << g_cardPoolScale << "\n";
-        out << "cardPoolAlpha=" << g_cardPoolAlpha << "\n"; // 保存透明度
+        out << "cardPoolAlpha=" << g_cardPoolAlpha << "\n"; 
         out << "cardPoolX=" << g_cardPoolX << "\n";         
         out << "cardPoolY=" << g_cardPoolY << "\n";         
         out << "autoBuy=" << g_auto_buy << "\n";
@@ -863,7 +863,6 @@ void DrawCardPool() {
                 float cell_anim = std::clamp(current_rows - r, 0.0f, 1.0f) * std::clamp(current_cols - c, 0.0f, 1.0f); 
                 if (cell_anim < 0.01f) continue;
                 
-                // 【需求4应用】融合新加的 g_cardPoolAlpha 控制牌库总体透明度
                 float final_alpha = alpha * cell_anim * g_cardPoolAlpha;
                 float offset_sz = curSz * cell_anim; 
                 float center_offset = (curSz - offset_sz) * 0.5f;
@@ -925,7 +924,6 @@ void DrawBoard() {
     float baseXStep = baseSz * 1.73205f;
     float baseYStep = baseSz * 1.5f;
 
-    // 交互检测区域及按钮还原为原来正常的大小
     float h_dx = 7.0f * baseXStep;              
     float h_dy = 1.5f * baseYStep;              
     float c_dx = -baseXStep * 0.8f;             
@@ -964,14 +962,12 @@ void DrawBoard() {
                     DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
                 }
                 
-                // 【需求1完美执行】使用 1/3 文本格式，且调整大小适中为原来的 2.5倍
                 ImFont* font = ImGui::GetFont();
                 float lvlFsz = ImGui::GetFontSize() * 2.5f * g_boardManualScale; 
                 const char* lvlTxt = "1/3";
                 ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
-                // 向下偏移一点放置在头像正下方
                 ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.4f);
-                d->AddText(font, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); // 带较清晰阴影 
+                d->AddText(font, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
                 d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
             }
             
@@ -1038,7 +1034,6 @@ void DrawBench() {
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
         d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
         
-        // 备战席数字还原为原来的 1.2倍 刚好
         ImFont* font = ImGui::GetFont();
         float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
         const char* lvlTxt = "3";
@@ -1110,8 +1105,10 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件 
+// 7. 顶级定制菜单 UI 控件 (修复了回弹与重影问题)
 // =================================================================
+
+// 修复点1：即使在屏幕外被裁剪，也要计算动画，确保滚动回去的时候不再重影闪烁
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -1123,30 +1120,42 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     const ImRect bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w + style.ItemInnerSpacing.x + label_size.x, h));
     
     ImGui::ItemSize(bb, style.FramePadding.y);
-    if (!ImGui::ItemAdd(bb, id)) return false;
+    
+    // 我们记录下它是否被裁剪，但不要立刻 return false！
+    bool is_clipped = !ImGui::ItemAdd(bb, id);
 
-    bool hovered, held;
-    bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    if (pressed) { 
-        *v = !(*v); 
-    } 
+    bool pressed = false;
+    // 只有在视野内，才去处理点击交互
+    if (!is_clipped) {
+        bool hovered, held;
+        pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
+        if (pressed) { 
+            *v = !(*v); 
+        } 
+    }
 
+    // [关键] 无论是否在视野外，我们始终让动画状态运行
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f; 
-    ImVec4 col_bg = ImLerp(ImVec4(0.20f, 0.22f, 0.27f, 1.0f), ImVec4(0.00f, 0.85f, 0.55f, 1.0f), g_anim[idx]);
     
-    window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(col_bg), h*0.5f);
-    window->DrawList->AddRect(bb.Min, bb.Min + ImVec2(w, h), IM_COL32(0, 0, 0, 80), h*0.5f, 0, 1.0f);
+    // 只有在视野内时，才进行消耗性能的渲染
+    if (!is_clipped) {
+        ImVec4 col_bg = ImLerp(ImVec4(0.20f, 0.22f, 0.27f, 1.0f), ImVec4(0.00f, 0.85f, 0.55f, 1.0f), g_anim[idx]);
+        
+        window->DrawList->AddRectFilled(bb.Min, bb.Min + ImVec2(w, h), ImGui::GetColorU32(col_bg), h*0.5f);
+        window->DrawList->AddRect(bb.Min, bb.Min + ImVec2(w, h), IM_COL32(0, 0, 0, 80), h*0.5f, 0, 1.0f);
+        
+        float handle_radius = h * 0.5f - 2.5f;
+        ImVec2 handle_center = bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f);
+        window->DrawList->AddCircleFilled(handle_center + ImVec2(0, 1.5f), handle_radius, IM_COL32(0, 0, 0, 90));
+        window->DrawList->AddCircleFilled(handle_center, handle_radius, IM_COL32_WHITE);
+        
+        ImGui::RenderText(ImVec2(bb.Min.x + w + style.ItemInnerSpacing.x, bb.Min.y + style.FramePadding.y*0.5f), label);
+    }
     
-    float handle_radius = h * 0.5f - 2.5f;
-    ImVec2 handle_center = bb.Min + ImVec2(h*0.5f + g_anim[idx]*(w-h), h*0.5f);
-    window->DrawList->AddCircleFilled(handle_center + ImVec2(0, 1.5f), handle_radius, IM_COL32(0, 0, 0, 90));
-    window->DrawList->AddCircleFilled(handle_center, handle_radius, IM_COL32_WHITE);
-    
-    ImGui::RenderText(ImVec2(bb.Min.x + w + style.ItemInnerSpacing.x, bb.Min.y + style.FramePadding.y*0.5f), label);
     return pressed;
 }
 
-// 【修复2】重影问题由小数截断边界引起。现将其严格用(int)取整确保亚像素完全对齐防重影！
+// 修复点2：解决了向下滑动导致高度塌陷及疯狂回弹跳跃的终极 Bug！
 bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     ImGuiID id = window->GetID(label);
@@ -1155,35 +1164,43 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
     
     const ImRect bb(pos, pos + size); 
     ImGui::ItemSize(bb);
-    if (!ImGui::ItemAdd(bb, id)) return false;
+    
+    // 我们必须检查控件是否被裁剪，但绝对不能直接 return false！
+    bool is_clipped = !ImGui::ItemAdd(bb, id);
 
-    bool hovered, held; 
-    bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    if (pressed) { 
-        *state = !(*state); 
+    bool hovered = false, held = false; 
+    if (!is_clipped) {
+        bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
+        if (pressed) { 
+            *state = !(*state); 
+        }
     }
 
+    // 独立出动画状态机，保持平稳更新
     static std::map<ImGuiID, float> anim_map; 
     float& anim = anim_map[id];
     anim = ImLerp(anim, *state ? 1.0f : 0.0f, 1.0f - expf(-18.0f * ImGui::GetIO().DeltaTime));
 
-    ImU32 bg_col = hovered ? IM_COL32(50, 60, 75, 200) : IM_COL32(40, 48, 60, 150);
-    window->DrawList->AddRectFilled(bb.Min, bb.Max, bg_col, 8.0f * g_autoScale);
-    
-    float cx = bb.Min.x + 15.0f * g_autoScale; 
-    float cy = bb.Min.y + size.y * 0.5f;
-    float arrow_sz = 5.0f * g_autoScale; 
-    float ang = anim * 1.5708f; 
-    ImVec2 p1(cx + cosf(ang)*arrow_sz, cy + sinf(ang)*arrow_sz);
-    ImVec2 p2(cx + cosf(ang + 2.094f)*arrow_sz, cy + sinf(ang + 2.094f)*arrow_sz);
-    ImVec2 p3(cx + cosf(ang - 2.094f)*arrow_sz, cy + sinf(ang - 2.094f)*arrow_sz);
-    window->DrawList->AddTriangleFilled(p1, p2, p3, IM_COL32(200, 200, 200, 255));
+    if (!is_clipped) {
+        ImU32 bg_col = hovered ? IM_COL32(50, 60, 75, 200) : IM_COL32(40, 48, 60, 150);
+        window->DrawList->AddRectFilled(bb.Min, bb.Max, bg_col, 8.0f * g_autoScale);
+        
+        float cx = bb.Min.x + 15.0f * g_autoScale; 
+        float cy = bb.Min.y + size.y * 0.5f;
+        float arrow_sz = 5.0f * g_autoScale; 
+        float ang = anim * 1.5708f; 
+        ImVec2 p1(cx + cosf(ang)*arrow_sz, cy + sinf(ang)*arrow_sz);
+        ImVec2 p2(cx + cosf(ang + 2.094f)*arrow_sz, cy + sinf(ang + 2.094f)*arrow_sz);
+        ImVec2 p3(cx + cosf(ang - 2.094f)*arrow_sz, cy + sinf(ang - 2.094f)*arrow_sz);
+        window->DrawList->AddTriangleFilled(p1, p2, p3, IM_COL32(200, 200, 200, 255));
 
-    window->DrawList->AddText(ImVec2(cx + 15.0f * g_autoScale, bb.Min.y + (size.y - ImGui::GetFontSize())*0.5f), IM_COL32_WHITE, label);
+        window->DrawList->AddText(ImVec2(cx + 15.0f * g_autoScale, bb.Min.y + (size.y - ImGui::GetFontSize())*0.5f), IM_COL32_WHITE, label);
+    }
 
+    // [关键修复]：只要 anim 大于 0，即使整个标题在视野外，也必须返回 true 提供 BeginChild，
+    // 这样 ImGui 才会继续布局里面的子元素并保留总高度，滑动条就不会回弹了。
     if (anim > 0.01f) {
         float exact_target_height = (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y) * child_item_count + ImGui::GetStyle().ItemSpacing.y * 1.0f;
-        // 核心修复点：强制对齐到整数高度，彻底告别安卓滚动条因亚像素造成的文字模糊/重影残影
         float current_height = (float)(int)(exact_target_height * anim); 
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, anim);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 15.0f * (1.0f - anim));
@@ -1288,6 +1305,7 @@ void ModernFloatAdjuster(const char* label, float* v, float v_min, float v_max, 
     ImGui::PopID();
 }
 
+// 修复点3：等级选择器同样存在由于被裁剪而导致的重影，这里将其规范化
 void ModernTierSelector() {
     ImGuiWindow* window = ImGui::GetCurrentWindow(); 
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -1307,27 +1325,31 @@ void ModernTierSelector() {
         ImRect bb(pos, pos + ImVec2(btn_sz*1.2f, btn_sz)); 
         ImGui::ItemSize(bb);
         
-        if (!ImGui::ItemAdd(bb, window->GetID(&g_warning_tiers + i))) continue;
+        bool is_clipped = !ImGui::ItemAdd(bb, window->GetID(&g_warning_tiers + i));
         
-        bool hovered, held;
-        if (ImGui::ButtonBehavior(bb, window->GetID(&g_warning_tiers + i), &hovered, &held)) { 
-            g_warning_tiers[i] = !g_warning_tiers[i]; 
+        if (!is_clipped) {
+            bool hovered, held;
+            if (ImGui::ButtonBehavior(bb, window->GetID(&g_warning_tiers + i), &hovered, &held)) { 
+                g_warning_tiers[i] = !g_warning_tiers[i]; 
+            }
         }
         
         static float anims[7] = {0}; 
         anims[i] = ImLerp(anims[i], g_warning_tiers[i] ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
         
-        ImU32 bg_col = IM_COL32(30 + 70*anims[i], 35 + 100*anims[i], 45 + 50*anims[i], 255);
-        window->DrawList->AddRectFilled(bb.Min, bb.Max, bg_col, 4.0f * g_autoScale);
-        
-        if (anims[i] > 0.01f) {
-            window->DrawList->AddRect(bb.Min, bb.Max, IM_COL32(255, 200, 50, 200 * anims[i]), 4.0f * g_autoScale, 0, 1.5f * g_autoScale);
-        }
+        if (!is_clipped) {
+            ImU32 bg_col = IM_COL32(30 + 70*anims[i], 35 + 100*anims[i], 45 + 50*anims[i], 255);
+            window->DrawList->AddRectFilled(bb.Min, bb.Max, bg_col, 4.0f * g_autoScale);
+            
+            if (anims[i] > 0.01f) {
+                window->DrawList->AddRect(bb.Min, bb.Max, IM_COL32(255, 200, 50, 200 * anims[i]), 4.0f * g_autoScale, 0, 1.5f * g_autoScale);
+            }
 
-        char buf[4]; 
-        snprintf(buf, sizeof(buf), "%d", i); 
-        ImVec2 t_sz = ImGui::CalcTextSize(buf);
-        window->DrawList->AddText(pos + ImVec2((bb.GetWidth() - t_sz.x)*0.5f, (bb.GetHeight() - t_sz.y)*0.5f), g_warning_tiers[i] ? IM_COL32(0,0,0,255) : IM_COL32_WHITE, buf);
+            char buf[4]; 
+            snprintf(buf, sizeof(buf), "%d", i); 
+            ImVec2 t_sz = ImGui::CalcTextSize(buf);
+            window->DrawList->AddText(pos + ImVec2((bb.GetWidth() - t_sz.x)*0.5f, (bb.GetHeight() - t_sz.y)*0.5f), g_warning_tiers[i] ? IM_COL32(0,0,0,255) : IM_COL32_WHITE, buf);
+        }
     }
 }
 
@@ -1478,7 +1500,6 @@ void DrawMenu() {
                 SaveConfig(); 
             }
             
-            // 【需求3】已经把多余占位和巨大空白空间去除了，现在是非常优雅紧凑的一点留白
             ImGui::Dummy(ImVec2(0.0f, 15.0f * g_autoScale * g_scale));
         }
     }
