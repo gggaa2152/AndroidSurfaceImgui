@@ -1424,6 +1424,10 @@ int main() {
         
         imgui.BeginFrame(); 
         
+        // 【核心修复修复：清理上一帧残留的画面，防止半透明背景出现残影】
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f); // 保持全局透明度，不会影响背后的游戏画面
+        glClear(GL_COLOR_BUFFER_BIT);
+        
         if (!g_resLoaded) { 
             g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
             g_textureLoaded = (g_heroTexture != 0); 
