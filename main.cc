@@ -446,7 +446,8 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         }
     }
 
-    float smoothness = 1.0f - expf(-20.0f * io.DeltaTime);
+    // [优化] 拖拽和缩放时取消缓动插值实现100%绝对跟手；松手时恢复平滑过渡
+    float smoothness = (isDragging || isScaling) ? 1.0f : (1.0f - expf(-25.0f * io.DeltaTime));
     out_x = ImLerp(out_x, t_x, smoothness); 
     out_y = ImLerp(out_y, t_y, smoothness); 
     out_scale = ImLerp(out_scale, t_scale, smoothness);
@@ -1461,8 +1462,7 @@ int main() {
         
         imgui.EndFrame(); 
         
-        // [优化] 极短休眠代替 yield 保护手机电量和芯片组温控，避免因 EGL 死循环空转
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // [优化] 移除此处主线程强制休眠。由开头的 eglSwapInterval(..., 1) 硬件级同步设备屏幕刷新率(VSYNC)，实现丝滑满帧不掉帧
     }
     
     g_HexShader.Cleanup(); 
