@@ -1585,7 +1585,8 @@ void DrawMenu() {
                 const char* warn_txt = (const char*)u8"你确定要立即强制退出游戏吗？";
                 float txt_w = ImGui::CalcTextSize(warn_txt).x;
                 ImGui::SetCursorPosX((ImGui::GetWindowSize().x - txt_w) * 0.5f);
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), warn_txt);
+                // 修复 1：增加 "%s" 格式化字符串，解决警告与编译报错
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", warn_txt);
                 
                 ImGui::Spacing(); 
                 ImGui::Spacing();
@@ -1667,7 +1668,8 @@ void GameLogicThread() {
                         g_playersInfo[i].dynAddr = dynAddr;
                         if (dynAddr) {
                             g_playersInfo[i].playerId = ReadMem<int>(dynAddr + 0x20);
-                            g_playersInfo[i].money = ReadMem<int>(dynAddr + 0xxxx); // 根据你的逆向找 money 偏移
+                            // 修复 2：将占位符 0xxxx 改为合法的 0x0 (请自行将其修改为你逆向找到的真实偏移量)
+                            g_playersInfo[i].money = ReadMem<int>(dynAddr + 0x0); 
                         }
                     }
                 }
