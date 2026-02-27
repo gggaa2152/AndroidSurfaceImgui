@@ -65,7 +65,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 (无点击不保存)
+// 2. 配置管理 (无点击不保存，且完美记录高度与大小)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -81,6 +81,7 @@ void SaveConfig() {
         out << "menuX=" << g_menuX << "\n";
         out << "menuY=" << g_menuY << "\n";
         out << "menuW=" << g_menuW << "\n";
+        out << "menuH=" << g_menuH << "\n";
         out << "menuScale=" << g_scale << "\n";
         out << "menuCollapsed=" << g_menuCollapsed << "\n";
         out << "startX=" << g_startX << "\n";
@@ -123,6 +124,7 @@ void LoadConfig() {
                 else if (k == "menuX") g_menuX = std::stof(v);
                 else if (k == "menuY") g_menuY = std::stof(v);
                 else if (k == "menuW") g_menuW = std::stof(v);
+                else if (k == "menuH") g_menuH = std::stof(v);
                 else if (k == "menuScale") g_scale = std::stof(v);
                 else if (k == "menuCollapsed") g_menuCollapsed = (v == "1");
                 else if (k == "startX") g_startX = std::stof(v);
@@ -280,10 +282,10 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         ImVec2 p_close(closeHandleX, closeHandleY);
 
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
-            // Check Close Button Hit
+            // Check Close Button Hit (仅当指针不为 null 时才检测关闭按钮)
             if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
                 *isOpen = false;
-                return; // 不自动保存配置
+                return; 
             }
             // Check Scale Handle Hit
             else if (ImLengthSqr(io.MousePos - p_scale) < (4900.0f * g_autoScale * g_autoScale)) { 
@@ -333,13 +335,13 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
     out_scale = ImLerp(out_scale, t_scale, smoothness);
 }
 
-// 渲染黄金缩放手柄
+// 静态的黄金缩放手柄
 void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
-    float time = (float)ImGui::GetTime();
     ImU32 coreColor = isScaling ? IM_COL32(0, 255, 180, 255) : IM_COL32(255, 255, 255, 255);
     d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
     d->AddCircleFilled(p_handle, 6.0f * g_autoScale, coreColor);
-    d->AddCircle(p_handle, (20.0f + 4.0f * sinf(time*6)) * g_autoScale, IM_COL32(255, 215, 0, 150), 32, 2.5f * g_autoScale);
+    // 纯静态外圈，取消呼吸动画
+    d->AddCircle(p_handle, 20.0f * g_autoScale, IM_COL32(255, 215, 0, 150), 32, 2.5f * g_autoScale);
 }
 
 // 渲染红色贴片关闭按钮
@@ -362,12 +364,14 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     }
 }
 
-// 自定义丝滑过渡动画的霓虹按钮
+// 完美缩放字体的霓虹按钮
 bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 size, int id, float scale) {
     ImGuiIO& io = ImGui::GetIO();
     ImRect bb(pos, pos + size);
     bool hovered = bb.Contains(io.MousePos);
     bool clicked = false;
+    
+    // 利用包含判定，避免单一按键焦点锁死，支持手指独立触控触发
     if (hovered && ImGui::IsMouseClicked(0)) clicked = true;
     bool held = hovered && ImGui::IsMouseDown(0);
 
@@ -380,14 +384,19 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
     ImU32 border = IM_COL32(0, 150 + 105*a, 255, 100 + 155*a);
     
     d->AddRectFilled(bb.Min, bb.Max, bg, size.y * 0.5f);
-    d->AddRect(bb.Min, bb.Max, border, size.y * 0.5f, 0, 2.0f * scale * g_autoScale);
+    d->AddRect(bb.Min, bb.Max, border, size.y * 0.5f, 0, 1.5f * scale * g_autoScale); 
     
     if (a > 0.01f) {
-        d->AddRect(bb.Min, bb.Max, IM_COL32(0, 200, 255, 80 * a), size.y * 0.5f, 0, 6.0f * scale * g_autoScale);
+        d->AddRect(bb.Min, bb.Max, IM_COL32(0, 200, 255, 80 * a), size.y * 0.5f, 0, 4.0f * scale * g_autoScale);
     }
 
-    ImVec2 textSize = ImGui::CalcTextSize(label);
-    d->AddText(pos + ImVec2((size.x - textSize.x)*0.5f, (size.y - textSize.y)*0.5f), IM_COL32_WHITE, label);
+    // 完美计算带缩放系数的字体大小，确保绝不溢出边框
+    ImFont* font = ImGui::GetFont();
+    float scaledFontSize = ImGui::GetFontSize() * scale;
+    ImVec2 textSize = font->CalcTextSizeA(scaledFontSize, FLT_MAX, 0.0f, label);
+    
+    ImVec2 textPos = pos + ImVec2((size.x - textSize.x)*0.5f, (size.y - textSize.y)*0.5f);
+    d->AddText(font, scaledFontSize, textPos, IM_COL32_WHITE, label, NULL);
 
     return clicked; 
 }
@@ -481,21 +490,23 @@ void DrawBench() {
 
     float curSz = baseSz * g_benchScale;
     float curSpacing = spacing * g_benchScale;
+    float time = (float)ImGui::GetTime();
 
     if (!g_boardLocked) {
         DrawScaleHandle(d, ImVec2(g_benchX + h_dx * g_benchScale, g_benchY + h_dy * g_benchScale), isScaling);
         DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
     }
 
-    // 霓虹灯网格
+    // 彩色薄边框网格
     for (int i=0; i<9; i++) {
         float x = g_benchX + i * curSpacing;
         float y = g_benchY;
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 22, 27, 200));
-        // 外层辉光
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(0, 255, 150, 100), 0, 0, 5.0f * g_autoScale * g_benchScale);
-        // 内层核心亮线
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(0, 255, 150, 255), 0, 0, 1.5f * g_autoScale * g_benchScale);
+        
+        float hue = fmodf(time * 0.3f + i * 0.05f, 1.0f);
+        float r, g, b; ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
+        
+        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255), 0, 0, 1.5f * g_autoScale * g_benchScale);
     }
 }
 
@@ -524,20 +535,23 @@ void DrawShop() {
 
     float curSz = baseSz * g_shopScale;
     float curSpacing = spacing * g_shopScale;
+    float time = (float)ImGui::GetTime();
 
     if (!g_boardLocked) {
         DrawScaleHandle(d, ImVec2(g_shopX + h_dx * g_shopScale, g_shopY + h_dy * g_shopScale), isScaling);
         DrawCloseHandle(d, ImVec2(g_shopX + c_dx * g_shopScale, g_shopY + c_dy * g_shopScale), &g_esp_shop);
     }
 
+    // 彩色薄边框网格
     for (int i=0; i<5; i++) {
         float x = g_shopX + i * curSpacing;
         float y = g_shopY;
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 22, 27, 220));
         
-        // 金色霓虹灯网格
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(255, 200, 0, 100), 0, 0, 5.0f * g_autoScale * g_shopScale);
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(255, 200, 0, 255), 0, 0, 1.5f * g_autoScale * g_shopScale);
+        float hue = fmodf(time * 0.3f + i * 0.08f, 1.0f);
+        float r, g, b; ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
+        
+        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255), 0, 0, 1.5f * g_autoScale * g_shopScale);
         
         if (g_textureLoaded) {
             float imgPad = 4.0f * g_autoScale * g_shopScale;
@@ -550,10 +564,19 @@ void DrawShop() {
 // 6. 悬浮窗面板 (胶囊菜单及预测窗口)
 // =================================================================
 void DrawExtraWindows() {
+    float time = (float)ImGui::GetTime();
+    
+    // 全局字体自动缩放因子
+    float fontScaleVal = (18.0f * g_autoScale * g_scale) / g_current_rendered_size;
+
     if (g_predict_enemy) {
+        float r, g, b; ImGui::ColorConvertHSVtoRGB(fmodf(time * 0.2f, 1.0f), 0.8f, 1.0f, r, g, b);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(r, g, b, 0.8f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * g_autoScale);
+        
         ImGui::SetNextWindowPos(ImVec2(g_enemyW_X, g_enemyW_Y), ImGuiCond_FirstUseEver);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.2f, 0.2f, 0.8f));
-        if (ImGui::Begin((const char*)u8"下回合对手", &g_predict_enemy, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+        if (ImGui::Begin((const char*)u8"预测对手", &g_predict_enemy, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::SetWindowFontScale(fontScaleVal); // 支持同级缩放
             ImVec2 pos = ImGui::GetWindowPos();
             if (pos.x != g_enemyW_X || pos.y != g_enemyW_Y) { g_enemyW_X = pos.x; g_enemyW_Y = pos.y; }
             ImGui::Text((const char*)u8"极高概率遇到:");
@@ -561,13 +584,19 @@ void DrawExtraWindows() {
             ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), (const char*)u8"> 玩家 5 (血量见底)");
         }
         ImGui::End();
+        
+        ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
     
     if (g_predict_hex) {
+        float r, g, b; ImGui::ColorConvertHSVtoRGB(fmodf(time * 0.2f + 0.5f, 1.0f), 0.8f, 1.0f, r, g, b);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(r, g, b, 0.8f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * g_autoScale);
+        
         ImGui::SetNextWindowPos(ImVec2(g_hexW_X, g_hexW_Y), ImGuiCond_FirstUseEver);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.8f, 0.4f, 1.0f, 0.8f));
         if (ImGui::Begin((const char*)u8"海克斯质量评估", &g_predict_hex, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::SetWindowFontScale(fontScaleVal); // 支持同级缩放
             ImVec2 pos = ImGui::GetWindowPos();
             if (pos.x != g_hexW_X || pos.y != g_hexW_Y) { g_hexW_X = pos.x; g_hexW_Y = pos.y; }
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), (const char*)u8"[左] 银色: T2 (普通)");
@@ -575,6 +604,8 @@ void DrawExtraWindows() {
             ImGui::TextColored(ImVec4(0.8f, 0.4f, 1.0f, 1.0f), (const char*)u8"[右] 彩色: T1 (强势)");
         }
         ImGui::End();
+        
+        ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
     
@@ -588,18 +619,15 @@ void DrawExtraWindows() {
         static bool isDragging = false, isScaling = false;
         static ImVec2 dragOffset, scaleDragOffset;
 
-        float baseW = 280.0f * g_autoScale;
-        float baseH = 60.0f * g_autoScale;
+        float baseW = 300.0f * g_autoScale; // 放宽底框，避免文字拥挤
+        float baseH = 65.0f * g_autoScale;
         float h_dx = baseW + 20.0f * g_autoScale; 
         float h_dy = baseH * 0.5f;
-        float c_dx = -20.0f * g_autoScale;
-        float c_dy = baseH * 0.5f;
 
+        // 注意最后参数为 nullptr，这样彻底移除了左侧的关闭按钮热区检测
         HandleGridInteraction(g_autoW_X, g_autoW_Y, g_autoW_Scale, t_x, t_y, t_scale,
                               isDragging, isScaling, dragOffset, scaleDragOffset,
-                              h_dx, h_dy, c_dx, c_dy, 0, 0, baseW, baseH, g_boardLocked, &g_auto_buy);
-
-        if (!g_auto_buy) return;
+                              h_dx, h_dy, 0, 0, 0, 0, baseW, baseH, g_boardLocked, nullptr);
 
         float curW = baseW * g_autoW_Scale;
         float curH = baseH * g_autoW_Scale;
@@ -611,14 +639,13 @@ void DrawExtraWindows() {
         
         d->AddRectFilled(p_min, p_max, IM_COL32(15, 20, 25, 240), rounding);
         d->AddRect(p_min, p_max, IM_COL32(0, 255, 150, 200), rounding, 0, 2.0f * g_autoScale * g_autoW_Scale);
-        d->AddRect(p_min, p_max, IM_COL32(0, 255, 150, 50), rounding, 0, 8.0f * g_autoScale * g_autoW_Scale); // 外光晕
 
         if (!g_boardLocked) {
             DrawScaleHandle(d, ImVec2(g_autoW_X + h_dx * g_autoW_Scale, g_autoW_Y + h_dy * g_autoW_Scale), isScaling);
-            DrawCloseHandle(d, ImVec2(g_autoW_X + c_dx * g_autoW_Scale, g_autoW_Y + c_dy * g_autoW_Scale), &g_auto_buy);
+            // 不调用 DrawCloseHandle，左侧没有任何关闭按钮了
         }
 
-        // 内部双按钮
+        // 内部双按钮 (完美居中及自适应字体)
         float btnW = (baseW - 40.0f * g_autoScale) * 0.5f * g_autoW_Scale;
         float btnH = (baseH - 20.0f * g_autoScale) * g_autoW_Scale;
         float gap = 10.0f * g_autoScale * g_autoW_Scale;
@@ -627,10 +654,10 @@ void DrawExtraWindows() {
         ImVec2 b2_pos = b1_pos + ImVec2(btnW + gap, 0);
         
         if (AnimatedNeonButton(d, (const char*)u8"自动刷新", b1_pos, ImVec2(btnW, btnH), 101, g_autoW_Scale)) {
-            // 点击逻辑在此
+            // ...
         }
         if (AnimatedNeonButton(d, (const char*)u8"自动拿天选", b2_pos, ImVec2(btnW, btnH), 102, g_autoW_Scale)) {
-            // 点击逻辑在此
+            // ...
         }
     }
 }
@@ -653,7 +680,7 @@ bool ModernToggle(const char* label, bool* v, int idx) {
 
     bool hovered, held;
     bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
-    if (pressed) { *v = !(*v); } // 移除了自动保存
+    if (pressed) { *v = !(*v); } // 无操作不自动保存
 
     g_anim[idx] += ((*v ? 1.0f : 0.0f) - g_anim[idx]) * 0.2f; 
     
@@ -709,16 +736,24 @@ void DrawMenu() {
         
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
-        float curW = ImGui::GetWindowSize().x;
+        
+        // 动态监听尺寸拖动，确保高度也一并保存！
+        if (ImGui::IsMouseReleased(0)) {
+            float curW = ImGui::GetWindowSize().x;
+            float curH = ImGui::GetWindowSize().y;
+            if (std::abs(curW - g_menuW) > 5.0f || std::abs(curH - g_menuH) > 5.0f) {
+                g_menuW = curW;
+                g_menuH = curH;
+                g_scale = curW / (350.0f * g_autoScale);
+                g_needUpdateFontSafe = true; 
+            }
+        }
+        
         g_menuCollapsed = ImGui::IsWindowCollapsed();
 
-        if (ImGui::IsMouseReleased(0) && std::abs(curW - g_menuW) > 5.0f) {
-            g_menuW = curW; g_scale = curW / (350.0f * g_autoScale);
-            g_needUpdateFontSafe = true; // 放开鼠标才重构字体
-        }
-
         if (!g_menuCollapsed) {
-            ImGui::SetWindowFontScale((18.0f * g_autoScale * g_scale) / g_current_rendered_size);
+            float fontScaleVal = (18.0f * g_autoScale * g_scale) / g_current_rendered_size;
+            ImGui::SetWindowFontScale(fontScaleVal);
             
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
@@ -737,23 +772,27 @@ void DrawMenu() {
                 ImGui::Unindent();
             }
             ImGui::Separator();
-            ModernToggle((const char*)u8"锁定棋盘位置", &g_boardLocked, 8); 
+            ModernToggle((const char*)u8"锁定位置", &g_boardLocked, 8); 
             ModernToggle((const char*)u8"自动拿牌", &g_auto_buy, 6); 
             
-            // 极速退游 确认弹窗逻辑
             if (ModernToggle((const char*)u8"极速退游", &g_instant, 7)) {
                 if (g_instant) ImGui::OpenPopup((const char*)u8"警告: 确认退出?");
             }
             
-            ImGui::SetNextWindowSize(ImVec2(320 * g_autoScale, 0));
+            // 完美支持全局同比例放大的确认弹窗
+            ImGui::SetNextWindowSize(ImVec2(320 * g_autoScale * g_scale, 0));
             if (ImGui::BeginPopupModal((const char*)u8"警告: 确认退出?", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) {
+                ImGui::SetWindowFontScale(fontScaleVal);
                 ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), (const char*)u8"你确定要立即强制退出游戏吗？");
                 ImGui::Spacing();
-                if (ImGui::Button((const char*)u8"确定退出", ImVec2(135 * g_autoScale, 45 * g_autoScale))) {
-                    exit(0); // 强制退出
+                
+                float btnW = 135 * g_autoScale * g_scale;
+                float btnH = 45 * g_autoScale * g_scale;
+                if (ImGui::Button((const char*)u8"确定退出", ImVec2(btnW, btnH))) {
+                    exit(0); 
                 }
                 ImGui::SameLine();
-                if (ImGui::Button((const char*)u8"取消", ImVec2(135 * g_autoScale, 45 * g_autoScale))) {
+                if (ImGui::Button((const char*)u8"取消", ImVec2(btnW, btnH))) {
                     g_instant = false;
                     ImGui::CloseCurrentPopup();
                 }
@@ -761,7 +800,6 @@ void DrawMenu() {
             }
             
             ImGui::Spacing();
-            // 唯一的保存配置入口
             if (ImGui::Button((const char*)u8"保存当前配置", ImVec2(-1, 55 * g_autoScale))) {
                 SaveConfig();
             }
