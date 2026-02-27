@@ -529,7 +529,10 @@ void DrawBoard() {
 }
 
 void DrawBench() {
-    if (!g_esp_bench) return;
+    static float alpha = 0.0f;
+    alpha = ImLerp(alpha, g_esp_bench ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
+    if (alpha < 0.01f) return;
+
     ImDrawList* d = ImGui::GetForegroundDrawList();
     
     static float t_x = g_benchX, t_y = g_benchY, t_scale = g_benchScale;
@@ -545,22 +548,24 @@ void DrawBench() {
     float c_dx = -baseSz * 0.3f;              
     float c_dy = baseSz * 0.5f;
 
-    HandleGridInteraction(g_benchX, g_benchY, g_benchScale, t_x, t_y, t_scale,
-                          isDragging, isScaling, dragOffset, scaleDragOffset,
-                          h_dx, h_dy, c_dx, c_dy, 0, 0, 9*spacing, baseSz, g_boardLocked, &g_esp_bench);
-
-    if (!g_esp_bench) return;
+    // 只有在逻辑上开启时才允许交互
+    if (g_esp_bench) {
+        HandleGridInteraction(g_benchX, g_benchY, g_benchScale, t_x, t_y, t_scale,
+                              isDragging, isScaling, dragOffset, scaleDragOffset,
+                              h_dx, h_dy, c_dx, c_dy, 0, 0, 9*spacing, baseSz, g_boardLocked, &g_esp_bench);
+    }
 
     float curSz = baseSz * g_benchScale;
     float curSpacing = spacing * g_benchScale;
     float time = (float)ImGui::GetTime();
+    float rounding = 6.0f * g_autoScale * g_benchScale; // 圆角大小
 
-    if (!g_boardLocked) {
+    if (!g_boardLocked && alpha > 0.9f) {
         DrawScaleHandle(d, ImVec2(g_benchX + h_dx * g_benchScale, g_benchY + h_dy * g_benchScale), isScaling);
         DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
     }
 
-    // 纯彩色薄边框网格，完全去除底色
+    // 纯彩色薄边框网格，带有圆角与透明度过渡动画
     for (int i=0; i<9; i++) {
         float x = g_benchX + i * curSpacing;
         float y = g_benchY;
@@ -568,12 +573,16 @@ void DrawBench() {
         float hue = fmodf(time * 0.3f + i * 0.05f, 1.0f);
         float r, g, b; ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
         
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255), 0, 0, 1.5f * g_autoScale * g_benchScale);
+        d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
+        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
     }
 }
 
 void DrawShop() {
-    if (!g_esp_shop) return;
+    static float alpha = 0.0f;
+    alpha = ImLerp(alpha, g_esp_shop ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
+    if (alpha < 0.01f) return;
+
     ImDrawList* d = ImGui::GetForegroundDrawList();
     
     static float t_x = g_shopX, t_y = g_shopY, t_scale = g_shopScale;
@@ -589,22 +598,23 @@ void DrawShop() {
     float c_dx = -baseSz * 0.3f;
     float c_dy = baseSz * 0.5f;
 
-    HandleGridInteraction(g_shopX, g_shopY, g_shopScale, t_x, t_y, t_scale,
-                          isDragging, isScaling, dragOffset, scaleDragOffset,
-                          h_dx, h_dy, c_dx, c_dy, 0, 0, 5*spacing, baseSz, g_boardLocked, &g_esp_shop);
-
-    if (!g_esp_shop) return;
+    if (g_esp_shop) {
+        HandleGridInteraction(g_shopX, g_shopY, g_shopScale, t_x, t_y, t_scale,
+                              isDragging, isScaling, dragOffset, scaleDragOffset,
+                              h_dx, h_dy, c_dx, c_dy, 0, 0, 5*spacing, baseSz, g_boardLocked, &g_esp_shop);
+    }
 
     float curSz = baseSz * g_shopScale;
     float curSpacing = spacing * g_shopScale;
     float time = (float)ImGui::GetTime();
+    float rounding = 8.0f * g_autoScale * g_shopScale; // 圆角大小
 
-    if (!g_boardLocked) {
+    if (!g_boardLocked && alpha > 0.9f) {
         DrawScaleHandle(d, ImVec2(g_shopX + h_dx * g_shopScale, g_shopY + h_dy * g_shopScale), isScaling);
         DrawCloseHandle(d, ImVec2(g_shopX + c_dx * g_shopScale, g_shopY + c_dy * g_shopScale), &g_esp_shop);
     }
 
-    // 纯彩色薄边框网格，完全去除底色
+    // 纯彩色薄边框网格，带有圆角与透明度过渡动画
     for (int i=0; i<5; i++) {
         float x = g_shopX + i * curSpacing;
         float y = g_shopY;
@@ -612,11 +622,15 @@ void DrawShop() {
         float hue = fmodf(time * 0.3f + i * 0.08f, 1.0f);
         float r, g, b; ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
         
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255), 0, 0, 1.5f * g_autoScale * g_shopScale);
+        // 背景填充
+        d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 180 * alpha), rounding);
+        // 圆角边框
+        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_shopScale);
         
         if (g_textureLoaded) {
             float imgPad = 4.0f * g_autoScale * g_shopScale;
-            d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x+imgPad, y+imgPad), ImVec2(x+curSz-imgPad, y+curSz-imgPad));
+            // 完美裁剪出圆角图片
+            d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x+imgPad, y+imgPad), ImVec2(x+curSz-imgPad, y+curSz-imgPad), ImVec2(0,0), ImVec2(1,1), IM_COL32(255,255,255,255*alpha), rounding - imgPad * 0.5f);
         }
     }
 }
@@ -750,7 +764,9 @@ void DrawExtraWindows() {
 // 6.5 纯悬浮牌库显示窗口 (带有独立拖拽与缩放手柄)
 // =================================================================
 void DrawCardPool() {
-    if (!g_show_card_pool) return;
+    static float alpha = 0.0f;
+    alpha = ImLerp(alpha, g_show_card_pool ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
+    if (alpha < 0.01f) return;
     
     ImDrawList* d = ImGui::GetForegroundDrawList();
     
@@ -773,28 +789,24 @@ void DrawCardPool() {
     float h_dx = totalW_unscaled + 10.0f * g_autoScale;
     float h_dy = totalH_unscaled + 10.0f * g_autoScale;
     
-    // 关闭按钮位于左上角
-    float c_dx = -10.0f * g_autoScale;
-    float c_dy = -10.0f * g_autoScale;
-
-    // 传递给底层的物理交互引擎
-    HandleGridInteraction(g_cardPoolX, g_cardPoolY, g_cardPoolScale, t_x, t_y, t_scale,
-                          isDragging, isScaling, dragOffset, scaleDragOffset,
-                          h_dx, h_dy, c_dx, c_dy, -15.0f * g_autoScale, -15.0f * g_autoScale, 
-                          totalW_unscaled + 15.0f * g_autoScale, totalH_unscaled + 15.0f * g_autoScale, 
-                          g_boardLocked, &g_show_card_pool);
-
-    if (!g_show_card_pool) return;
+    // 传递给底层的物理交互引擎（传入nullptr彻底关闭左上角的退出按钮）
+    if (g_show_card_pool) {
+        HandleGridInteraction(g_cardPoolX, g_cardPoolY, g_cardPoolScale, t_x, t_y, t_scale,
+                              isDragging, isScaling, dragOffset, scaleDragOffset,
+                              h_dx, h_dy, 0, 0, -15.0f * g_autoScale, -15.0f * g_autoScale, 
+                              totalW_unscaled + 15.0f * g_autoScale, totalH_unscaled + 15.0f * g_autoScale, 
+                              g_boardLocked, nullptr);
+    }
 
     // 绘制手柄
-    if (!g_boardLocked) {
+    if (!g_boardLocked && alpha > 0.9f) {
         DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScale, g_cardPoolY + h_dy * g_cardPoolScale), isScaling);
-        DrawCloseHandle(d, ImVec2(g_cardPoolX + c_dx * g_cardPoolScale, g_cardPoolY + c_dy * g_cardPoolScale), &g_show_card_pool);
     }
 
     float curSz = baseImgSz * g_cardPoolScale;
     float curGap = gap * g_cardPoolScale;
     float time = (float)ImGui::GetTime();
+    float rounding = 8.0f * g_autoScale * g_cardPoolScale; // 图片与边框的圆角
 
     // 在网格中直接绘制头像
     if (g_textureLoaded) {
@@ -803,20 +815,33 @@ void DrawCardPool() {
                 float x = g_cardPoolX + c * (curSz + curGap);
                 float y = g_cardPoolY + r * (curSz + curGap);
                 
-                // 直接绘制图片贴图，没有任何窗体和底色
-                d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + curSz, y + curSz));
+                // 绘制经过圆角裁剪的图片
+                d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + curSz, y + curSz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * alpha), rounding);
                 
-                // 加一个轻微的炫彩边框增加质感
+                // 边框增加质感
                 float hue = fmodf(time * 0.3f + (x + y) * 0.001f, 1.0f);
                 float rC, gC, bC; ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rC, gC, bC);
-                d->AddRect(ImVec2(x, y), ImVec2(x + curSz, y + curSz), IM_COL32(rC*255, gC*255, bC*255, 180), 4.0f * g_autoScale * g_cardPoolScale, 0, 1.5f * g_autoScale * g_cardPoolScale);
+                d->AddRect(ImVec2(x, y), ImVec2(x + curSz, y + curSz), IM_COL32(rC*255, gC*255, bC*255, 180 * alpha), rounding, 0, 1.5f * g_autoScale * g_cardPoolScale);
+                
+                // 下半部分文字背景条（仅处理底部圆角）
+                float textBgH = 14.0f * g_autoScale * g_cardPoolScale;
+                d->AddRectFilled(ImVec2(x, y + curSz - textBgH), ImVec2(x + curSz, y + curSz), IM_COL32(0, 0, 0, 200 * alpha), rounding, ImDrawFlags_RoundCornersBottom);
+                
+                // 显示剩余数量文字 5/12
+                ImFont* font = ImGui::GetFont();
+                float fsz = ImGui::GetFontSize() * g_cardPoolScale * 0.8f; 
+                char buf[16]; snprintf(buf, sizeof(buf), "5/12");
+                ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+                
+                float textX = x + (curSz - tSz.x) * 0.5f;
+                float textY = y + curSz - textBgH + (textBgH - tSz.y) * 0.5f;
+                d->AddText(font, fsz, ImVec2(textX, textY), IM_COL32(255, 255, 255, 255 * alpha), buf);
             }
         }
     } else {
-        // 如果资源还没加载成功，绘制提示文字
         ImFont* font = ImGui::GetFont();
         float fsz = ImGui::GetFontSize() * g_cardPoolScale;
-        d->AddText(font, fsz, ImVec2(g_cardPoolX, g_cardPoolY), IM_COL32_WHITE, (const char*)u8"正在加载英雄图片资源...", NULL);
+        d->AddText(font, fsz, ImVec2(g_cardPoolX, g_cardPoolY), IM_COL32(255, 255, 255, 255 * alpha), (const char*)u8"正在加载英雄图片资源...", NULL);
     }
 }
 
@@ -941,9 +966,9 @@ void DrawMenu() {
             if (g_show_card_pool) {
                 ImGui::Indent();
                 ImGui::PushItemWidth(150.0f * g_autoScale * g_scale);
-                // 使用Slider控制悬浮牌库的行列数
-                ImGui::SliderInt((const char*)u8"牌库行数", &g_card_pool_rows, 1, 10);
-                ImGui::SliderInt((const char*)u8"牌库列数", &g_card_pool_cols, 1, 15);
+                // 使用Slider控制悬浮牌库的行列数 (扩展至30)
+                ImGui::SliderInt((const char*)u8"牌库行数", &g_card_pool_rows, 1, 30);
+                ImGui::SliderInt((const char*)u8"牌库列数", &g_card_pool_cols, 1, 30);
                 ImGui::PopItemWidth();
                 ImGui::Unindent();
             }
