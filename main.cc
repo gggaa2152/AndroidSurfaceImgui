@@ -1503,18 +1503,18 @@ void DrawMenu() {
             ImGui::Separator();
             
             static bool header_pred = true;
-            if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
+            if (ModernAnimatedFolder((const char*)u8"预测功能", &header_pred, 2)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
                 EndModernAnimatedFolder();
             }
             
             static bool header_esp = true;
-            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 4)) {
+            if (ModernAnimatedFolder((const char*)u8"透视功能", &header_esp, 4)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
-                ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
-                ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
-                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
+                ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 4); 
+                ModernToggle((const char*)u8"商店透视", &g_esp_shop, 5);
+                ModernToggle((const char*)u8"金币等级透视", &g_esp_level, 9); 
                 EndModernAnimatedFolder();
             }
 
@@ -1522,10 +1522,10 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
             
-            ModernToggle((const char*)u8"锁定所有窗体", &g_boardLocked, 8); 
-            ModernToggle((const char*)u8"云端自动拿牌", &g_auto_buy, 6); 
+            ModernToggle((const char*)u8"锁定所有窗口", &g_boardLocked, 8); 
+            ModernToggle((const char*)u8"自动拿牌", &g_auto_buy, 6); 
             
-            ModernToggle((const char*)u8"牌库透视显示", &g_show_card_pool, 10);
+            ModernToggle((const char*)u8"牌库显示", &g_show_card_pool, 10);
             static float cardpool_anim = 0.0f; 
             cardpool_anim = ImLerp(cardpool_anim, g_show_card_pool ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1543,7 +1543,7 @@ void DrawMenu() {
 
             ImGui::Spacing(); 
 
-            ModernToggle((const char*)u8"卡牌数量预警", &g_card_warning, 11);
+            ModernToggle((const char*)u8"卡牌预警数量", &g_card_warning, 11);
             static float warn_anim = 0.0f; 
             warn_anim = ImLerp(warn_anim, g_card_warning ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1562,7 +1562,7 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
 
-            if (ModernToggle((const char*)u8"极速退游 (秒退)", &g_instant, 7)) {
+            if (ModernToggle((const char*)u8"极速退游", &g_instant, 7)) {
                 if (g_instant) {
                     ImGui::OpenPopup((const char*)u8"警告: 确认退出?");
                 }
