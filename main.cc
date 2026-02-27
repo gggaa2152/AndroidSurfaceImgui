@@ -44,7 +44,9 @@ int g_card_pool_rows = 2;
 int g_card_pool_cols = 5;
 float g_cardPoolX = 150.0f;
 float g_cardPoolY = 150.0f;
-float g_cardPoolScale = 1.0f; 
+// 【更新】将牌库的等比缩放拆分为 X轴 和 Y轴 独立缩放，实现全方向拉伸
+float g_cardPoolScaleX = 1.0f; 
+float g_cardPoolScaleY = 1.0f; 
 float g_cardPoolAlpha = 1.0f; 
 
 // 预警功能状态
@@ -98,7 +100,6 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 bool g_needUpdateFontSafe = false;
 
-// 【终极方案】：独立分离出特大号数字专属贴图，无视任何屏幕的极限放大
 ImFont* g_mainFont = nullptr;
 ImFont* g_hugeNumFont = nullptr;
 
@@ -124,7 +125,8 @@ void SaveConfig() {
         out << "showCardPool=" << g_show_card_pool << "\n";
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
-        out << "cardPoolScale=" << g_cardPoolScale << "\n";
+        out << "cardPoolScaleX=" << g_cardPoolScaleX << "\n";
+        out << "cardPoolScaleY=" << g_cardPoolScaleY << "\n";
         out << "cardPoolAlpha=" << g_cardPoolAlpha << "\n"; 
         out << "cardPoolX=" << g_cardPoolX << "\n";         
         out << "cardPoolY=" << g_cardPoolY << "\n";         
@@ -199,7 +201,12 @@ void LoadConfig() {
                 else if (k == "showCardPool") g_show_card_pool = (v == "1");
                 else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
-                else if (k == "cardPoolScale") g_cardPoolScale = std::stof(v);
+                else if (k == "cardPoolScaleX") g_cardPoolScaleX = std::stof(v);
+                else if (k == "cardPoolScaleY") g_cardPoolScaleY = std::stof(v);
+                else if (k == "cardPoolScale") { // 兼容老版本配置文件
+                    g_cardPoolScaleX = std::stof(v);
+                    g_cardPoolScaleY = std::stof(v);
+                }
                 else if (k == "cardPoolAlpha") g_cardPoolAlpha = std::stof(v); 
                 else if (k == "cardPoolX") g_cardPoolX = std::stof(v);
                 else if (k == "cardPoolY") g_cardPoolY = std::stof(v);
@@ -361,27 +368,19 @@ void UpdateFontHD(bool force = false) {
     g_mainFont = nullptr;
     g_hugeNumFont = nullptr;
     
-    // ==============================================================
-    // ⚡ 【8K 特化轻量级双引擎架构】: 极致流畅，极低显存占用
-    // ==============================================================
-    
-    // 1. 中文主字体（菜单用，不需要过度放大）
-    // 策略：1.5倍基础放大，关闭所有抗锯齿过采样。省下惊人的显存空间，告别卡顿！
     ImFontConfig configMain;
     float mainResFactor = 1.5f; 
-    configMain.OversampleH = 1; // 绝对不开启过采样，保证贴图极小
+    configMain.OversampleH = 1; 
     configMain.OversampleV = 1;
     configMain.PixelSnapH = true; 
     
-    // 2. 棋盘专属数字字体（会被频繁放大）
-    // 策略：4.0倍基础放大 + 2x2过采样。只处理英文字母和数字，不足 1MB 显存！
     ImFontConfig configNum;
-    float numResFactor = 4.0f; // 4倍物理放大对于 8K 屏幕已经足够锐利
+    float numResFactor = 4.0f; 
     if (targetSize * numResFactor > 200.0f) numResFactor = 200.0f / targetSize; 
-    configNum.OversampleH = 2; // 数字单独享受 2x2 高级平滑
+    configNum.OversampleH = 2; 
     configNum.OversampleV = 2;
     configNum.PixelSnapH = false;
-    static const ImWchar numRanges[] = { 0x0020, 0x00FF, 0 }; // 极小体积基础英数符范围
+    static const ImWchar numRanges[] = { 0x0020, 0x00FF, 0 }; 
     
     const char* fonts[] = { 
         "/system/fonts/SysSans-Hans-Regular.ttf", 
@@ -392,11 +391,9 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for(const char* path : fonts) {
         if (access(path, R_OK) == 0) { 
-            // 独立加载主字体 (省显存模式)
             g_mainFont = io.Fonts->AddFontFromFileTTF(path, targetSize * mainResFactor, &configMain, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
             if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
             
-            // 独立挂载特大数字字体 (电竞级清晰度模式)
             g_hugeNumFont = io.Fonts->AddFontFromFileTTF(path, targetSize * numResFactor, &configNum, numRanges);
             if (g_hugeNumFont) g_hugeNumFont->Scale = 1.0f / numResFactor;
             
@@ -405,7 +402,6 @@ void UpdateFontHD(bool force = false) {
         }
     }
     
-    // 兜底方案
     if(!loaded || !g_mainFont) {
         g_mainFont = io.Fonts->AddFontDefault();
         if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
@@ -419,6 +415,8 @@ void UpdateFontHD(bool force = false) {
 // =================================================================
 // 4. 核心物理交互引擎
 // =================================================================
+
+// 【引擎 1】 等比缩放物理引擎 (用于棋盘、商店等必须保持比例的组件)
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
                            bool& isDragging, bool& isScaling, 
@@ -487,6 +485,78 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
     out_scale = ImLerp(out_scale, t_scale, smoothness);
 }
 
+// 【引擎 2：全新加入】 二维独立伸缩引擎 (专门提供全方向独立缩放体验，如牌库)
+void HandleGridInteractionXY(float& out_x, float& out_y, float& out_scaleX, float& out_scaleY, 
+                             float& t_x, float& t_y, float& t_scaleX, float& t_scaleY,
+                             bool& isDragging, bool& isScaling, 
+                             ImVec2& dragOffset, ImVec2& scaleDragOffset,
+                             float h_dx_unscaled, float h_dy_unscaled, 
+                             float c_dx_unscaled, float c_dy_unscaled,
+                             float hitMinX_unscaled, float hitMinY_unscaled, 
+                             float hitMaxX_unscaled, float hitMaxY_unscaled, 
+                             bool locked, bool* isOpen) 
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (!locked) {
+        float scaleHandleX = out_x + h_dx_unscaled * out_scaleX;
+        float scaleHandleY = out_y + h_dy_unscaled * out_scaleY;
+        ImVec2 p_scale(scaleHandleX, scaleHandleY);
+        
+        float closeHandleX = out_x + c_dx_unscaled * out_scaleX;
+        float closeHandleY = out_y + c_dy_unscaled * out_scaleY;
+        ImVec2 p_close(closeHandleX, closeHandleY);
+
+        if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
+            if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
+                *isOpen = false; 
+                return; 
+            }
+            else if (ImLengthSqr(io.MousePos - p_scale) < (4900.0f * g_autoScale * g_autoScale)) { 
+                isScaling = true;
+                ImVec2 targetHandleCenter(t_x + h_dx_unscaled * t_scaleX, t_y + h_dy_unscaled * t_scaleY);
+                scaleDragOffset = io.MousePos - targetHandleCenter;
+            } 
+            else {
+                ImRect area(ImVec2(out_x + hitMinX_unscaled * out_scaleX, out_y + hitMinY_unscaled * out_scaleY), 
+                            ImVec2(out_x + hitMaxX_unscaled * out_scaleX, out_y + hitMaxY_unscaled * out_scaleY));
+                if (area.Contains(io.MousePos)) {
+                    isDragging = true; 
+                    dragOffset = ImVec2(t_x - io.MousePos.x, t_y - io.MousePos.y);
+                }
+            }
+        }
+        
+        if (isScaling) {
+            if (ImGui::IsMouseDown(0)) {
+                ImVec2 targetHandleCenter = io.MousePos - scaleDragOffset;
+                // 分别计算水平方向(X轴)和垂直方向(Y轴)的拉伸系数
+                float newSx = (targetHandleCenter.x - t_x) / (h_dx_unscaled > 0.01f ? h_dx_unscaled : 0.01f);
+                float newSy = (targetHandleCenter.y - t_y) / (h_dy_unscaled > 0.01f ? h_dy_unscaled : 0.01f);
+                t_scaleX = std::clamp(newSx, 0.2f, 5.0f);
+                t_scaleY = std::clamp(newSy, 0.2f, 5.0f);
+            } else { 
+                isScaling = false; 
+            }
+        }
+        
+        if (isDragging && !isScaling) {
+            if (ImGui::IsMouseDown(0)) { 
+                t_x = io.MousePos.x + dragOffset.x; 
+                t_y = io.MousePos.y + dragOffset.y; 
+            } 
+            else { 
+                isDragging = false; 
+            }
+        }
+    }
+
+    float smoothness = 1.0f - expf(-20.0f * io.DeltaTime);
+    out_x = ImLerp(out_x, t_x, smoothness); 
+    out_y = ImLerp(out_y, t_y, smoothness); 
+    out_scaleX = ImLerp(out_scaleX, t_scaleX, smoothness);
+    out_scaleY = ImLerp(out_scaleY, t_scaleY, smoothness);
+}
+
 void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
     ImU32 coreColor = isScaling ? IM_COL32(0, 255, 180, 255) : IM_COL32(255, 255, 255, 255);
     d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
@@ -531,7 +601,6 @@ void DrawPurePredictEnemy() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    // 此处包含中文“玩家”，因此调用主字体引擎
     ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
     const char* txt = (const char*)u8"玩家 3";
     float fsz = ImGui::GetFontSize() * 1.5f; 
@@ -585,7 +654,6 @@ void DrawPurePredictHex() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    // 此处包含中文，调用主字体引擎
     ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
     float fsz = ImGui::GetFontSize() * 1.5f; 
     const char* t1 = (const char*)u8"银色"; 
@@ -680,7 +748,6 @@ void DrawPlayersOverlay() {
     float curAvatarR = avatar_r * g_players_Scale;
     float curRowH = row_h * g_players_Scale;
     
-    // 采用特大号数字字体，保证 G:28/LV5 等文本完美锐利
     ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     for (int i = 0; i < 8; i++) {
@@ -838,7 +905,7 @@ void DrawAutoBuyWindow() {
 }
 
 // =================================================================
-// 6.5 高级牌库显示窗口 
+// 6.5 高级牌库显示窗口 (【更新核心】采用独立XY拉伸引擎)
 // =================================================================
 void DrawCardPool() {
     static float alpha = 0.0f;
@@ -848,13 +915,15 @@ void DrawCardPool() {
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
-    static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scale = g_cardPoolScale;
+    // 独立 X和Y 缩放变量
+    static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scaleX = g_cardPoolScaleX, t_scaleY = g_cardPoolScaleY;
     static bool first = true; 
     
     if (first) { 
         t_x = g_cardPoolX; 
         t_y = g_cardPoolY; 
-        t_scale = g_cardPoolScale; 
+        t_scaleX = g_cardPoolScaleX; 
+        t_scaleY = g_cardPoolScaleY;
         first = false; 
     }
     
@@ -875,7 +944,8 @@ void DrawCardPool() {
     float h_dy = totalH_unscaled + 10.0f * g_autoScale;
     
     if (g_show_card_pool) {
-        HandleGridInteraction(g_cardPoolX, g_cardPoolY, g_cardPoolScale, t_x, t_y, t_scale,
+        // 调用全新二维伸缩引擎 HandleGridInteractionXY
+        HandleGridInteractionXY(g_cardPoolX, g_cardPoolY, g_cardPoolScaleX, g_cardPoolScaleY, t_x, t_y, t_scaleX, t_scaleY,
                               isDragging, isScaling, dragOffset, scaleDragOffset,
                               h_dx, h_dy, 0, 0, -15.0f * g_autoScale, -15.0f * g_autoScale, 
                               totalW_unscaled + 15.0f * g_autoScale, totalH_unscaled + 15.0f * g_autoScale, 
@@ -883,13 +953,15 @@ void DrawCardPool() {
     }
 
     if (!g_boardLocked && alpha > 0.9f) {
-        DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScale, g_cardPoolY + h_dy * g_cardPoolScale), isScaling);
+        // 调节把手同样适用独立坐标
+        DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScaleX, g_cardPoolY + h_dy * g_cardPoolScaleY), isScaling);
     }
 
-    float curSz = baseImgSz * g_cardPoolScale; 
-    float curGap = gap * g_cardPoolScale;
+    float curSzX = baseImgSz * g_cardPoolScaleX; 
+    float curSzY = baseImgSz * g_cardPoolScaleY;
+    float curGapX = gap * g_cardPoolScaleX;
+    float curGapY = gap * g_cardPoolScaleY;
 
-    // 获取数字特供高清字体
     ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     if (g_textureLoaded) {
@@ -904,36 +976,40 @@ void DrawCardPool() {
                 if (cell_anim < 0.01f) continue;
                 
                 float final_alpha = alpha * cell_anim * g_cardPoolAlpha;
-                float offset_sz = curSz * cell_anim; 
-                float center_offset = (curSz - offset_sz) * 0.5f;
+                float offset_szX = curSzX * cell_anim; 
+                float offset_szY = curSzY * cell_anim; 
+                float center_offsetX = (curSzX - offset_szX) * 0.5f;
+                float center_offsetY = (curSzY - offset_szY) * 0.5f;
 
-                float x = g_cardPoolX + c * (curSz + curGap) + center_offset;
-                float y = g_cardPoolY + r * (curSz + curGap) + center_offset;
+                float x = g_cardPoolX + c * (curSzX + curGapX) + center_offsetX;
+                float y = g_cardPoolY + r * (curSzY + curGapY) + center_offsetY;
                 
                 float hue = fmodf((float)ImGui::GetTime() * 0.2f + (r * draw_cols + c) * 0.1f, 1.0f);
                 float br, bg, bb_col;
                 ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, br, bg, bb_col);
                 ImU32 borderColor = IM_COL32(br*255, bg*255, bb_col*255, 255 * final_alpha);
+                
+                float avgScale = (g_cardPoolScaleX + g_cardPoolScaleY) * 0.5f;
 
                 if (use_rounding_safeguard) {
-                    float rounding = 6.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                    d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding, ImDrawFlags_RoundCornersAll);
-                    float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                    d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
-                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
+                    float rounding = 6.0f * g_autoScale * avgScale * cell_anim;
+                    d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding, ImDrawFlags_RoundCornersAll);
+                    float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
+                    d->AddRectFilled(ImVec2(x, y + offset_szY - textBgH), ImVec2(x + offset_szX, y + offset_szY), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), borderColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * avgScale * cell_anim);
                 } else {
-                    d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
-                    float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                    d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha));
-                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, 0, 0, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
+                    d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
+                    float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
+                    d->AddRectFilled(ImVec2(x, y + offset_szY - textBgH), ImVec2(x + offset_szX, y + offset_szY), IM_COL32(0, 0, 0, 200 * final_alpha));
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), borderColor, 0, 0, 1.5f * g_autoScale * avgScale * cell_anim);
                 }
                 
-                float fsz = ImGui::GetFontSize() * g_cardPoolScale * 0.8f * cell_anim; 
+                float fsz = ImGui::GetFontSize() * avgScale * 0.8f * cell_anim; 
                 char buf[16]; 
                 snprintf(buf, sizeof(buf), "5/12");
                 ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
-                float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                d->AddText(numFont, fsz, ImVec2(x + (offset_sz - tSz.x) * 0.5f, y + offset_sz - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
+                float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
+                d->AddText(numFont, fsz, ImVec2(x + (offset_szX - tSz.x) * 0.5f, y + offset_szY - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
             }
         }
     }
@@ -987,7 +1063,6 @@ void DrawBoard() {
         DrawCloseHandle(d, ImVec2(g_startX + c_dx * g_boardManualScale, g_startY + c_dy * g_boardManualScale), &g_esp_board);
     }
     
-    // 强制挂载极高清晰数字专属字体
     ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     for(int r = 0; r < 4; r++) {
@@ -1147,7 +1222,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件 (修复了回弹与重影问题)
+// 7. 顶级定制菜单 UI 控件
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
