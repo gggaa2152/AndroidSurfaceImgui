@@ -31,7 +31,7 @@ bool g_esp_board = true;
 bool g_esp_bench = false; 
 bool g_esp_shop = false;  
 bool g_esp_level = false; 
-bool g_esp_equip = true;   // 装备显示开关
+bool g_esp_equip = true;   
 bool g_auto_buy = false;
 bool g_instant = false;
 bool g_boardLocked = false; 
@@ -58,6 +58,9 @@ float g_anim[25] = {0.0f};
 float g_scale = 1.0f;            
 float g_autoScale = 1.0f;        
 float g_current_rendered_size = 0.0f; 
+
+// 【需求1】专属独立的装备缩放变量
+float g_equipScale = 1.0f;       
 
 // 各大模块的坐标与缩放比例
 float g_boardScale = 2.2f;       
@@ -120,6 +123,7 @@ void SaveConfig() {
         out << "espShop=" << g_esp_shop << "\n";
         out << "espLevel=" << g_esp_level << "\n"; 
         out << "espEquip=" << g_esp_equip << "\n"; 
+        out << "equipScale=" << g_equipScale << "\n"; 
         out << "showCardPool=" << g_show_card_pool << "\n";
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
@@ -195,6 +199,7 @@ void LoadConfig() {
                 else if (k == "espShop") g_esp_shop = (v == "1");
                 else if (k == "espLevel") g_esp_level = (v == "1");
                 else if (k == "espEquip") g_esp_equip = (v == "1"); 
+                else if (k == "equipScale") g_equipScale = std::stof(v); 
                 else if (k == "showCardPool") g_show_card_pool = (v == "1");
                 else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
@@ -650,13 +655,11 @@ void DrawPlayersOverlay() {
         float cx = g_players_X + curAvatarR;
         float cy = g_players_Y + i * curRowH + curAvatarR;
 
-        // 画占位玩家头像
         d->AddCircleFilled(ImVec2(cx, cy), curAvatarR, IM_COL32(30, 35, 45, 180 * alpha));
         d->AddCircle(ImVec2(cx, cy), curAvatarR, IM_COL32(80, 90, 100, 255 * alpha), 32, 1.5f * g_autoScale * g_players_Scale);
 
         float draw_x = cx + curAvatarR + 10.0f * g_autoScale * g_players_Scale;
 
-        // 金币/等级 ESP
         static float esp_anim[8] = {0.0f};
         esp_anim[i] = ImLerp(esp_anim[i], g_esp_level ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
         
@@ -672,7 +675,6 @@ void DrawPlayersOverlay() {
             draw_x += 120.0f * g_autoScale * g_players_Scale * esp_anim[i];
         }
 
-        // 预警提示图像 
         bool is_warned = (g_card_warning && i == 2 && g_warning_tiers[4]);
         static float warn_anim[8] = {0.0f};
         warn_anim[i] = ImLerp(warn_anim[i], is_warned ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
@@ -927,19 +929,19 @@ void DrawBoard() {
     float baseXStep = baseSz * 1.73205f;
     float baseYStep = baseSz * 1.5f;
 
-    float h_dx = 6 * baseXStep + (3 % 2 == 1 ? baseXStep * 0.5f : 0) + baseSz;
-    // 【需求2修复】扩大缩放手柄下方距离，留出竖向装备列的大块空间，防止遮挡
-    float h_dy = 3 * baseYStep + baseSz * 0.5f + 160.0f * g_autoScale; 
-    
-    float c_dx = -baseXStep * 0.5f; 
-    float c_dy = -baseYStep * 0.5f;
+    // 【修改】彻底避免竖向装备和按钮碰撞，把控制按钮放到了棋盘的两侧最外边
+    float h_dx = 7.0f * baseXStep;              // 棋盘极右侧
+    float h_dy = 1.5f * baseYStep;              // 棋盘垂直中间
+    float c_dx = -baseXStep * 0.8f;             // 棋盘极左侧
+    float c_dy = 1.5f * baseYStep;              // 棋盘垂直中间
 
-    // 扩大交互检测区域，完全容纳向上下延伸的“垂直装备列”
+    // 扩大交互检测区域，完全容纳下超大的竖向独立缩放装备列
+    float maxEquipHeight = (3.0f * 35.0f * g_equipScale + 20.0f) * g_autoScale; 
     HandleGridInteraction(g_startX, g_startY, g_boardManualScale, t_x, t_y, t_scale,
                           isDragging, isScaling, dragOffset, scaleDragOffset,
                           h_dx, h_dy, c_dx, c_dy, 
-                          -baseSz*2 - 160.0f*g_autoScale, -baseSz*2 - 160.0f*g_autoScale, 
-                          6.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2 + 160.0f*g_autoScale, 
+                          -baseSz*2 - maxEquipHeight, -baseSz*2 - maxEquipHeight, 
+                          7.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2 + maxEquipHeight, 
                           g_boardLocked, &g_esp_board);
 
     if (!g_esp_board) return;
@@ -959,7 +961,6 @@ void DrawBoard() {
             float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
             float cy = g_startY + r * curYStep;
             
-            // 提前计算当前格子和装备线的彩色
             float hue = fmodf(time * 0.3f + (cx + cy) * 0.0008f, 1.0f);
             float rf, gf, bf; 
             ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
@@ -971,49 +972,50 @@ void DrawBoard() {
                     DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
                 }
                 
-                // 【需求1完美修复】棋盘内数字更大，调至原来四倍（4.5倍系数），极其醒目且带黑色阴影
+                // 【需求1】棋盘英雄字号再次极端放大：提升至 6.0倍，并且描边更粗
                 ImFont* font = ImGui::GetFont();
-                float lvlFsz = ImGui::GetFontSize() * 4.5f * g_boardManualScale; 
+                float lvlFsz = ImGui::GetFontSize() * 6.0f * g_boardManualScale; 
                 const char* lvlTxt = "3";
                 ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
-                ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.1f);
-                d->AddText(font, lvlFsz, txtPos + ImVec2(3.0f, 3.0f), IM_COL32(0,0,0,255), lvlTxt); 
+                ImVec2 txtPos(cx - tSz.x*0.5f, cy - tSz.y*0.1f);
+                d->AddText(font, lvlFsz, txtPos + ImVec2(3.5f, 3.5f), IM_COL32(0,0,0,255), lvlTxt); 
                 d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
 
-                // 【需求2完美修复】为了防止缩放时相邻六边形的装备框左右重叠打架，此处已修改为完美的「垂直方向排布」
+                // 【需求2】装备栏彻底独立缩放，并改成竖向排列
                 if (g_esp_equip) {
                     float hexRadius = curSz;
-                    // 加入独立动态缩放计算装备框大小，框变大并且自适应全局 g_boardManualScale
-                    float equipSz = 22.0f * g_autoScale * g_boardManualScale; 
-                    float equipGap = 4.0f * g_autoScale * g_boardManualScale;
-                    float rounding = 4.0f * g_autoScale * g_boardManualScale;
+                    // 使用独立的专属装备缩放系统（g_equipScale），基准尺寸加倍以放入高清图片
+                    float equipBaseSz = 35.0f * g_autoScale;
+                    float equipSz = equipBaseSz * g_equipScale;
+                    float equipGap = 6.0f * g_autoScale * g_equipScale;
+                    float rounding = 6.0f * g_autoScale * g_equipScale;
                     
                     ImU32 boxBg = IM_COL32(20, 25, 30, 200);
-                    // 完全居中在线条下（或上），完美竖排绝对不左右打架
+                    // 完美的 X 轴居中，使其始终在彩色连线的最中间
                     float bx = cx - equipSz * 0.5f; 
-                    float lineThick = 2.5f * g_autoScale * g_boardManualScale; // 彩色连接线也会跟随缩放
+                    float lineThick = 2.5f * g_autoScale * g_equipScale; 
                     
                     if (r == 0 || r == 1) {
-                        // 绘制在上边，完全出界不挡脸，线直接拉到顶部
-                        float topY = g_startY - curSz * 1.0f - 10.0f * g_autoScale * g_boardManualScale;
+                        // 绘制在棋盘上面，线从六边形顶部顶点拉出
+                        float topY = g_startY - curSz * 1.0f - 15.0f * g_autoScale * g_boardManualScale;
                         d->AddLine(ImVec2(cx, cy - hexRadius), ImVec2(cx, topY), themeColorAlpha, lineThick);
                         
-                        // 垂直向上堆叠三个装备方框
+                        // 垂直向上堆叠 3 个格子，以“连接点(topY)”为基准点，随着缩放往上延长，绝对不冲突
                         for(int i = 0; i < 3; i++) {
                             float by = topY - (i + 1) * equipSz - i * equipGap;
                             d->AddRectFilled(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBg, rounding);
-                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), themeColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_boardManualScale);
+                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), themeColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_equipScale);
                         }
                     } else if (r == 2 || r == 3) {
-                        // 绘制在下边，线拉到底部
-                        float bottomY = g_startY + 3 * curYStep + curSz * 1.0f + 10.0f * g_autoScale * g_boardManualScale;
+                        // 绘制在棋盘下面，线从六边形底部交点拉出
+                        float bottomY = g_startY + 3 * curYStep + curSz * 1.0f + 15.0f * g_autoScale * g_boardManualScale;
                         d->AddLine(ImVec2(cx, cy + hexRadius), ImVec2(cx, bottomY), themeColorAlpha, lineThick);
                         
-                        // 垂直向下堆叠三个装备方框
+                        // 垂直向下堆叠 3 个格子，以“连接点(bottomY)”为基准向下延伸
                         for(int i = 0; i < 3; i++) {
                             float by = bottomY + i * equipSz + i * equipGap;
                             d->AddRectFilled(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), boxBg, rounding);
-                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), themeColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_boardManualScale);
+                            d->AddRect(ImVec2(bx, by), ImVec2(bx + equipSz, by + equipSz), themeColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_equipScale);
                         }
                     }
                 }
@@ -1082,7 +1084,7 @@ void DrawBench() {
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
         d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
         
-        // 【需求1完美修复】备战席等级数字已经还原回最原始、刚刚好的 1.2 倍率
+        // 备战席数字还原为恰到好处的 1.2倍
         ImFont* font = ImGui::GetFont();
         float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
         const char* lvlTxt = "3";
@@ -1154,7 +1156,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件 (纯净去发声版本)
+// 7. 顶级定制菜单 UI 控件 
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -1225,7 +1227,6 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
     window->DrawList->AddText(ImVec2(cx + 15.0f * g_autoScale, bb.Min.y + (size.y - ImGui::GetFontSize())*0.5f), IM_COL32_WHITE, label);
 
     if (anim > 0.01f) {
-        // 给子窗口预留略大一点的空间（加上冗余），彻底修复因为高度截断导致的主菜单回弹现象
         float exact_target_height = (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y) * child_item_count + ImGui::GetStyle().ItemSpacing.y * 2.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, anim);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 15.0f * (1.0f - anim));
@@ -1280,6 +1281,50 @@ void ModernNumberAdjuster(const char* label, int* v, int v_min, int v_max) {
         if (*v < v_max) { 
             (*v)++; 
         } 
+    }
+    
+    ImGui::PopStyleVar(); 
+    ImGui::PopStyleColor(); 
+    ImGui::PopID();
+}
+
+// 专用于浮点数缩放的增减器
+void ModernFloatAdjuster(const char* label, float* v, float v_min, float v_max, float step = 0.1f) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow(); 
+    const ImGuiStyle& style = ImGui::GetStyle();
+    
+    ImGui::PushID(label);
+    
+    float toggle_handle_w = ImGui::GetFrameHeight() * 0.85f * 2.1f + style.ItemInnerSpacing.x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + toggle_handle_w);
+    ImGui::Text("%s", label); 
+    ImGui::SameLine();
+    
+    float btn_sz = ImGui::GetFrameHeight();
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btn_sz * 2.0f - 60.0f * g_autoScale * g_scale - style.WindowPadding.x);
+    
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.25f, 0.3f, 1.0f)); 
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f * g_autoScale);
+    
+    if (ImGui::Button("-", ImVec2(btn_sz, btn_sz))) { 
+        if (*v > v_min) *v -= step; 
+    } 
+    ImGui::SameLine();
+    
+    char buf[16]; 
+    snprintf(buf, sizeof(buf), "%.1f", *v); 
+    ImVec2 t_sz = ImGui::CalcTextSize(buf);
+    float val_w = 40.0f * g_autoScale * g_scale; 
+    ImVec2 val_pos = window->DC.CursorPos;
+    
+    window->DrawList->AddRectFilled(val_pos, val_pos + ImVec2(val_w, btn_sz), IM_COL32(20, 25, 30, 255), 4.0f * g_autoScale);
+    window->DrawList->AddText(val_pos + ImVec2((val_w - t_sz.x)*0.5f, (btn_sz - t_sz.y)*0.5f), IM_COL32(0, 255, 180, 255), buf);
+    
+    ImGui::Dummy(ImVec2(val_w, btn_sz)); 
+    ImGui::SameLine();
+    
+    if (ImGui::Button("+", ImVec2(btn_sz, btn_sz))) { 
+        if (*v < v_max) *v += step; 
     }
     
     ImGui::PopStyleVar(); 
@@ -1384,12 +1429,19 @@ void DrawMenu() {
             }
             
             static bool header_esp = true;
-            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 5)) {
+            // 数量加1(变为6)，包容新增的装备缩放器
+            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 6)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
                 ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
                 ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
                 ModernToggle((const char*)u8"对手装备投食", &g_esp_equip, 12); 
+                
+                // 【需求2】独立于棋盘的装备缩放控制轴
+                if (g_esp_equip) {
+                    ModernFloatAdjuster((const char*)u8"独立装备缩放", &g_equipScale, 0.5f, 3.0f, 0.1f);
+                }
+                
                 EndModernAnimatedFolder();
             }
 
@@ -1473,9 +1525,9 @@ void DrawMenu() {
                 SaveConfig(); 
             }
             
-            // 【需求3完美修复】在菜单最下方加上一大块透明的占位缓存区
-            // 彻底防止触屏拖拽由于到底部计算过死导致的回弹截断问题
-            ImGui::Dummy(ImVec2(0.0f, 100.0f * g_autoScale * g_scale));
+            // 【需求3彻底修复】大幅增厚底部透明垫防回弹！高度拉满到250！
+            // 不管你的字体多大，不管菜单再往下拖，在手机触摸屏松手时绝对不会因为边界计算溢出而被“弹”回来
+            ImGui::Dummy(ImVec2(0.0f, 250.0f * g_autoScale * g_scale));
         }
     }
     ImGui::End();
