@@ -72,7 +72,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 (全面支持高度与各种缩放)
+// 2. 配置管理 (无点击不保存，全面支持缩放记录)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -294,7 +294,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 4. 核心物理交互引擎 (终极防点击穿透拦截层 + 极度丝滑)
+// 4. 核心物理交互引擎 (全隐形拦截，为 AImGui.cpp 提供准确的包围盒)
 // =================================================================
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
@@ -317,8 +317,6 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         float closeHandleY = out_y + c_dy_unscaled * out_scale;
         ImVec2 p_close(closeHandleX, closeHandleY);
 
-        // --- 终极防点击穿透：InvisibleButton 绝对拦截法 ---
-        // 只有在未锁定时，我们才生成拦截背景，保证操作顺滑且绝不漏给游戏
         ImRect blockArea(
             ImVec2(out_x + hitMinX_unscaled * out_scale, out_y + hitMinY_unscaled * out_scale), 
             ImVec2(out_x + hitMaxX_unscaled * out_scale, out_y + hitMaxY_unscaled * out_scale)
@@ -331,23 +329,22 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
             blockArea.Add(p_close + ImVec2(hr, hr));
         }
         
+        // ★ 生成隐形窗口：这个窗口会被 AImGui.cpp 的 g->Windows 检测到并加入防穿透热区 ★
         char winName[64];
         sprintf(winName, "##GridBlocker_%p", &out_x);
         ImGui::SetNextWindowPos(blockArea.Min);
         ImGui::SetNextWindowSize(blockArea.GetSize());
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        // 使用 1% 透明度的几乎不可见黑色，骗过部分底层注入引擎
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.01f)); 
+        // 背景完全透明
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); 
         ImGui::Begin(winName, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
         
-        // 核心：铺满一个隐形按钮，只要鼠标在这里，ImGui必将 io.WantCaptureMouse 置为 true，彻底切断底层触摸
         ImGui::InvisibleButton("##AbsBlockerBtn", blockArea.GetSize()); 
         
         ImGui::End();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
-        // ----------------------------------------------------
 
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
             if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
@@ -399,6 +396,7 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
     out_scale = ImLerp(out_scale, t_scale, smoothness);
 }
 
+// ★ 静态的黄金缩放手柄（去掉了脉冲呼吸，保持沉稳）
 void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
     ImU32 coreColor = isScaling ? IM_COL32(0, 255, 180, 255) : IM_COL32(255, 255, 255, 255);
     d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
@@ -425,7 +423,7 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     }
 }
 
-// 防穿透霓虹按钮
+// ★ 字体完美自适应缩放、且支持同时按下的霓虹按钮
 bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 size, int id, float scale) {
     ImGuiIO& io = ImGui::GetIO();
     ImRect bb(pos, pos + size);
@@ -433,6 +431,7 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
     bool hovered = bb.Contains(io.MousePos);
     bool clicked = false;
     
+    // 利用独立的 Contains 判定，完美支持两个按钮分别、或者被不同手指同时触发
     if (hovered && ImGui::IsMouseClicked(0)) clicked = true;
     bool held = hovered && ImGui::IsMouseDown(0);
 
@@ -453,6 +452,7 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
 
     ImFont* font = ImGui::GetFont();
     float scaledFontSize = ImGui::GetFontSize() * scale;
+    // CalcTextSizeA 能确保字体无论怎么拉伸都绝对不会超出边框
     ImVec2 textSize = font->CalcTextSizeA(scaledFontSize, FLT_MAX, 0.0f, label);
     
     ImVec2 textPos = pos + ImVec2((size.x - textSize.x)*0.5f, (size.y - textSize.y)*0.5f);
@@ -463,7 +463,7 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
 
 
 // =================================================================
-// 5. 棋盘、备战席、商店渲染
+// 5. 棋盘、备战席、商店渲染 (彻底去除了灰色背景底板)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
@@ -555,6 +555,7 @@ void DrawBench() {
         DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
     }
 
+    // 纯彩色薄边框网格，完全去除底色
     for (int i=0; i<9; i++) {
         float x = g_benchX + i * curSpacing;
         float y = g_benchY;
@@ -598,6 +599,7 @@ void DrawShop() {
         DrawCloseHandle(d, ImVec2(g_shopX + c_dx * g_shopScale, g_shopY + c_dy * g_shopScale), &g_esp_shop);
     }
 
+    // 纯彩色薄边框网格，完全去除底色
     for (int i=0; i<5; i++) {
         float x = g_shopX + i * curSpacing;
         float y = g_shopY;
@@ -688,7 +690,7 @@ void DrawExtraWindows() {
         ImGui::PopStyleColor();
     }
     
-    // 自动拿牌胶囊窗 (无论是否锁定棋盘，这里强制生成防穿透层)
+    // ★ 自动拿牌胶囊窗 (无论是否锁定棋盘，这里强制生成底板以便 AImGui 拦截)
     if (g_auto_buy) {
         ImDrawList* d = ImGui::GetForegroundDrawList();
         
@@ -703,6 +705,7 @@ void DrawExtraWindows() {
         float h_dx = baseW + 20.0f * g_autoScale; 
         float h_dy = baseH * 0.5f;
 
+        // 注意左侧关闭按钮已移除（参数置0，指针传nullptr）
         HandleGridInteraction(g_autoW_X, g_autoW_Y, g_autoW_Scale, t_x, t_y, t_scale,
                               isDragging, isScaling, dragOffset, scaleDragOffset,
                               h_dx, h_dy, 0, 0, 0, 0, baseW, baseH, g_boardLocked, nullptr);
@@ -714,22 +717,21 @@ void DrawExtraWindows() {
         ImVec2 p_max(g_autoW_X + curW, g_autoW_Y + curH);
         float rounding = curH * 0.5f;
 
-        // --- 强力防点击穿透：为胶囊单独生成底板 ---
+        // --- 生成隐形包裹层让 AImGui 识别到，触发底层 EVIOCGRAB ---
         char winNameCap[64];
         sprintf(winNameCap, "##CapBlocker_%p", &g_autoW_X);
         ImGui::SetNextWindowPos(p_min);
-        // 如果未锁定，把缩放手柄也囊括进防穿透区域
         ImVec2 capBlockSize = g_boardLocked ? (p_max - p_min) : (p_max - p_min + ImVec2(45.0f * g_autoScale * g_autoW_Scale, 0));
         ImGui::SetNextWindowSize(capBlockSize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.01f)); // 骗过安卓系统的1%透明度
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); 
         ImGui::Begin(winNameCap, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
         ImGui::InvisibleButton("##CapAbsBlocker", capBlockSize); 
         ImGui::End();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
-        // -------------------------------------------
+        // --------------------------------------------------------
         
         d->AddRectFilled(p_min, p_max, IM_COL32(15, 20, 25, 240), rounding);
         d->AddRect(p_min, p_max, IM_COL32(0, 255, 150, 200), rounding, 0, 2.0f * g_autoScale * g_autoW_Scale);
@@ -900,7 +902,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 8. 主循环 (帧率同步模式)
+// 8. 主循环
 // =================================================================
 int main() {
     ImGui::CreateContext();
