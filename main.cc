@@ -19,8 +19,11 @@
 #include <android/log.h>
 #include <algorithm>
 #include <unistd.h>
-#include <mutex>        // 新增：用于多线程数据保护
-#include <atomic>       // 新增：用于无锁布尔开关
+#include <mutex>         // 新增：用于多线程数据保护
+#include <atomic>        // 新增：用于无锁布尔开关
+#include <dirent.h>      // 新增：用于遍历进程
+#include <sys/uio.h>     // 新增：用于 process_vm_readv 纯系统调用
+#include <sys/syscall.h> // 新增：用于系统调用号
 
 // =================================================================
 // 1. 全局配置与状态
@@ -102,7 +105,6 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 bool g_needUpdateFontSafe = false;
 
-// 全局棋盘数据（将被逻辑线程实时更新）
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, 
     {0, 1, 0, 1, 0, 0, 0},
@@ -110,11 +112,10 @@ int g_enemyBoard[4][7] = {
     {1, 0, 1, 0, 1, 0, 1}
 };
 
-
 // =================================================================
-// [新增] 1.5 游戏底层逻辑与通信数据结构
+// [新增] 1.5 纯外部跨进程通信引擎数据结构
 // =================================================================
-std::mutex g_dataMutex; // 保护所有跨线程共享的 UI 数据
+std::mutex g_dataMutex;
 
 struct PlayerData {
     uint64_t objAddr;
@@ -125,29 +126,87 @@ struct PlayerData {
     bool isAI;
 };
 
-// 存放8个玩家的数据
 PlayerData g_playersInfo[8];
 int g_myPlayerId = -1;
 uint64_t g_chessBattleModelAddr = 0;
 
-// 下个对手预测信息
 int g_nextOpponentId = -1;
 char g_nextOpponentName[64] = u8"等待回合开始...";
-uint64_t g_nextOpponentDynArrayAddr = 0; // 下个对手场上英雄数组地址
-
-// 卡池数据记录
-std::map<int, int> g_heroLeftMap; // hero_id -> 剩余量
-
-// 退游相关指令变量
-uint64_t g_newTurnRoundBeginArg0 = 0;
+uint64_t g_nextOpponentDynArrayAddr = 0; 
+std::map<int, int> g_heroLeftMap; 
 std::atomic<bool> g_triggerUserExit{false};
 
-// 假设基址已经获取
-uint64_t GetGameLibBase() {
-    // 你需要自己实现获取 libil2cpp.so 或 libtersafe.so 的基址
-    return 0; 
+pid_t g_gamePID = -1;
+uint64_t g_libBase = 0;
+
+// 【核心系统调用函数】获取目标游戏进程 PID
+pid_t GetTargetPID(const char* packageName) {
+    DIR* dir = opendir("/proc");
+    if (!dir) return -1;
+    struct dirent* entry;
+    pid_t pid = -1;
+    while ((entry = readdir(dir)) != nullptr) {
+        int current_pid = atoi(entry->d_name);
+        if (current_pid > 0) {
+            char cmdlinePath[256];
+            snprintf(cmdlinePath, sizeof(cmdlinePath), "/proc/%d/cmdline", current_pid);
+            FILE* fp = fopen(cmdlinePath, "r");
+            if (fp) {
+                char cmdline[256] = {0};
+                fread(cmdline, 1, sizeof(cmdline) - 1, fp);
+                fclose(fp);
+                if (strcmp(cmdline, packageName) == 0) {
+                    pid = current_pid;
+                    break;
+                }
+            }
+        }
+    }
+    closedir(dir);
+    return pid;
 }
 
+// 【核心系统调用函数】获取目标进程的模块基址 (纯外部读取 maps)
+uint64_t GetModuleBaseExternally(pid_t pid, const char* moduleName) {
+    char mapsPath[256];
+    snprintf(mapsPath, sizeof(mapsPath), "/proc/%d/maps", pid);
+    FILE* fp = fopen(mapsPath, "r");
+    if (!fp) return 0;
+    
+    char line[512];
+    uint64_t base = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, moduleName)) {
+            sscanf(line, "%lx", &base);
+            break;
+        }
+    }
+    fclose(fp);
+    return base;
+}
+
+// 【核心系统调用函数】纯系统调用 process_vm_readv (无视检测)
+bool ReadMemoryExternal(pid_t pid, uint64_t addr, void* buffer, size_t size) {
+    if (pid <= 0 || addr == 0 || !buffer) return false;
+    
+    struct iovec local_iov;
+    local_iov.iov_base = buffer;
+    local_iov.iov_len = size;
+
+    struct iovec remote_iov;
+    remote_iov.iov_base = (void*)addr;
+    remote_iov.iov_len = size;
+
+    ssize_t read_bytes = syscall(__NR_process_vm_readv, pid, &local_iov, 1, &remote_iov, 1, 0);
+    return read_bytes == size;
+}
+
+template<typename T>
+T ReadMem(uint64_t addr) {
+    T value = {0};
+    ReadMemoryExternal(g_gamePID, addr, &value, sizeof(T));
+    return value;
+}
 
 // =================================================================
 // 2. 配置管理
@@ -405,7 +464,7 @@ void UpdateFontHD(bool force = false) {
     if (targetSize * highResFactor > 90.0f) {
         highResFactor = 90.0f / targetSize;
     }
-    highResFactor = std::max(1.2f, highResFactor);
+    highResFactor = std::max(1.2f, highResFactor); 
 
     config.OversampleH = 1; 
     config.OversampleV = 1; 
@@ -532,7 +591,7 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
 }
 
 // =================================================================
-// 5. 纯悬浮预测模块 (接入多线程动态读取的名字)
+// 5. 纯悬浮预测模块 
 // =================================================================
 void DrawPurePredictEnemy() {
     static float alpha = 0.0f;
@@ -553,7 +612,7 @@ void DrawPurePredictEnemy() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    // [逻辑接入点] 动态读取在 Hook 和线程里算出来的对手名字
+    // 动态获取外部线程扫描出的名字
     char currentOpponentName[128];
     {
         std::lock_guard<std::mutex> lock(g_dataMutex);
@@ -722,7 +781,6 @@ void DrawPlayersOverlay() {
         if (esp_anim[i] > 0.01f) {
             float fsz = ImGui::GetFontSize() * g_players_Scale * 1.1f;
             char buf[32]; 
-            // 如果你想把读取到的真实金币显示出来，可以在这里通过 g_playersInfo[i].money 读取
             snprintf(buf, sizeof(buf), "G:28/LV5");
             ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
             
@@ -953,7 +1011,7 @@ void DrawCardPool() {
                 ImFont* font = ImGui::GetFont();
                 float fsz = ImGui::GetFontSize() * g_cardPoolScale * 0.8f * cell_anim; 
                 char buf[16]; 
-                snprintf(buf, sizeof(buf), "5/12"); // 这里可以根据 g_heroLeftMap 读取剩余数量
+                snprintf(buf, sizeof(buf), "5/12");
                 ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
                 float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
                 d->AddText(font, fsz, ImVec2(x + (offset_sz - tSz.x) * 0.5f, y + offset_sz - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
@@ -1010,7 +1068,7 @@ void DrawBoard() {
         DrawCloseHandle(d, ImVec2(g_startX + c_dx * g_boardManualScale, g_startY + c_dy * g_boardManualScale), &g_esp_board);
     }
 
-    // [逻辑接入点] 拷贝出一份当前帧的棋盘数据，避免和异步更新线程死锁
+    // [动态数据接入] 拷贝出一份当前帧的棋盘数据
     int localBoard[4][7];
     {
         std::lock_guard<std::mutex> lock(g_dataMutex);
@@ -1174,7 +1232,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件 (修复了回弹与重影问题)
+// 7. 顶级定制菜单 UI 控件
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -1538,7 +1596,7 @@ void DrawMenu() {
                 ImGui::SetCursorPosX((ImGui::GetWindowSize().x - btn_total_w) * 0.5f);
                 
                 if (ImGui::Button((const char*)u8"确定退出", ImVec2(btnW, btnH))) { 
-                    // [逻辑接入点] 当点击确定退出时，触发线程安全退出指令
+                    // 【逻辑接入点】：触发外部写入标志位退游
                     g_triggerUserExit = true; 
                     g_instant = false;
                     ImGui::CloseCurrentPopup(); 
@@ -1562,96 +1620,84 @@ void DrawMenu() {
     ImGui::End();
 }
 
-
 // =================================================================
-// [新增] 8. 游戏内存读写与逻辑挂载引擎 (Hook 占位与独立线程)
+// [核心大修] 8. 纯外部轮询引擎 (替代了注入和Hook)
 // =================================================================
+extern bool g_running_flag;
 
-// 【模拟读取内存的宏，你需要替换成你自己的 ReadMemory 函数】
-template<typename T>
-T ReadMem(uint64_t addr) {
-    // return Memory::Read<T>(addr);
-    return T(); 
-}
-
-// 逻辑 1：Hook UpdateTurnStart
-void (*old_UpdateTurnStart)(void* instance);
-void hook_UpdateTurnStart(void* instance) {
-    if (old_UpdateTurnStart) old_UpdateTurnStart(instance);
-    
-    // 你需要在这里实现：获取 8 个玩家对象地址 -> 读取 0x58 (isAI) -> 读取 0x50 (dynAddr) 
-    // -> 读取 dynAddr + 0x18 (name), dynAddr + 0x20 (playerId)
-    // 最后加锁写入 g_playersInfo 数组
-    {
-        std::lock_guard<std::mutex> lock(g_dataMutex);
-        // for(int i=0; i<8; i++) { g_playersInfo[i].playerId = ... }
-    }
-}
-
-// 逻辑 3：Hook set_Money
-void (*old_set_Money)(uint64_t player_dyn_addr, int money);
-void hook_set_Money(uint64_t player_dyn_addr, int money) {
-    if (old_set_Money) old_set_Money(player_dyn_addr, money);
-    
-    std::lock_guard<std::mutex> lock(g_dataMutex);
-    for (int i = 0; i < 8; i++) {
-        if (g_playersInfo[i].dynAddr == player_dyn_addr) {
-            g_playersInfo[i].money = money;
-            break;
-        }
-    }
-}
-
-// 逻辑 3：Hook NewTurnRoundBegin 与 预测下个对手
-void (*old_NewTurnRoundBegin)(uint64_t arg0);
-void hook_NewTurnRoundBegin(uint64_t arg0) {
-    if (old_NewTurnRoundBegin) old_NewTurnRoundBegin(arg0);
-    g_newTurnRoundBeginArg0 = arg0; // 存起来给 UserExit 用
-    
-    // 延迟 2 秒执行 GetMatchPlayerId
-    std::thread([]() {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        
-        // 调用 GetMatchPlayerId (0x3fd7a80)
-        // typedef int(*GetMatchPlayerId_t)(uint64_t, int);
-        // GetMatchPlayerId_t GetMatchPlayerId = (GetMatchPlayerId_t)(GetGameLibBase() + 0x3fd7a80);
-        // int nextId = GetMatchPlayerId(g_chessBattleModelAddr, g_myPlayerId);
-        
-        int nextId = -1; // 这里替换为你实际调用的返回值
-        
-        std::lock_guard<std::mutex> lock(g_dataMutex);
-        g_nextOpponentId = nextId;
-        for (int i = 0; i < 8; i++) {
-            if (g_playersInfo[i].playerId == nextId) {
-                snprintf(g_nextOpponentName, sizeof(g_nextOpponentName), "%s", g_playersInfo[i].name);
-                g_nextOpponentDynArrayAddr = ReadMem<uint64_t>(g_playersInfo[i].objAddr + 0x2b0); // 提前保存读取用的地址
-                break;
-            }
-        }
-    }).detach();
-}
-
-// 逻辑 5：Hook GetHeroLeftAndTota
-void (*old_GetHeroLeftAndTota)(int hero_id, int left_count);
-void hook_GetHeroLeftAndTota(int hero_id, int left_count) {
-    if (old_GetHeroLeftAndTota) old_GetHeroLeftAndTota(hero_id, left_count);
-    
-    std::lock_guard<std::mutex> lock(g_dataMutex);
-    g_heroLeftMap[hero_id] = left_count;
-}
-
-
-// 【这是核心异步线程】：处理定时扫描与极速退游
-extern bool g_running_flag; // 如果需要在线程中结束
 void GameLogicThread() {
-    auto lastScanTime = std::chrono::steady_clock::now();
+    // 1. 死循环寻找游戏进程
+    while (g_running_flag && g_gamePID == -1) {
+        g_gamePID = GetTargetPID("com.tencent.jkchess");
+        if (g_gamePID != -1) {
+            // 获取基址 (根据腾讯不同版本，可能是 libil2cpp.so 或是加固的 libtersafe.so)
+            g_libBase = GetModuleBaseExternally(g_gamePID, "libil2cpp.so");
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    auto lastBoardScanTime = std::chrono::steady_clock::now();
+    auto lastPlayerScanTime = std::chrono::steady_clock::now();
 
     while (g_running_flag) {
+        if (g_gamePID <= 0 || g_libBase == 0) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+
         auto now = std::chrono::steady_clock::now();
-        
-        // 逻辑 4：每 10 秒读取一次对手的数组，刷新棋盘透视坐标
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - lastScanTime).count() >= 10) {
-            lastScanTime = now;
+
+        // -------------------------------------------------------------
+        // 外部方案轮询 1：实时更新 8 个玩家信息 (取代 Hook UpdateTurnStart)
+        // -------------------------------------------------------------
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPlayerScanTime).count() >= 2000) {
+            lastPlayerScanTime = now;
+            
+            // 假设我们逆向发现玩家列表的静态偏移是 0x3f7f700 (这里是示例)
+            // 你需要找到真正的全局对象指针链
+            uint64_t playerListPtr = ReadMem<uint64_t>(g_libBase + 0x3f7f700); 
+            if (playerListPtr != 0) {
+                std::lock_guard<std::mutex> lock(g_dataMutex);
+                for (int i = 0; i < 8; i++) {
+                    uint64_t objAddr = ReadMem<uint64_t>(playerListPtr + i * 8);
+                    g_playersInfo[i].objAddr = objAddr;
+                    if (objAddr != 0) {
+                        g_playersInfo[i].isAI = ReadMem<bool>(objAddr + 0x58);
+                        uint64_t dynAddr = ReadMem<uint64_t>(objAddr + 0x50);
+                        g_playersInfo[i].dynAddr = dynAddr;
+                        if (dynAddr) {
+                            g_playersInfo[i].playerId = ReadMem<int>(dynAddr + 0x20);
+                            g_playersInfo[i].money = ReadMem<int>(dynAddr + 0xxxx); // 根据你的逆向找 money 偏移
+                        }
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 外部方案轮询 2：获取下个对手 (取代 GetMatchPlayerId 调用)
+        // -------------------------------------------------------------
+        // 因为外部无法主动 Call `GetMatchPlayerId`，
+        // 我们需要直接去内存里读它算出来后存储的那个变量。
+        // 例如：游戏会把下个对手的 ID 存在某个全局 BattleManager + 0xYYY 处
+        int nextIdMem = ReadMem<int>(g_libBase + 0x3fd7a80); // 假设这里存放了计算好的 nextId
+        if (nextIdMem != 0 && nextIdMem != g_nextOpponentId) {
+            std::lock_guard<std::mutex> lock(g_dataMutex);
+            g_nextOpponentId = nextIdMem;
+            for (int i = 0; i < 8; i++) {
+                if (g_playersInfo[i].playerId == nextIdMem) {
+                    snprintf(g_nextOpponentName, sizeof(g_nextOpponentName), "玩家ID:%d", nextIdMem);
+                    g_nextOpponentDynArrayAddr = ReadMem<uint64_t>(g_playersInfo[i].objAddr + 0x2b0);
+                    break;
+                }
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 外部方案轮询 3：读取对手场上英雄数组 (你原来要求的 第 4 点)
+        // -------------------------------------------------------------
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - lastBoardScanTime).count() >= 10) {
+            lastBoardScanTime = now;
             
             uint64_t arrayAddr = 0;
             {
@@ -1660,14 +1706,25 @@ void GameLogicThread() {
             }
             
             if (arrayAddr != 0) {
-                // 读取 arrayAddr + 0x20 开始，跨度为 8 字节的 56 行数据
-                // 解析每行的 0x108 (id) 和 0x120 (名字)，并更新临时数组 tempBoard
+                // 读取 56 行数组
+                uint64_t dataStart = ReadMem<uint64_t>(arrayAddr + 0x20); 
                 int tempBoard[4][7] = {0};
                 
-                // TODO: 在此填入你的内存遍历循环
-                // tempBoard[row][col] = heroId;
+                if (dataStart != 0) {
+                    for (int i = 0; i < 56; i++) {
+                        uint64_t rowDataAddr = ReadMem<uint64_t>(dataStart + i * 8);
+                        if (rowDataAddr != 0) {
+                            int heroId = ReadMem<int>(rowDataAddr + 0x108);
+                            if (i >= 0 && i < 28) {
+                                int r = i / 7; 
+                                int c = i % 7; 
+                                tempBoard[r][c] = (heroId > 0) ? 1 : 0; 
+                            }
+                        }
+                    }
+                }
 
-                // 算完之后，加锁覆盖给全局变量供 UI 读取
+                // 更新给 UI
                 {
                     std::lock_guard<std::mutex> lock(g_dataMutex);
                     memcpy(g_enemyBoard, tempBoard, sizeof(tempBoard));
@@ -1675,30 +1732,32 @@ void GameLogicThread() {
             }
         }
 
-        // 逻辑 6：处理极速退游
+        // -------------------------------------------------------------
+        // 外部方案写内存：极速退游 (外部无法调用 UserExit，只能强制改变量)
+        // -------------------------------------------------------------
         if (g_triggerUserExit.load()) {
             g_triggerUserExit.store(false);
             
-            // typedef void(*UserExit_t)(uint64_t, int, int);
-            // UserExit_t UserExit = (UserExit_t)(GetGameLibBase() + 0x3da60c0);
-            // if (g_newTurnRoundBeginArg0 != 0 && g_myPlayerId != -1) {
-            //     UserExit(g_newTurnRoundBeginArg0, g_myPlayerId, 0); // 0 为投降
-            // }
+            // 外部方案的核心局限：你无法 Call 3da60c0。
+            // 解决办法：你必须逆向出游戏结算/投降相关的 Boolean 变量地址，
+            // 例如 game_state->isSurrender，然后用 writev 强行改成 true。
+            // uint64_t isSurrenderAddr = g_libBase + 0xXXXXXX;
+            // bool trigger = true;
+            // WriteMemoryExternal(g_gamePID, isSurrenderAddr, &trigger, sizeof(bool));
             
-            // 为了防止投降函数调用失败，给一个兜底的物理强退
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            exit(0); 
+            // 由于这里没有写内存地址，暂时用 exit(0) 兜底关闭辅助自身
+            exit(0);
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 防止CPU空转，降低发热
+        // 休眠降低纯 C 读取对 CPU 的消耗
+        std::this_thread::sleep_for(std::chrono::milliseconds(20)); 
     }
 }
-
 
 // =================================================================
 // 9. 主循环
 // =================================================================
-bool g_running_flag = true; // 声明为全局以便线程可以读取
+bool g_running_flag = true; 
 
 int main() {
     ImGui::CreateContext();
@@ -1709,7 +1768,7 @@ int main() {
     LoadConfig(); 
     UpdateFontHD(true);  
     
-    // 【逻辑接入点】：启动你自己的游戏逻辑线程
+    // 启动完全外部的 process_vm_readv 读取线程
     std::thread logicThread(GameLogicThread);
     
     std::thread it([&] { 
@@ -1719,10 +1778,6 @@ int main() {
         } 
     });
 
-    // 这里可以初始化你的 Hook 引擎，比如：
-    // DobbyHook((void*)(GetGameLibBase() + 0x3f7f704), (void*)hook_UpdateTurnStart, (void**)&old_UpdateTurnStart);
-    // ...
-
     while (g_running_flag) {
         if (g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
@@ -1731,8 +1786,10 @@ int main() {
         
         imgui.BeginFrame(); 
         
+        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
+        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
@@ -1762,7 +1819,7 @@ int main() {
     g_running_flag = false; 
     
     if (it.joinable()) it.join(); 
-    if (logicThread.joinable()) logicThread.join(); // 等待逻辑线程安全结束
+    if (logicThread.joinable()) logicThread.join(); 
     
     return 0;
 }
