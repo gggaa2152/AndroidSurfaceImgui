@@ -13,7 +13,6 @@
 #include <string>
 #include <vector>
 #include <map>
-#include <unordered_map> // [优化] 引入哈希表，替换性能较差的 std::map
 #include <chrono>
 #include <GLES3/gl3.h>
 #include <EGL/egl.h>    
@@ -446,8 +445,7 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         }
     }
 
-    // [优化] 拖拽和缩放时取消缓动插值实现100%绝对跟手；松手时恢复平滑过渡
-    float smoothness = (isDragging || isScaling) ? 1.0f : (1.0f - expf(-25.0f * io.DeltaTime));
+    float smoothness = 1.0f - expf(-20.0f * io.DeltaTime);
     out_x = ImLerp(out_x, t_x, smoothness); 
     out_y = ImLerp(out_y, t_y, smoothness); 
     out_scale = ImLerp(out_scale, t_scale, smoothness);
@@ -464,8 +462,7 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     if (!isOpen) return; 
     ImGuiIO& io = ImGui::GetIO(); 
     float cr = 13.0f * g_autoScale;
-    // [优化] 将 std::map 替换为 std::unordered_map 提速
-    static std::unordered_map<void*, float> hover_map; 
+    static std::map<void*, float> hover_map; 
     bool cHov = ImLengthSqr(io.MousePos - p_handle) < (cr*cr * 2.5f);
     
     hover_map[isOpen] = ImLerp(hover_map[isOpen], cHov ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
@@ -708,8 +705,7 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
     }
     bool held = hovered && ImGui::IsMouseDown(0);
 
-    // [优化] 将 std::map 替换为 std::unordered_map 提速
-    static std::unordered_map<int, float> anims;
+    static std::map<int, float> anims;
     float target = (v && *v) ? 1.0f : (held ? 1.0f : (hovered ? 0.6f : 0.0f));
     anims[id] = ImLerp(anims[id], target, 1.0f - expf(-20.0f * io.DeltaTime));
     float a = anims[id];
@@ -939,17 +935,6 @@ void DrawBoard() {
         DrawCloseHandle(d, ImVec2(g_startX + c_dx * g_boardManualScale, g_startY + c_dy * g_boardManualScale), &g_esp_board);
     }
 
-    // [优化] 将原本循环内部每帧计算 168 次的 cosf 和 sinf 抽离到循环外部静态预处理
-    static ImVec2 hex_pts[6];
-    static bool hex_init = false;
-    if (!hex_init) {
-        for(int i = 0; i < 6; i++) {
-            float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-            hex_pts[i] = ImVec2(cosf(a), sinf(a));
-        }
-        hex_init = true;
-    }
-
     for(int r = 0; r < 4; r++) {
         for(int c = 0; c < 7; c++) {
             float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
@@ -965,8 +950,8 @@ void DrawBoard() {
             
             ImVec2 pts[6];
             for(int i = 0; i < 6; i++) {
-                // [优化应用] 直接使用预先计算的坐标比例系数，消除内部重度运算
-                pts[i] = ImVec2(cx + curSz * hex_pts[i].x, cy + curSz * hex_pts[i].y);
+                float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
+                pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
             d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 220), ImDrawFlags_Closed, 2.5f * g_autoScale);
         }
@@ -1141,8 +1126,7 @@ bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) 
         *state = !(*state); 
     }
 
-    // [优化] 将 std::map 替换为 std::unordered_map 提速
-    static std::unordered_map<ImGuiID, float> anim_map; 
+    static std::map<ImGuiID, float> anim_map; 
     float& anim = anim_map[id];
     anim = ImLerp(anim, *state ? 1.0f : 0.0f, 1.0f - expf(-18.0f * ImGui::GetIO().DeltaTime));
 
@@ -1428,7 +1412,6 @@ int main() {
     std::thread it([&] { 
         while(running) { 
             imgui.ProcessInputEvent(); 
-            // [优化] 移除导致严重触控延迟的硬休眠，使用 yield 恢复极高频触控采样，实现 100% 灵敏跟手
             std::this_thread::yield(); 
         } 
     });
@@ -1461,18 +1444,7 @@ int main() {
         DrawMenu();
         
         imgui.EndFrame(); 
-        
-        // [精准帧率同步] 防止部分 Android 设备 eglSwapInterval(VSYNC) 失效
-        // 动态计算耗时并智能填充微秒级等待，完美同步高刷设备 (锁定上限 120 FPS)，且有效防过热
-        static auto prev_time = std::chrono::high_resolution_clock::now();
-        auto current_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<float, std::milli> elapsed = current_time - prev_time;
-        
-        float target_ms = 1000.0f / 120.0f; // 120 FPS 对应的帧间隔
-        if (elapsed.count() < target_ms) {
-            std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int>((target_ms - elapsed.count()) * 1000)));
-        }
-        prev_time = std::chrono::high_resolution_clock::now();
+        std::this_thread::yield();
     }
     
     g_HexShader.Cleanup(); 
