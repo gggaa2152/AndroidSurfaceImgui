@@ -25,13 +25,10 @@
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
-// 底层异步系统提示音 (Beep)
+// 极速静默控制台唤醒 (彻底抛弃 system 避免 fork 导致进程内存克隆引发卡顿残影)
 void TriggerBeep() {
-    std::thread([]() {
-        printf("\a"); 
-        fflush(stdout);
-        system("input keyevent 24 && input keyevent 25 > /dev/null 2>&1");
-    }).detach();
+    printf("\a"); 
+    fflush(stdout);
 }
 
 bool g_predict_enemy = false;
@@ -484,7 +481,7 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
 }
 
 // =================================================================
-// 5. 纯悬浮预测模块 (彻底抛弃窗体)
+// 5. 纯悬浮预测模块 
 // =================================================================
 void DrawPurePredictEnemy() {
     static float alpha = 0.0f;
@@ -598,7 +595,7 @@ void DrawPurePredictHex() {
 }
 
 // =================================================================
-// 6. 整合覆盖层 (金币等级 ESP + 卡牌预警，共 8 行统一拖拽缩放)
+// 6. 整合覆盖层 (金币等级 ESP + 卡牌预警)
 // =================================================================
 void DrawPlayersOverlay() {
     bool is_active = g_esp_level || g_card_warning;
@@ -652,13 +649,13 @@ void DrawPlayersOverlay() {
         float cx = g_players_X + curAvatarR;
         float cy = g_players_Y + i * curRowH + curAvatarR;
 
-        // 1. 画占位玩家头像
+        // 画占位玩家头像
         d->AddCircleFilled(ImVec2(cx, cy), curAvatarR, IM_COL32(30, 35, 45, 180 * alpha));
         d->AddCircle(ImVec2(cx, cy), curAvatarR, IM_COL32(80, 90, 100, 255 * alpha), 32, 1.5f * g_autoScale * g_players_Scale);
 
         float draw_x = cx + curAvatarR + 10.0f * g_autoScale * g_players_Scale;
 
-        // 2. 金币/等级 ESP
+        // 金币/等级 ESP
         static float esp_anim[8] = {0.0f};
         esp_anim[i] = ImLerp(esp_anim[i], g_esp_level ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
         
@@ -674,7 +671,7 @@ void DrawPlayersOverlay() {
             draw_x += 120.0f * g_autoScale * g_players_Scale * esp_anim[i];
         }
 
-        // 3. 预警提示图像 
+        // 预警提示图像 
         bool is_warned = (g_card_warning && i == 2 && g_warning_tiers[4]);
         static float warn_anim[8] = {0.0f};
         warn_anim[i] = ImLerp(warn_anim[i], is_warned ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
@@ -808,7 +805,6 @@ void DrawAutoBuyWindow() {
 
 // =================================================================
 // 6.5 高级牌库显示窗口 
-// (智能圆角防崩溃机制：当数量太多时自动屏蔽圆角以保护顶点不溢出)
 // =================================================================
 void DrawCardPool() {
     static float alpha = 0.0f;
@@ -863,7 +859,6 @@ void DrawCardPool() {
         int draw_rows = std::ceil(current_rows); 
         int draw_cols = std::ceil(current_cols);
         
-        // 核心保护机制：如果当前渲染的格子总数太多（>150），则强制放弃圆角，改用直角贴图，以此大幅减少顶点数防止闪退
         bool use_rounding_safeguard = (draw_rows * draw_cols <= 150);
 
         for (int r = 0; r < draw_rows; r++) {
@@ -884,7 +879,6 @@ void DrawCardPool() {
                     float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
                     d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
                 } else {
-                    // 直角降级模式（防止崩溃）
                     d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
                     float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
                     d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha));
@@ -1087,9 +1081,8 @@ void DrawShop() {
     }
 }
 
-
 // =================================================================
-// 7. 顶级定制菜单 UI 控件
+// 7. 顶级定制菜单 UI 控件 (全面重算高度，防掉帧与残影)
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -1126,8 +1119,8 @@ bool ModernToggle(const char* label, bool* v, int idx) {
     return pressed;
 }
 
-bool ModernAnimatedFolder(const char* label, bool* state, float target_height) {
-    ImGui::Spacing(); 
+// 采用数量精算模式，彻底解决收起时多余空白卡顿的问题
+bool ModernAnimatedFolder(const char* label, bool* state, int child_item_count) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     ImGuiID id = window->GetID(label);
     ImVec2 pos = window->DC.CursorPos; 
@@ -1163,9 +1156,11 @@ bool ModernAnimatedFolder(const char* label, bool* state, float target_height) {
     window->DrawList->AddText(ImVec2(cx + 15.0f * g_autoScale, bb.Min.y + (size.y - ImGui::GetFontSize())*0.5f), IM_COL32_WHITE, label);
 
     if (anim > 0.01f) {
+        float exact_target_height = (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y) * child_item_count;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, anim);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 15.0f * (1.0f - anim));
-        ImGui::BeginChild(id + 1, ImVec2(0, target_height * anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+        // 完全精准的物理限高窗体，确保毫无滚动条与排版抖动
+        ImGui::BeginChild(id + 1, ImVec2(0, exact_target_height * anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
         return true;
     }
     return false;
@@ -1293,7 +1288,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver); 
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v2.9", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.0 (防卡顿版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         g_menuX = ImGui::GetWindowPos().x; 
         g_menuY = ImGui::GetWindowPos().y;
         
@@ -1316,17 +1311,16 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            float toggleH = ImGui::GetFrameHeight() + style.ItemSpacing.y;
-            
             static bool header_pred = true;
-            if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, toggleH * 2.0f + 5.0f)) {
+            // 第二个参数准确传入里面有 "2" 个 Toggle 控件，确保展开高度分毫不差，告别卡顿闪动
+            if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
                 EndModernAnimatedFolder();
             }
             
             static bool header_esp = true;
-            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, toggleH * 4.0f + 5.0f)) {
+            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 4)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
                 ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
@@ -1347,7 +1341,8 @@ void DrawMenu() {
             
             if (cardpool_anim > 0.01f) {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, cardpool_anim);
-                ImGui::BeginChild("cp_child", ImVec2(0, toggleH * 2.1f * cardpool_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+                float exact_h = (ImGui::GetFrameHeight() + style.ItemSpacing.y) * 2;
+                ImGui::BeginChild("cp_child", ImVec2(0, exact_h * cardpool_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
                 ModernNumberAdjuster((const char*)u8"牌库行数", &g_card_pool_rows, 1, 30);
                 ModernNumberAdjuster((const char*)u8"牌库列数", &g_card_pool_cols, 1, 30);
                 ImGui::EndChild(); 
@@ -1362,7 +1357,8 @@ void DrawMenu() {
             
             if (warn_anim > 0.01f) {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, warn_anim);
-                ImGui::BeginChild("warn_child", ImVec2(0, toggleH * 2.1f * warn_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+                float exact_h = (ImGui::GetFrameHeight() + style.ItemSpacing.y) * 2;
+                ImGui::BeginChild("warn_child", ImVec2(0, exact_h * warn_anim), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
                 ModernTierSelector(); 
                 ModernNumberAdjuster((const char*)u8"预警张数", &g_warning_threshold, 1, 30);
                 ImGui::EndChild(); 
