@@ -30,6 +30,7 @@ bool g_predict_hex = false;
 bool g_esp_board = true;
 bool g_esp_bench = false; 
 bool g_esp_shop = false;  
+bool g_esp_level = false; // 新增：金币等级投食
 bool g_auto_buy = false;
 bool g_instant = false;
 bool g_boardLocked = false; 
@@ -50,8 +51,14 @@ float g_menuW = 350.0f, g_menuH = 550.0f;
 
 float g_benchX = 200.0f, g_benchY = 700.0f, g_benchScale = 1.0f;
 float g_shopX = 200.0f, g_shopY = 850.0f, g_shopScale = 1.0f;
+
+// 预测窗口的坐标与缩放
 float g_enemyW_X = 100.0f, g_enemyW_Y = 100.0f;
+float g_enemyW_W = 220.0f, g_enemyW_H = 120.0f, g_enemy_scale = 1.0f;
+
 float g_hexW_X = 100.0f, g_hexW_Y = 220.0f;
+float g_hexW_W = 280.0f, g_hexW_H = 120.0f, g_hex_scale = 1.0f;
+
 float g_autoW_X = 300.0f, g_autoW_Y = 1000.0f, g_autoW_Scale = 1.0f;
 
 GLuint g_heroTexture = 0;           
@@ -65,7 +72,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理 (无点击不保存，且完美记录高度与大小)
+// 2. 配置管理 (全面支持高度与各种缩放)
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -75,28 +82,42 @@ void SaveConfig() {
         out << "espBoard=" << g_esp_board << "\n";
         out << "espBench=" << g_esp_bench << "\n";
         out << "espShop=" << g_esp_shop << "\n";
+        out << "espLevel=" << g_esp_level << "\n"; // 保存金币等级投食状态
         out << "autoBuy=" << g_auto_buy << "\n";
         out << "instant=" << g_instant << "\n";
         out << "boardLocked=" << g_boardLocked << "\n";
+        
         out << "menuX=" << g_menuX << "\n";
         out << "menuY=" << g_menuY << "\n";
         out << "menuW=" << g_menuW << "\n";
         out << "menuH=" << g_menuH << "\n";
         out << "menuScale=" << g_scale << "\n";
         out << "menuCollapsed=" << g_menuCollapsed << "\n";
+        
         out << "startX=" << g_startX << "\n";
         out << "startY=" << g_startY << "\n";
         out << "manualScale=" << g_boardManualScale << "\n";
+        
         out << "benchX=" << g_benchX << "\n";
         out << "benchY=" << g_benchY << "\n";
         out << "benchScale=" << g_benchScale << "\n";
+        
         out << "shopX=" << g_shopX << "\n";
         out << "shopY=" << g_shopY << "\n";
         out << "shopScale=" << g_shopScale << "\n";
+        
         out << "enemyWX=" << g_enemyW_X << "\n";
         out << "enemyWY=" << g_enemyW_Y << "\n";
+        out << "enemyWW=" << g_enemyW_W << "\n";
+        out << "enemyWH=" << g_enemyW_H << "\n";
+        out << "enemyScale=" << g_enemy_scale << "\n";
+        
         out << "hexWX=" << g_hexW_X << "\n";
         out << "hexWY=" << g_hexW_Y << "\n";
+        out << "hexWW=" << g_hexW_W << "\n";
+        out << "hexWH=" << g_hexW_H << "\n";
+        out << "hexScale=" << g_hex_scale << "\n";
+        
         out << "autoWX=" << g_autoW_X << "\n";
         out << "autoWY=" << g_autoW_Y << "\n";
         out << "autoWScale=" << g_autoW_Scale << "\n";
@@ -118,28 +139,42 @@ void LoadConfig() {
                 else if (k == "espBoard") g_esp_board = (v == "1");
                 else if (k == "espBench") g_esp_bench = (v == "1");
                 else if (k == "espShop") g_esp_shop = (v == "1");
+                else if (k == "espLevel") g_esp_level = (v == "1");
                 else if (k == "autoBuy") g_auto_buy = (v == "1");
                 else if (k == "instant") g_instant = (v == "1");
                 else if (k == "boardLocked") g_boardLocked = (v == "1");
+                
                 else if (k == "menuX") g_menuX = std::stof(v);
                 else if (k == "menuY") g_menuY = std::stof(v);
                 else if (k == "menuW") g_menuW = std::stof(v);
                 else if (k == "menuH") g_menuH = std::stof(v);
                 else if (k == "menuScale") g_scale = std::stof(v);
                 else if (k == "menuCollapsed") g_menuCollapsed = (v == "1");
+                
                 else if (k == "startX") g_startX = std::stof(v);
                 else if (k == "startY") g_startY = std::stof(v);
                 else if (k == "manualScale") g_boardManualScale = std::stof(v);
+                
                 else if (k == "benchX") g_benchX = std::stof(v);
                 else if (k == "benchY") g_benchY = std::stof(v);
                 else if (k == "benchScale") g_benchScale = std::stof(v);
+                
                 else if (k == "shopX") g_shopX = std::stof(v);
                 else if (k == "shopY") g_shopY = std::stof(v);
                 else if (k == "shopScale") g_shopScale = std::stof(v);
+                
                 else if (k == "enemyWX") g_enemyW_X = std::stof(v);
                 else if (k == "enemyWY") g_enemyW_Y = std::stof(v);
+                else if (k == "enemyWW") g_enemyW_W = std::stof(v);
+                else if (k == "enemyWH") g_enemyW_H = std::stof(v);
+                else if (k == "enemyScale") g_enemy_scale = std::stof(v);
+                
                 else if (k == "hexWX") g_hexW_X = std::stof(v);
                 else if (k == "hexWY") g_hexW_Y = std::stof(v);
+                else if (k == "hexWW") g_hexW_W = std::stof(v);
+                else if (k == "hexWH") g_hexW_H = std::stof(v);
+                else if (k == "hexScale") g_hex_scale = std::stof(v);
+                
                 else if (k == "autoWX") g_autoW_X = std::stof(v);
                 else if (k == "autoWY") g_autoW_Y = std::stof(v);
                 else if (k == "autoWScale") g_autoW_Scale = std::stof(v);
@@ -282,7 +317,7 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
         ImVec2 p_close(closeHandleX, closeHandleY);
 
         if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
-            // Check Close Button Hit (仅当指针不为 null 时才检测关闭按钮)
+            // Check Close Button Hit
             if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
                 *isOpen = false;
                 return; 
@@ -340,7 +375,6 @@ void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
     ImU32 coreColor = isScaling ? IM_COL32(0, 255, 180, 255) : IM_COL32(255, 255, 255, 255);
     d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
     d->AddCircleFilled(p_handle, 6.0f * g_autoScale, coreColor);
-    // 纯静态外圈，取消呼吸动画
     d->AddCircle(p_handle, 20.0f * g_autoScale, IM_COL32(255, 215, 0, 150), 32, 2.5f * g_autoScale);
 }
 
@@ -371,7 +405,6 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
     bool hovered = bb.Contains(io.MousePos);
     bool clicked = false;
     
-    // 利用包含判定，避免单一按键焦点锁死，支持手指独立触控触发
     if (hovered && ImGui::IsMouseClicked(0)) clicked = true;
     bool held = hovered && ImGui::IsMouseDown(0);
 
@@ -390,7 +423,6 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
         d->AddRect(bb.Min, bb.Max, IM_COL32(0, 200, 255, 80 * a), size.y * 0.5f, 0, 4.0f * scale * g_autoScale);
     }
 
-    // 完美计算带缩放系数的字体大小，确保绝不溢出边框
     ImFont* font = ImGui::GetFont();
     float scaledFontSize = ImGui::GetFontSize() * scale;
     ImVec2 textSize = font->CalcTextSizeA(scaledFontSize, FLT_MAX, 0.0f, label);
@@ -403,12 +435,11 @@ bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 siz
 
 
 // =================================================================
-// 5. 棋盘、备战席、商店渲染
+// 5. 棋盘、备战席、商店渲染 (彻底去掉了所有灰色背景)
 // =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
-    ImGuiIO& io = ImGui::GetIO();
 
     static float t_x = g_startX, t_y = g_startY, t_scale = g_boardManualScale;
     static bool firstFrame = true;
@@ -432,7 +463,7 @@ void DrawBoard() {
                           h_dx, h_dy, c_dx, c_dy, -baseSz*2, -baseSz*2, 6.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2, 
                           g_boardLocked, &g_esp_board);
 
-    if (!g_esp_board) return; // 被关闭了
+    if (!g_esp_board) return;
 
     float curSz = baseSz * g_boardManualScale;
     float curXStep = baseXStep * g_boardManualScale;
@@ -459,7 +490,7 @@ void DrawBoard() {
                 float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
                 pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
             }
-            d->AddConvexPolyFilled(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 30));
+            // 完全去除了背景填充，仅渲染彩色发光边框
             d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 220), ImDrawFlags_Closed, 2.5f * g_autoScale);
         }
     }
@@ -476,10 +507,10 @@ void DrawBench() {
     static ImVec2 dragOffset, scaleDragOffset;
 
     float baseSz = 40.0f * g_autoScale;
-    float spacing = baseSz; // 贴在一起
-    float h_dx = 9 * spacing + baseSz * 0.3f; // 右侧紧贴
+    float spacing = baseSz; 
+    float h_dx = 9 * spacing + baseSz * 0.3f; 
     float h_dy = baseSz * 0.5f;
-    float c_dx = -baseSz * 0.3f;              // 左侧紧贴
+    float c_dx = -baseSz * 0.3f;              
     float c_dy = baseSz * 0.5f;
 
     HandleGridInteraction(g_benchX, g_benchY, g_benchScale, t_x, t_y, t_scale,
@@ -497,11 +528,10 @@ void DrawBench() {
         DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
     }
 
-    // 彩色薄边框网格
+    // 纯彩色薄边框网格，完全去除底色
     for (int i=0; i<9; i++) {
         float x = g_benchX + i * curSpacing;
         float y = g_benchY;
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 22, 27, 200));
         
         float hue = fmodf(time * 0.3f + i * 0.05f, 1.0f);
         float r, g, b; ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
@@ -521,7 +551,7 @@ void DrawShop() {
     static ImVec2 dragOffset, scaleDragOffset;
 
     float baseSz = 55.0f * g_autoScale;
-    float spacing = baseSz; // 贴在一起
+    float spacing = baseSz; 
     float h_dx = 5 * spacing + baseSz * 0.3f;
     float h_dy = baseSz * 0.5f;
     float c_dx = -baseSz * 0.3f;
@@ -542,11 +572,10 @@ void DrawShop() {
         DrawCloseHandle(d, ImVec2(g_shopX + c_dx * g_shopScale, g_shopY + c_dy * g_shopScale), &g_esp_shop);
     }
 
-    // 彩色薄边框网格
+    // 纯彩色薄边框网格，完全去除底色
     for (int i=0; i<5; i++) {
         float x = g_shopX + i * curSpacing;
         float y = g_shopY;
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 22, 27, 220));
         
         float hue = fmodf(time * 0.3f + i * 0.08f, 1.0f);
         float r, g, b; ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
@@ -561,13 +590,10 @@ void DrawShop() {
 }
 
 // =================================================================
-// 6. 悬浮窗面板 (胶囊菜单及预测窗口)
+// 6. 悬浮窗面板 (预测窗口全局缩放与动画胶囊菜单)
 // =================================================================
 void DrawExtraWindows() {
     float time = (float)ImGui::GetTime();
-    
-    // 全局字体自动缩放因子
-    float fontScaleVal = (18.0f * g_autoScale * g_scale) / g_current_rendered_size;
 
     if (g_predict_enemy) {
         float r, g, b; ImGui::ColorConvertHSVtoRGB(fmodf(time * 0.2f, 1.0f), 0.8f, 1.0f, r, g, b);
@@ -575,10 +601,25 @@ void DrawExtraWindows() {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * g_autoScale);
         
         ImGui::SetNextWindowPos(ImVec2(g_enemyW_X, g_enemyW_Y), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin((const char*)u8"预测对手", &g_predict_enemy, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::SetWindowFontScale(fontScaleVal); // 支持同级缩放
+        ImGui::SetNextWindowSize(ImVec2(g_enemyW_W, g_enemyW_H), ImGuiCond_FirstUseEver);
+        
+        if (ImGui::Begin((const char*)u8"预测对手", &g_predict_enemy, ImGuiWindowFlags_NoSavedSettings)) {
+            
+            // 全局缩放检测 (跟随拖动框体大小自适应)
+            if (ImGui::IsMouseReleased(0)) {
+                float curW = ImGui::GetWindowSize().x;
+                float curH = ImGui::GetWindowSize().y;
+                if (std::abs(curW - g_enemyW_W) > 5.0f || std::abs(curH - g_enemyW_H) > 5.0f) {
+                    g_enemyW_W = curW; g_enemyW_H = curH;
+                    g_enemy_scale = curW / (220.0f * g_autoScale); 
+                }
+            }
             ImVec2 pos = ImGui::GetWindowPos();
             if (pos.x != g_enemyW_X || pos.y != g_enemyW_Y) { g_enemyW_X = pos.x; g_enemyW_Y = pos.y; }
+            
+            float fontScaleVal = (18.0f * g_autoScale * g_enemy_scale) / g_current_rendered_size;
+            ImGui::SetWindowFontScale(fontScaleVal);
+            
             ImGui::Text((const char*)u8"极高概率遇到:");
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), (const char*)u8"> 玩家 3 (连胜中)");
             ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), (const char*)u8"> 玩家 5 (血量见底)");
@@ -595,10 +636,24 @@ void DrawExtraWindows() {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * g_autoScale);
         
         ImGui::SetNextWindowPos(ImVec2(g_hexW_X, g_hexW_Y), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin((const char*)u8"海克斯质量评估", &g_predict_hex, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::SetWindowFontScale(fontScaleVal); // 支持同级缩放
+        ImGui::SetNextWindowSize(ImVec2(g_hexW_W, g_hexW_H), ImGuiCond_FirstUseEver);
+        
+        if (ImGui::Begin((const char*)u8"海克斯质量评估", &g_predict_hex, ImGuiWindowFlags_NoSavedSettings)) {
+            
+            if (ImGui::IsMouseReleased(0)) {
+                float curW = ImGui::GetWindowSize().x;
+                float curH = ImGui::GetWindowSize().y;
+                if (std::abs(curW - g_hexW_W) > 5.0f || std::abs(curH - g_hexW_H) > 5.0f) {
+                    g_hexW_W = curW; g_hexW_H = curH;
+                    g_hex_scale = curW / (280.0f * g_autoScale); 
+                }
+            }
             ImVec2 pos = ImGui::GetWindowPos();
             if (pos.x != g_hexW_X || pos.y != g_hexW_Y) { g_hexW_X = pos.x; g_hexW_Y = pos.y; }
+
+            float fontScaleVal = (18.0f * g_autoScale * g_hex_scale) / g_current_rendered_size;
+            ImGui::SetWindowFontScale(fontScaleVal);
+            
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), (const char*)u8"[左] 银色: T2 (普通)");
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), (const char*)u8"[中] 金色: T0 (神级)");
             ImGui::TextColored(ImVec4(0.8f, 0.4f, 1.0f, 1.0f), (const char*)u8"[右] 彩色: T1 (强势)");
@@ -619,12 +674,11 @@ void DrawExtraWindows() {
         static bool isDragging = false, isScaling = false;
         static ImVec2 dragOffset, scaleDragOffset;
 
-        float baseW = 300.0f * g_autoScale; // 放宽底框，避免文字拥挤
+        float baseW = 300.0f * g_autoScale; 
         float baseH = 65.0f * g_autoScale;
         float h_dx = baseW + 20.0f * g_autoScale; 
         float h_dy = baseH * 0.5f;
 
-        // 注意最后参数为 nullptr，这样彻底移除了左侧的关闭按钮热区检测
         HandleGridInteraction(g_autoW_X, g_autoW_Y, g_autoW_Scale, t_x, t_y, t_scale,
                               isDragging, isScaling, dragOffset, scaleDragOffset,
                               h_dx, h_dy, 0, 0, 0, 0, baseW, baseH, g_boardLocked, nullptr);
@@ -632,7 +686,6 @@ void DrawExtraWindows() {
         float curW = baseW * g_autoW_Scale;
         float curH = baseH * g_autoW_Scale;
 
-        // 胶囊底色与边框
         ImVec2 p_min(g_autoW_X, g_autoW_Y);
         ImVec2 p_max(g_autoW_X + curW, g_autoW_Y + curH);
         float rounding = curH * 0.5f;
@@ -642,10 +695,8 @@ void DrawExtraWindows() {
 
         if (!g_boardLocked) {
             DrawScaleHandle(d, ImVec2(g_autoW_X + h_dx * g_autoW_Scale, g_autoW_Y + h_dy * g_autoW_Scale), isScaling);
-            // 不调用 DrawCloseHandle，左侧没有任何关闭按钮了
         }
 
-        // 内部双按钮 (完美居中及自适应字体)
         float btnW = (baseW - 40.0f * g_autoScale) * 0.5f * g_autoW_Scale;
         float btnH = (baseH - 20.0f * g_autoScale) * g_autoW_Scale;
         float gap = 10.0f * g_autoScale * g_autoW_Scale;
@@ -654,10 +705,10 @@ void DrawExtraWindows() {
         ImVec2 b2_pos = b1_pos + ImVec2(btnW + gap, 0);
         
         if (AnimatedNeonButton(d, (const char*)u8"自动刷新", b1_pos, ImVec2(btnW, btnH), 101, g_autoW_Scale)) {
-            // ...
+            // 点击触发逻辑
         }
         if (AnimatedNeonButton(d, (const char*)u8"自动拿天选", b2_pos, ImVec2(btnW, btnH), 102, g_autoW_Scale)) {
-            // ...
+            // 点击触发逻辑
         }
     }
 }
@@ -712,10 +763,11 @@ void DrawMenu() {
     style.WindowPadding = ImVec2(16 * g_autoScale, 16 * g_autoScale);
     style.WindowBorderSize = 1.0f;
 
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.09f, 0.11f, 0.98f);
+    // 修改菜单背景透明度为 0.85f
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.09f, 0.11f, 0.85f);
     style.Colors[ImGuiCol_Border] = ImVec4(1.0f, 1.0f, 1.0f, 0.08f);
-    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.08f, 0.09f, 0.11f, 1.0f);
-    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.13f, 0.15f, 1.0f);
+    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.08f, 0.09f, 0.11f, 0.90f);
+    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.13f, 0.15f, 0.90f);
     style.Colors[ImGuiCol_Header] = ImVec4(0.18f, 0.20f, 0.25f, 0.8f);
     style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.24f, 0.27f, 0.32f, 0.8f);
     style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.30f, 0.35f, 0.40f, 1.0f);
@@ -737,7 +789,7 @@ void DrawMenu() {
         g_menuX = ImGui::GetWindowPos().x;
         g_menuY = ImGui::GetWindowPos().y;
         
-        // 动态监听尺寸拖动，确保高度也一并保存！
+        // 动态监听尺寸拖动，保存并实时计算缩放
         if (ImGui::IsMouseReleased(0)) {
             float curW = ImGui::GetWindowSize().x;
             float curH = ImGui::GetWindowSize().y;
@@ -768,7 +820,8 @@ void DrawMenu() {
                 ImGui::Indent(); 
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
                 ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
-                ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5); 
+                ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
+                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); // 新增金币等级投食
                 ImGui::Unindent();
             }
             ImGui::Separator();
@@ -779,7 +832,6 @@ void DrawMenu() {
                 if (g_instant) ImGui::OpenPopup((const char*)u8"警告: 确认退出?");
             }
             
-            // 完美支持全局同比例放大的确认弹窗
             ImGui::SetNextWindowSize(ImVec2(320 * g_autoScale * g_scale, 0));
             if (ImGui::BeginPopupModal((const char*)u8"警告: 确认退出?", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) {
                 ImGui::SetWindowFontScale(fontScaleVal);
