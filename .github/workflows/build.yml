@@ -1,4 +1,4 @@
-name: Build Universal Binary
+name: Build Dual-End Binary
 
 on: [push, workflow_dispatch]
 
@@ -15,22 +15,34 @@ jobs:
         run: |
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
-      - name: Compile 64bit Drop & Inject Binary
+      - name: Compile 64bit Dual-End Binary
         run: |
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           BIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译 zstd
+          # 1. 编译纯净版内部 Hook SO (不包含任何 ImGui 逻辑)
+          # 注意：这里需要链接你的 dobby 库
+          $CXX -O3 -shared -fPIC \
+            internal_hook.cc \
+            -I. -I./includes -I./third_party/dobby/include \
+            -L./third_party/dobby/libs/arm64-v8a -ldobby \
+            -llog \
+            -o libJKHook.so
+
+          # 2. 将编译好的纯净 SO 转换为十六进制数组 (hook_payload.h)
+          xxd -i libJKHook.so > hook_payload.h
+
+          # 3. 编译 zstd 库 (供 ImGui 使用)
           $CC -O3 -fPIC -c \
             -I./third_party/zstd/lib \
             third_party/zstd/lib/common/*.c \
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 2. 编译第一形态：动态链接库 (.so)
-          $CXX -O3 -s -std=c++20 -shared -fPIC -static-libstdc++ \
+          # 4. 编译外部 UI 守护进程 (ELF 格式)，它会把上面的 payload 吞进去
+          $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing -Wno-format-security \
             -I. -I./includes -I./modules -I./third_party \
@@ -44,19 +56,10 @@ jobs:
             third_party/imgui/backends/imgui_impl_opengl3.cpp \
             *.o \
             -lGLESv3 -lEGL -landroid -llog \
-            -o libJKMenu.so
-
-          # 3. 核心黑科技：将编译好的 SO 打包成 C 语言十六进制数组头文件 (payload.h)
-          xxd -i libJKMenu.so > payload.h
-
-          # 4. 编译最终形态：将 payload.h 包裹进 ELF 注入器
-          $CXX -O3 -s -std=c++20 -static-libstdc++ \
-            -DBUILD_INJECTOR \
-            main.cc \
-            -o JKHelper_Universal
+            -o JKHelper_Daemon
 
       - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
-          name: JKHelper-Universal-64bit
-          path: JKHelper_Universal
+          name: JKHelper-DualEnd-64bit
+          path: JKHelper_Daemon
