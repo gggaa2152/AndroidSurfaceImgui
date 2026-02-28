@@ -21,7 +21,10 @@ jobs:
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           cd third_party/dobby
           mkdir build && cd build
-          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
+          
+          # 【绝杀修复】：强制获取并使用极其稳定的 NDK 25 进行编译，完美兼容 Dobby 的底层汇编！
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/25.* | head -1)
+          
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
@@ -32,7 +35,8 @@ jobs:
 
       - name: Compile 64bit Dual-End Binary
         run: |
-          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
+          # 同样强制使用 NDK 25 来编译我们的外挂代码
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/25.* | head -1)
           BIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
