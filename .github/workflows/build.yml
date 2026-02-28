@@ -1,4 +1,4 @@
-name: Build Android 64bit ELF
+name: Build Android 64bit SO
 
 on: [push, workflow_dispatch]
 
@@ -16,23 +16,23 @@ jobs:
           # 自动补齐 main.cc 引用的 stb 库
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
-      - name: Compile 64bit ELF
+      - name: Compile 64bit SO
         run: |
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           BIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译 zstd
-          $CC -O3 -c \
+          # 1. 编译 zstd (注意这里必须加 -fPIC，否则无法链接进 .so)
+          $CC -O3 -fPIC -c \
             -I./third_party/zstd/lib \
             third_party/zstd/lib/common/*.c \
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 2. 编译主程序
-          # -DIMGUI_DEFINE_MATH_OPERATORS 修复 ImVec2 运算报错
-          $CXX -O3 -s -std=c++20 -static-libstdc++ \
+          # 2. 编译主程序为 .so 动态库
+          # 【核心修改】：加入了 -shared 和 -fPIC，输出改为 libJKMenu.so
+          $CXX -O3 -s -std=c++20 -shared -fPIC -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing \
             -I. -I./includes -I./modules -I./third_party \
@@ -46,10 +46,11 @@ jobs:
             third_party/imgui/backends/imgui_impl_opengl3.cpp \
             *.o \
             -lGLESv3 -lEGL -landroid -llog \
-            -o com_tencent_jkchess_elf
+            -o libJKMenu.so
 
-      - name: Upload ELF
+      - name: Upload SO
         uses: actions/upload-artifact@v4
         with:
-          name: com-tencent-jkchess-64bit
-          path: com_tencent_jkchess_elf
+          name: com-tencent-jkchess-64bit-so
+          # 上传打包好的 .so 文件
+          path: libJKMenu.so
