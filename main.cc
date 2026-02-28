@@ -1721,45 +1721,46 @@ int perform_injection(pid_t pid, const char* drop_path) {
 // =================================================================
 void MainRenderThread() {
     ImGui::CreateContext();
-    android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
-    
-    eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    
-    LoadConfig(); 
-    UpdateFontHD(true);  
-    
-    std::thread it([&] { 
-        while(g_game_running) { 
-            imgui.ProcessInputEvent(); 
-            std::this_thread::yield(); 
-        } 
-    });
+    {
+        android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
+        
+        eglSwapInterval(eglGetCurrentDisplay(), 1); 
+        
+        LoadConfig(); 
+        UpdateFontHD(true);  
+        
+        std::thread it([&] { 
+            while(g_game_running) { 
+                imgui.ProcessInputEvent(); 
+                std::this_thread::yield(); 
+            } 
+        });
 
-    while (g_game_running) {
-        if (g_needUpdateFontSafe || !ImGui::GetIO().Fonts->IsBuilt()) { 
-            UpdateFontHD(true); 
-            g_needUpdateFontSafe = false; 
-        }
-        
-        imgui.BeginFrame(); 
-        
-        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
-        glDisable(GL_SCISSOR_TEST); 
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
-        // 增加深度清理，确保 Native Overlay 完全双清
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        
-        if (!g_resLoaded) { 
-            g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
-            g_textureLoaded = (g_heroTexture != 0); 
-            g_resLoaded = true; 
-        }
-        
-        DrawBoard(); 
-        DrawBench(); 
-        DrawShop();  
-        
-        DrawPurePredictEnemy(); 
+        while (g_game_running) {
+            if (g_needUpdateFontSafe || !ImGui::GetIO().Fonts->IsBuilt()) { 
+                UpdateFontHD(true); 
+                g_needUpdateFontSafe = false; 
+            }
+            
+            imgui.BeginFrame(); 
+            
+            // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
+            glDisable(GL_SCISSOR_TEST); 
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
+            // 增加深度清理，确保 Native Overlay 完全双清
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            
+            if (!g_resLoaded) { 
+                g_heroTexture = LoadTextureFromFile("/data/1/heroes/FUX/aurora.png"); 
+                g_textureLoaded = (g_heroTexture != 0); 
+                g_resLoaded = true; 
+            }
+            
+            DrawBoard(); 
+            DrawBench(); 
+            DrawShop();  
+            
+            DrawPurePredictEnemy(); 
         DrawPurePredictHex();   
         DrawPlayersOverlay();   
         
@@ -1769,13 +1770,16 @@ void MainRenderThread() {
         DrawMenu();
         
         imgui.EndFrame(); 
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        // 【核心修复】：删除原来强制锁 60 帧的 16ms 睡眠
+        // 改为 yield，配合 eglSwapInterval(1)，它会自动同步你手机的高刷帧率 (90/120/144Hz)
+        std::this_thread::yield();
     }
     
     g_HexShader.Cleanup(); 
     g_game_running = false; 
     if (it.joinable()) it.join(); 
-    if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
+} // 【核心修复】：在此处结束作用域，确保 imgui 优先安全析构
+if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
 }
 
 
