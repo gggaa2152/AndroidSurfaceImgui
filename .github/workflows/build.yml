@@ -24,9 +24,14 @@ jobs:
       - name: Auto Setup Dobby Framework
         run: |
           echo "[*] 正在全自动拉取并编译 Dobby Hook 框架..."
-          git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
+          git clone https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【自动修复头文件报错】：全自动将头文件放入 includes 目录，兼容你的 internal_hook.cc
+          # 【核弹级修复 1】：作者近期的代码改坏了安卓编译。我们强行回退到 2023 年底的绝对稳定版本！
+          cd third_party/dobby
+          git checkout $(git rev-list -n 1 --before="2023-10-01" HEAD)
+          cd ../../
+          
+          # 【自动修复头文件】：全自动将头文件放入 includes 目录，兼容你的 internal_hook.cc
           mkdir -p includes
           cp third_party/dobby/include/dobby.h includes/
           
@@ -36,10 +41,15 @@ jobs:
           # 明确指定刚下载的 NDK 25 路径
           NDK_PATH=$ANDROID_HOME/ndk/25.2.9519653
           
+          # 【核弹级修复 2】：强行提升 API 级别到 28，并强行注入 -fPIC 解决 ADRP 汇编报错！
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
             -DCMAKE_ANDROID_NDK=$NDK_PATH \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_C_FLAGS="-fPIC" \
+            -DCMAKE_CXX_FLAGS="-fPIC" \
+            -DCMAKE_ASM_FLAGS="-fPIC" \
             -DDOBBY_GENERATE_SHARED=OFF
           make -j4
           echo "[+] Dobby 编译完成！"
