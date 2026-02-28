@@ -86,34 +86,64 @@ void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     if (!force && io.Fonts->IsBuilt()) return;
 
-    LOG_STEP(7, "正在构建 UI 字体图集...");
+    LOG_STEP(7, "正在构建 UI 字体图集 (开启详细诊断)...");
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear(); 
 
     ImFontConfig config;
     config.OversampleH = 1; config.OversampleV = 1; config.PixelSnapH = true;
 
-    // 首先加载默认字体，确保 Build() 永远不会失败
+    LOGI("  [诊断] 1. 加载 ImGui 默认英文字体...");
     io.Fonts->AddFontDefault(&config);
 
-    // 针对你的“常用集构建失败”问题，我们改用手动指定极小字符范围
     const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
     if (access(fontPath, R_OK) == 0) {
-        LOGI("  -> 检测到系统字体，执行极速子集化加载...");
-        // 只加载最核心的几个字，防止显存爆炸
-        static const ImWchar mini_range[] = {
+        LOGI("  [诊断] 2. 找到系统字体文件: %s，尝试解析...", fontPath);
+        // 【真正的终极修复】：精确到字，只有菜单上的 18 个汉字，绝对不会超载
+        static const ImWchar custom_ranges[] = {
             0x0020, 0x00FF, // ASCII
-            0x4E00, 0x9FA5, // 汉字常用区
+            0x4F4D, 0x4F4D, // 位
+            0x5165, 0x5165, // 入
+            0x529F, 0x529F, // 功
+            0x5B9A, 0x5B9A, // 定
+            0x6001, 0x6001, // 态
+            0x6210, 0x6210, // 成
+            0x654C, 0x654C, // 敌
+            0x65B9, 0x65B9, // 方
+            0x663E, 0x663E, // 显
+            0x68CB, 0x68CB, // 棋
+            0x6A21, 0x6A21, // 模
+            0x6CE8, 0x6CE8, // 注
+            0x72B6, 0x72B6, // 状
+            0x76D8, 0x76D8, // 盘
+            0x793A, 0x793A, // 示
+            0x7A33, 0x7A33, // 稳
+            0x7F6E, 0x7F6E, // 置
+            0x9501, 0x9501, // 锁
             0,
         };
-        // 限制尺寸到 20.0f
-        io.Fonts->AddFontFromFileTTF(fontPath, 20.0f, &config, mini_range);
+        
+        ImFont* cnFont = io.Fonts->AddFontFromFileTTF(fontPath, 20.0f, &config, custom_ranges);
+        if (cnFont == nullptr) {
+            LOGE("  [诊断] 错误: AddFontFromFileTTF 返回 NULL！通常是因为字体格式不兼容。");
+        } else {
+            LOGI("  [诊断] 成功: 汉字解析成功加入队列。");
+        }
+    } else {
+        LOGE("  [诊断] 错误: 无法访问字体文件 (可能是路径不存在)");
     }
 
-    io.Fonts->TexDesiredWidth = 512; 
+    LOGI("  [诊断] 3. 取消纹理限制，开始图集打包 Build()...");
+    io.Fonts->TexDesiredWidth = 0; // 取消强制 512 的限制，让 ImGui 自动算最佳尺寸
+
     if (!io.Fonts->Build()) {
-        LOGE("  -> 字体图集生成失败，强制进入英文模式。");
+        LOGE("  [诊断] 错误: Build() 返回 false！通常是因为字符过多导致图集高度超出了 GPU 限制。");
         io.Fonts->Clear(); io.Fonts->AddFontDefault(); io.Fonts->Build();
+    } else {
+        unsigned char* tex_pixels = NULL;
+        int tex_w, tex_h;
+        io.Fonts->GetTexDataAsRGBA32(&tex_pixels, &tex_w, &tex_h);
+        LOGI("  [诊断] 成功: 图集生成完毕！最终尺寸: %d x %d", tex_w, tex_h);
     }
 
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_CreateFontsTexture();
