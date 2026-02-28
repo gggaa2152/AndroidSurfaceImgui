@@ -13,29 +13,26 @@ jobs:
 
       - name: Download stb_image.h
         run: |
-          # 自动补齐 main.cc 引用的 stb 库
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
-      - name: Compile 64bit Universal Binary
+      - name: Compile 64bit Drop & Inject Binary
         run: |
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           BIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译 zstd (保持 -fPIC 才能链入动态库)
+          # 1. 编译 zstd
           $CC -O3 -fPIC -c \
             -I./third_party/zstd/lib \
             third_party/zstd/lib/common/*.c \
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 2. 编译主程序为“二合一”通用二进制文件 (ELF + SO)
-          # 【核心修改】：移除报错的 -pie 和 -fPIE，保留 -shared -fPIC -rdynamic
-          $CXX -O3 -s -std=c++20 -shared -fPIC -rdynamic -static-libstdc++ \
+          # 2. 编译第一形态：动态链接库 (.so)
+          $CXX -O3 -s -std=c++20 -shared -fPIC -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
-            -Wno-error=narrowing \
-            -Wno-format-security \
+            -Wno-error=narrowing -Wno-format-security \
             -I. -I./includes -I./modules -I./third_party \
             -I./third_party/imgui -I./third_party/imgui/backends \
             -I./third_party/zstd/lib \
@@ -47,11 +44,19 @@ jobs:
             third_party/imgui/backends/imgui_impl_opengl3.cpp \
             *.o \
             -lGLESv3 -lEGL -landroid -llog \
+            -o libJKMenu.so
+
+          # 3. 核心黑科技：将编译好的 SO 打包成 C 语言十六进制数组头文件 (payload.h)
+          xxd -i libJKMenu.so > payload.h
+
+          # 4. 编译最终形态：将 payload.h 包裹进 ELF 注入器
+          $CXX -O3 -s -std=c++20 -static-libstdc++ \
+            -DBUILD_INJECTOR \
+            main.cc \
             -o JKHelper_Universal
 
       - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
           name: JKHelper-Universal-64bit
-          # 上传打包好的二合一文件
           path: JKHelper_Universal
