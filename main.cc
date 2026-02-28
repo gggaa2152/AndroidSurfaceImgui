@@ -20,7 +20,9 @@
 #include <algorithm>
 #include <unistd.h>
 
-// --- 注入器所需的底层系统头文件 ---
+// =================================================================
+// 注入器所需的底层系统头文件
+// =================================================================
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/ptrace.h>
@@ -32,11 +34,15 @@
 #include <elf.h>
 #include <sys/uio.h>
 
-#define LOG_TAG "JKHelper"
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS 1
+#endif
+
+#define LOG_TAG "JKHelper_Universal"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 // =================================================================
-// 1. 全局配置与状态
+// 1. 全局配置与状态 (保留原版所有变量)
 // =================================================================
 const char* TARGET_PACKAGE = "com.tencent.jkchess"; // 目标游戏包名
 const char* g_configPath = "/data/jkchess_config.ini"; 
@@ -60,7 +66,7 @@ int g_card_pool_rows = 2;
 int g_card_pool_cols = 5;
 float g_cardPoolX = 150.0f;
 float g_cardPoolY = 150.0f;
-// 将牌库的等比缩放拆分为 X轴 和 Y轴 独立缩放，实现全方向拉伸
+// 【更新】将牌库的等比缩放拆分为 X轴 和 Y轴 独立缩放，实现全方向拉伸
 float g_cardPoolScaleX = 1.0f; 
 float g_cardPoolScaleY = 1.0f; 
 float g_cardPoolAlpha = 1.0f; 
@@ -127,7 +133,71 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 配置管理
+// 2. 底层 ptrace 注入引擎核心逻辑 (放在前面防止未声明报错)
+// =================================================================
+
+long get_module_base_remote(pid_t pid, const char* module_name) {
+    FILE *fp; long addr = 0; char filename[64], line[1024];
+    snprintf(filename, sizeof(filename), "/proc/%d/maps", pid);
+    fp = fopen(filename, "r");
+    if (fp) {
+        while (fgets(line, sizeof(line), fp)) {
+            if (strstr(line, module_name)) { addr = strtoul(line, NULL, 16); break; }
+        }
+        fclose(fp);
+    }
+    return addr;
+}
+
+void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func) {
+    long local_base = get_module_base_remote(getpid(), module_name);
+    long remote_base = get_module_base_remote(pid, module_name);
+    if (!local_base || !remote_base) return NULL;
+    return (void *)((uintptr_t)local_func - local_base + remote_base);
+}
+
+int ptrace_call_target(pid_t pid, uintptr_t func_addr, long *params, int num_params) {
+    struct user_pt_regs regs, saved_regs;
+    struct iovec iov = {&regs, sizeof(regs)};
+    if (ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov) < 0) return -1;
+    memcpy(&saved_regs, &regs, sizeof(regs));
+    for (int i = 0; i < num_params && i < 8; i++) regs.regs[i] = params[i];
+    regs.pc = func_addr; regs.regs[30] = 0; 
+    ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    ptrace(PTRACE_CONT, pid, NULL, NULL);
+    int status = 0; waitpid(pid, &status, WUNTRACED);
+    iov.iov_base = &saved_regs; ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    return 0;
+}
+
+int perform_self_injection(pid_t pid) {
+    char self_path[512] = {0};
+    if (readlink("/proc/self/exe", self_path, sizeof(self_path)) <= 0) return -1;
+    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
+    waitpid(pid, NULL, WUNTRACED);
+    
+    void* r_mmap = get_remote_func_addr(pid, "libc.so", (void*)mmap);
+    long m_params[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
+    ptrace_call_target(pid, (uintptr_t)r_mmap, m_params, 6);
+    
+    struct user_pt_regs regs; struct iovec iov = {&regs, sizeof(regs)};
+    ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    uintptr_t remote_mem = regs.regs[0];
+    
+    for (size_t i = 0; i < strlen(self_path) + 1; i += 4)
+        ptrace(PTRACE_POKETEXT, pid, (void*)(remote_mem + i), *(uint32_t*)(self_path + i));
+        
+    void* r_dlopen = get_remote_func_addr(pid, "libdl.so", (void*)dlopen);
+    if (!r_dlopen) r_dlopen = get_remote_func_addr(pid, "libc.so", (void*)dlopen);
+    
+    long d_params[] = {(long)remote_mem, RTLD_NOW};
+    ptrace_call_target(pid, (uintptr_t)r_dlopen, d_params, 2);
+    ptrace(PTRACE_DETACH, pid, NULL, 0);
+    return 0;
+}
+
+// =================================================================
+// 3. 配置管理
 // =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
@@ -274,7 +344,7 @@ void LoadConfig() {
 }
 
 // =================================================================
-// 3. 基础资源 (Hex Shader / Texture)
+// 4. 基础资源 (Hex Shader / Texture)
 // =================================================================
 class HexShader {
 public:
@@ -429,7 +499,7 @@ void UpdateFontHD(bool force = false) {
 }
 
 // =================================================================
-// 4. 核心物理交互引擎
+// 5. 核心物理交互引擎
 // =================================================================
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
@@ -592,7 +662,7 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
 }
 
 // =================================================================
-// 5. 纯悬浮预测模块 
+// 6. 纯悬浮预测模块 
 // =================================================================
 void DrawPurePredictEnemy() {
     static float alpha = 0.0f;
@@ -711,7 +781,7 @@ void DrawPurePredictHex() {
 }
 
 // =================================================================
-// 6. 整合覆盖层 (金币等级 ESP + 卡牌预警)
+// 7. 整合覆盖层 (金币等级 ESP + 卡牌预警)
 // =================================================================
 void DrawPlayersOverlay() {
     bool is_active = g_esp_level || g_card_warning;
@@ -1232,7 +1302,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件
+// 8. 顶级定制菜单 UI 控件
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -1585,7 +1655,8 @@ void DrawMenu() {
                 const char* warn_txt = (const char*)u8"你确定要立即强制退出游戏吗？";
                 float txt_w = ImGui::CalcTextSize(warn_txt).x;
                 ImGui::SetCursorPosX((ImGui::GetWindowSize().x - txt_w) * 0.5f);
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), warn_txt);
+                // 【已修复报错】：强制添加 "%s" 占位符解决编译器的 Wformat-security 警告
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", warn_txt);
                 
                 ImGui::Spacing(); 
                 ImGui::Spacing();
@@ -1618,9 +1689,9 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 8. 内部注入渲染核心线程 (由 SO 加载后触发)
+// 9. 内部注入后拉起的渲染循环
 // =================================================================
-void MainInternalRenderThread() {
+void MainRenderThread() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
@@ -1645,8 +1716,10 @@ void MainInternalRenderThread() {
         
         imgui.BeginFrame(); 
         
+        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
+        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
@@ -1678,7 +1751,7 @@ void MainInternalRenderThread() {
 }
 
 // =================================================================
-// 9. 双重身份识别入口 (二合一技术核心)
+// 10. 双重身份识别入口 (二合一技术核心)
 // =================================================================
 
 // 【身份 A】：作为 SO 库被游戏进程 dlopen 加载时，自动执行此构造函数
@@ -1691,7 +1764,7 @@ __attribute__((constructor)) void OnModuleLoaded() {
         // 关键判断：防止在注入器进程里拉起菜单
         if (strstr(cmd, TARGET_PACKAGE)) {
             LOGI("JKHelper 已成功注入金铲铲！正在拉起渲染线程...");
-            std::thread(MainInternalRenderThread).detach();
+            std::thread(MainRenderThread).detach();
         }
     }
 }
@@ -1701,7 +1774,7 @@ int main(int argc, char** argv) {
     printf("==================================================\n");
     printf("   JKHelper Universal All-In-One (监控模式启动)\n");
     printf("==================================================\n");
-    printf("[*] 正在静默监控游戏进程: %s\n", TARGET_PACKAGE);
+    printf("[*] 正在静默监控游戏进程...\n");
 
     while (true) {
         DIR* dir = opendir("/proc");
