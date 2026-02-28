@@ -1,3 +1,149 @@
+#ifdef BUILD_INJECTOR
+
+// =================================================================
+// 【第一部分：注入器与后台监控专属逻辑 (被编译为 ELF 独立程序)】
+// =================================================================
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <sys/user.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <dlfcn.h>
+#include <dirent.h>
+#include <elf.h>
+#include <sys/uio.h>
+#include <thread>
+#include <chrono>
+#include <fstream>
+#include <iostream>
+
+// 导入由 build.yml 中 xxd 动态生成的 .so 字节数组
+#include "payload.h"
+
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS 1
+#endif
+
+const char* TARGET_PACKAGE = "com.tencent.jkchess";
+const char* DROP_SO_PATH = "/data/local/tmp/libJKMenu.so";
+
+long get_module_base_remote(pid_t pid, const char* module_name) {
+    FILE *fp; long addr = 0; char filename[64], line[1024];
+    snprintf(filename, sizeof(filename), "/proc/%d/maps", pid);
+    fp = fopen(filename, "r");
+    if (fp) {
+        while (fgets(line, sizeof(line), fp)) {
+            if (strstr(line, module_name)) { addr = strtoul(line, NULL, 16); break; }
+        }
+        fclose(fp);
+    }
+    return addr;
+}
+
+void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func) {
+    long local_base = get_module_base_remote(getpid(), module_name);
+    long remote_base = get_module_base_remote(pid, module_name);
+    if (!local_base || !remote_base) return NULL;
+    return (void *)((uintptr_t)local_func - local_base + remote_base);
+}
+
+int ptrace_call_target(pid_t pid, uintptr_t func_addr, long *params, int num_params) {
+    struct user_pt_regs regs, saved_regs;
+    struct iovec iov = {&regs, sizeof(regs)};
+    if (ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov) < 0) return -1;
+    memcpy(&saved_regs, &regs, sizeof(regs));
+    for (int i = 0; i < num_params && i < 8; i++) regs.regs[i] = params[i];
+    regs.pc = func_addr; regs.regs[30] = 0; 
+    ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    ptrace(PTRACE_CONT, pid, NULL, NULL);
+    int status = 0; waitpid(pid, &status, WUNTRACED);
+    iov.iov_base = &saved_regs; ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    return 0;
+}
+
+int perform_injection(pid_t pid) {
+    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
+    waitpid(pid, NULL, WUNTRACED);
+    
+    void* r_mmap = get_remote_func_addr(pid, "libc.so", (void*)mmap);
+    long m_params[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
+    ptrace_call_target(pid, (uintptr_t)r_mmap, m_params, 6);
+    
+    struct user_pt_regs regs; struct iovec iov = {&regs, sizeof(regs)};
+    ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    uintptr_t remote_mem = regs.regs[0];
+    
+    // 把缓存在磁盘的 SO 路径写进进程
+    for (size_t i = 0; i < strlen(DROP_SO_PATH) + 1; i += 4)
+        ptrace(PTRACE_POKETEXT, pid, (void*)(remote_mem + i), *(uint32_t*)(DROP_SO_PATH + i));
+        
+    void* r_dlopen = get_remote_func_addr(pid, "libdl.so", (void*)dlopen);
+    if (!r_dlopen) r_dlopen = get_remote_func_addr(pid, "libc.so", (void*)dlopen);
+    
+    long d_params[] = {(long)remote_mem, RTLD_NOW};
+    ptrace_call_target(pid, (uintptr_t)r_dlopen, d_params, 2);
+    ptrace(PTRACE_DETACH, pid, NULL, 0);
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    printf("==================================================\n");
+    printf("   JKHelper 内嵌载荷引擎 (单文件版已启动)\n");
+    printf("==================================================\n");
+    
+    printf("[*] 正在释放内存中的 ImGui 载荷...\n");
+    FILE* f = fopen(DROP_SO_PATH, "wb");
+    if(f) {
+        fwrite(libJKMenu_so, 1, libJKMenu_so_len, f);
+        fclose(f);
+        chmod(DROP_SO_PATH, 0777);
+        printf("[+] 载荷释放成功 (%d 字节)\n", libJKMenu_so_len);
+    } else {
+        printf("[-] 无法释放载荷，请检查 Root 权限！\n");
+        return 1;
+    }
+
+    printf("[*] 正在静默监控游戏进程: %s\n", TARGET_PACKAGE);
+
+    while (true) {
+        DIR* dir = opendir("/proc");
+        if (!dir) continue;
+        struct dirent* ptr; pid_t pid = 0;
+        while ((ptr = readdir(dir)) != NULL) {
+            if (ptr->d_type == DT_DIR && atoi(ptr->d_name) > 0) {
+                char path[256]; snprintf(path, 256, "/proc/%s/cmdline", ptr->d_name);
+                std::ifstream f_cmd(path); std::string s; std::getline(f_cmd, s);
+                if (s.find(TARGET_PACKAGE) != std::string::npos) { pid = atoi(ptr->d_name); break; }
+            }
+        }
+        closedir(dir);
+
+        if (pid > 0) {
+            printf("[+] 发现金铲铲运行中 (PID: %d)，执行注入...\n", pid);
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            if (perform_injection(pid) == 0) {
+                printf("[+] 注入成功！请进入游戏画面查看 ImGui 菜单。\n");
+                while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
+                printf("[*] 游戏已退出，重新进入监控模式...\n");
+            } else {
+                printf("[-] 注入失败，重试中...\n");
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return 0;
+}
+
+#else
+
+// =================================================================
+// 【第二部分：ImGui 菜单界面与渲染逻辑 (被编译为 SO 内部插件)】
+// =================================================================
 #include <stdarg.h>
 #include "Global.h"
 #include "AImGui.h"
@@ -20,31 +166,7 @@
 #include <algorithm>
 #include <unistd.h>
 
-// =================================================================
-// 注入器所需的底层系统头文件
-// =================================================================
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/ptrace.h>
-#include <sys/wait.h>
-#include <sys/user.h>
-#include <sys/mman.h>
-#include <dlfcn.h>
-#include <dirent.h>
-#include <elf.h>
-#include <sys/uio.h>
-
-#ifndef NT_PRSTATUS
-#define NT_PRSTATUS 1
-#endif
-
-#define LOG_TAG "JKHelper_Universal"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-
-// =================================================================
-// 1. 全局配置与状态 (保留原版所有变量)
-// =================================================================
-const char* TARGET_PACKAGE = "com.tencent.jkchess"; // 目标游戏包名
+const char* TARGET_PACKAGE = "com.tencent.jkchess";
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
 bool g_predict_enemy = false;
@@ -60,18 +182,15 @@ bool g_boardLocked = false;
 bool g_auto_refresh = false;
 bool g_auto_buy_chosen = false;
 
-// 牌库显示状态与行列配置
 bool g_show_card_pool = false;
 int g_card_pool_rows = 2;
 int g_card_pool_cols = 5;
 float g_cardPoolX = 150.0f;
 float g_cardPoolY = 150.0f;
-// 【更新】将牌库的等比缩放拆分为 X轴 和 Y轴 独立缩放，实现全方向拉伸
 float g_cardPoolScaleX = 1.0f; 
 float g_cardPoolScaleY = 1.0f; 
 float g_cardPoolAlpha = 1.0f; 
 
-// 预警功能状态
 bool g_card_warning = false;
 bool g_warning_tiers[7] = {false, false, false, false, true, false, false}; 
 int g_warning_threshold = 6;   
@@ -83,7 +202,6 @@ float g_scale = 1.0f;
 float g_autoScale = 1.0f;        
 float g_current_rendered_size = 0.0f; 
 
-// 各大模块的坐标与缩放比例
 float g_boardScale = 2.2f;       
 float g_boardManualScale = 1.0f; 
 float g_startX = 400.0f;
@@ -132,73 +250,6 @@ int g_enemyBoard[4][7] = {
     {1, 0, 1, 0, 1, 0, 1}
 };
 
-// =================================================================
-// 2. 底层 ptrace 注入引擎核心逻辑 (放在前面防止未声明报错)
-// =================================================================
-
-long get_module_base_remote(pid_t pid, const char* module_name) {
-    FILE *fp; long addr = 0; char filename[64], line[1024];
-    snprintf(filename, sizeof(filename), "/proc/%d/maps", pid);
-    fp = fopen(filename, "r");
-    if (fp) {
-        while (fgets(line, sizeof(line), fp)) {
-            if (strstr(line, module_name)) { addr = strtoul(line, NULL, 16); break; }
-        }
-        fclose(fp);
-    }
-    return addr;
-}
-
-void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func) {
-    long local_base = get_module_base_remote(getpid(), module_name);
-    long remote_base = get_module_base_remote(pid, module_name);
-    if (!local_base || !remote_base) return NULL;
-    return (void *)((uintptr_t)local_func - local_base + remote_base);
-}
-
-int ptrace_call_target(pid_t pid, uintptr_t func_addr, long *params, int num_params) {
-    struct user_pt_regs regs, saved_regs;
-    struct iovec iov = {&regs, sizeof(regs)};
-    if (ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov) < 0) return -1;
-    memcpy(&saved_regs, &regs, sizeof(regs));
-    for (int i = 0; i < num_params && i < 8; i++) regs.regs[i] = params[i];
-    regs.pc = func_addr; regs.regs[30] = 0; 
-    ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
-    ptrace(PTRACE_CONT, pid, NULL, NULL);
-    int status = 0; waitpid(pid, &status, WUNTRACED);
-    iov.iov_base = &saved_regs; ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
-    return 0;
-}
-
-int perform_self_injection(pid_t pid) {
-    char self_path[512] = {0};
-    if (readlink("/proc/self/exe", self_path, sizeof(self_path)) <= 0) return -1;
-    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
-    waitpid(pid, NULL, WUNTRACED);
-    
-    void* r_mmap = get_remote_func_addr(pid, "libc.so", (void*)mmap);
-    long m_params[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
-    ptrace_call_target(pid, (uintptr_t)r_mmap, m_params, 6);
-    
-    struct user_pt_regs regs; struct iovec iov = {&regs, sizeof(regs)};
-    ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov);
-    uintptr_t remote_mem = regs.regs[0];
-    
-    for (size_t i = 0; i < strlen(self_path) + 1; i += 4)
-        ptrace(PTRACE_POKETEXT, pid, (void*)(remote_mem + i), *(uint32_t*)(self_path + i));
-        
-    void* r_dlopen = get_remote_func_addr(pid, "libdl.so", (void*)dlopen);
-    if (!r_dlopen) r_dlopen = get_remote_func_addr(pid, "libc.so", (void*)dlopen);
-    
-    long d_params[] = {(long)remote_mem, RTLD_NOW};
-    ptrace_call_target(pid, (uintptr_t)r_dlopen, d_params, 2);
-    ptrace(PTRACE_DETACH, pid, NULL, 0);
-    return 0;
-}
-
-// =================================================================
-// 3. 配置管理
-// =================================================================
 void SaveConfig() {
     std::ofstream out(g_configPath);
     if (out.is_open()) {
@@ -343,9 +394,6 @@ void LoadConfig() {
     }
 }
 
-// =================================================================
-// 4. 基础资源 (Hex Shader / Texture)
-// =================================================================
 class HexShader {
 public:
     GLuint program = 0; 
@@ -498,9 +546,6 @@ void UpdateFontHD(bool force = false) {
     g_current_rendered_size = targetSize;
 }
 
-// =================================================================
-// 5. 核心物理交互引擎
-// =================================================================
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
                            bool& isDragging, bool& isScaling, 
@@ -661,9 +706,6 @@ void DrawCloseHandle(ImDrawList* d, ImVec2 p_handle, bool* isOpen) {
     d->AddLine(p_handle + ImVec2(cr*0.35f, -cr*0.35f), p_handle - ImVec2(cr*0.35f, -cr*0.35f), IM_COL32_WHITE, 2.5f * g_autoScale);
 }
 
-// =================================================================
-// 6. 纯悬浮预测模块 
-// =================================================================
 void DrawPurePredictEnemy() {
     static float alpha = 0.0f;
     alpha = ImLerp(alpha, g_predict_enemy ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
@@ -780,9 +822,6 @@ void DrawPurePredictHex() {
     }
 }
 
-// =================================================================
-// 7. 整合覆盖层 (金币等级 ESP + 卡牌预警)
-// =================================================================
 void DrawPlayersOverlay() {
     bool is_active = g_esp_level || g_card_warning;
     static float alpha = 0.0f;
@@ -881,9 +920,6 @@ void DrawPlayersOverlay() {
     }
 }
 
-// =================================================================
-// 自动拿牌悬浮窗 & 绚丽霓虹按钮
-// =================================================================
 bool AnimatedNeonButton(ImDrawList* d, const char* label, ImVec2 pos, ImVec2 size, int id, float scale, bool* v) {
     ImGuiIO& io = ImGui::GetIO();
     ImRect bb(pos, pos + size);
@@ -986,9 +1022,6 @@ void DrawAutoBuyWindow() {
     AnimatedNeonButton(d, (const char*)u8"自动拿天选", b2_pos, ImVec2(btnW, btnH), 102, g_autoW_Scale, &g_auto_buy_chosen);
 }
 
-// =================================================================
-// 6.5 高级牌库显示窗口
-// =================================================================
 void DrawCardPool() {
     static float alpha = 0.0f;
     alpha = ImLerp(alpha, g_show_card_pool ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
@@ -997,7 +1030,6 @@ void DrawCardPool() {
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
-    // 独立 X和Y 缩放变量
     static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scaleX = g_cardPoolScaleX, t_scaleY = g_cardPoolScaleY;
     static bool first = true; 
     
@@ -1095,9 +1127,6 @@ void DrawCardPool() {
     }
 }
 
-// =================================================================
-// 棋盘、备战席、商店渲染
-// =================================================================
 void DrawBoard() {
     if (!g_esp_board) return;
     ImDrawList* d = ImGui::GetForegroundDrawList();
@@ -1301,9 +1330,6 @@ void DrawShop() {
     }
 }
 
-// =================================================================
-// 8. 顶级定制菜单 UI 控件
-// =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -1655,7 +1681,6 @@ void DrawMenu() {
                 const char* warn_txt = (const char*)u8"你确定要立即强制退出游戏吗？";
                 float txt_w = ImGui::CalcTextSize(warn_txt).x;
                 ImGui::SetCursorPosX((ImGui::GetWindowSize().x - txt_w) * 0.5f);
-                // 【已修复报错】：强制添加 "%s" 占位符解决编译器的 Wformat-security 警告
                 ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", warn_txt);
                 
                 ImGui::Spacing(); 
@@ -1688,9 +1713,6 @@ void DrawMenu() {
     ImGui::End();
 }
 
-// =================================================================
-// 9. 内部注入后拉起的渲染循环
-// =================================================================
 void MainRenderThread() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
@@ -1750,78 +1772,18 @@ void MainRenderThread() {
     if (it.joinable()) it.join(); 
 }
 
-// =================================================================
-// 10. 双重身份识别入口 (二合一技术核心)
-// =================================================================
-
-// 【身份 A】：作为 SO 库被游戏进程 dlopen 加载时，自动执行此构造函数
+// 被注入器加载后执行的真正的插件入口点
 __attribute__((constructor)) void OnModuleLoaded() {
     char cmd[256] = {0};
     FILE* f = fopen("/proc/self/cmdline", "r");
     if (f) {
         fgets(cmd, sizeof(cmd), f); 
         fclose(f);
-        // 关键判断：防止在注入器进程里拉起菜单
-        if (strstr(cmd, TARGET_PACKAGE)) {
-            LOGI("JKHelper 已成功注入金铲铲！正在拉起渲染线程...");
+        if (strstr(cmd, "com.tencent.jkchess")) {
+            __android_log_print(ANDROID_LOG_INFO, "JKHelper", "ImGui 载荷已成功注入，拉起渲染线程...");
             std::thread(MainRenderThread).detach();
         }
     }
 }
 
-// 【身份 B】：作为 ELF 独立可执行程序运行，充当“自动监控注入守护进程”
-int main(int argc, char** argv) {
-    printf("==================================================\n");
-    printf("   JKHelper Universal All-In-One (监控模式启动)\n");
-    printf("==================================================\n");
-    printf("[*] 正在静默监控游戏进程...\n");
-
-    while (true) {
-        DIR* dir = opendir("/proc");
-        if (!dir) continue;
-        struct dirent* ptr;
-        pid_t pid = 0;
-        
-        // 扫描所有进程，寻找游戏包名
-        while ((ptr = readdir(dir)) != NULL) {
-            if (ptr->d_type == DT_DIR && atoi(ptr->d_name) > 0) {
-                char cmdpath[256];
-                snprintf(cmdpath, 256, "/proc/%s/cmdline", ptr->d_name);
-                std::ifstream f(cmdpath);
-                std::string s; std::getline(f, s);
-                if (s.find(TARGET_PACKAGE) != std::string::npos) {
-                    pid = atoi(ptr->d_name);
-                    break;
-                }
-            }
-        }
-        closedir(dir);
-
-        // 如果找到了游戏进程
-        if (pid > 0) {
-            printf("[+] 捕捉到目标进程 PID: %d，准备执行自我注入...\n", pid);
-            // 必须给游戏启动预留足够时间（约 5 秒），过早注入会导致游戏闪退
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            
-            if (perform_self_injection(pid) == 0) {
-                printf("[+] 注入成功！请进入游戏画面查看 ImGui 菜单。\n");
-                
-                // 陷入死循环等待，只要游戏还活着，就不重复注入
-                while (kill(pid, 0) == 0) {
-                    std::this_thread::sleep_for(std::chrono::seconds(3));
-                }
-                printf("[*] 游戏已关闭，重新回到后台监控状态...\n");
-            } else {
-                printf("[-] 注入失败，可能原因：\n");
-                printf("    1. 没有授予 Root 权限 (su)\n");
-                printf("    2. 反作弊检测拦截了 ptrace 调用\n");
-                // 失败后等待较长时间再重试
-                std::this_thread::sleep_for(std::chrono::seconds(5));
-            }
-        }
-        
-        // 没找到游戏时，每秒扫描一次
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    return 0;
-}
+#endif
