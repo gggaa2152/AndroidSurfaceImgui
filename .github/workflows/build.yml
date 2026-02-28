@@ -20,29 +20,26 @@ jobs:
           echo "[*] 正在全自动拉取并修复 Dobby Hook 框架..."
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【修复 1】：修复 Dobby 源码中 OSMemory 未定义的逻辑错误
-          # 不再手动定义类（防止重定义），而是强行插入缺失的头文件引用
-          sed -i '1i #include "PlatformUnifiedInterface/platform.h"' third_party/dobby/common/os_arch_features.h || true
+          # 【外科手术 1】：解决 OSMemory 未定义问题
+          # 强行在头部插入缺失的系统定义头文件
+          sed -i '1i #include "PlatformUnifiedInterface/platform.h"' third_party/dobby/common/os_arch_features.h
           
-          # 【修复 2】：热修复汇编代码，适配 NDK 27 / Clang 18 的严苛语法
-          # 将旧的 @PAGE 寻址替换为新版标准 ELF 寻址
-          sed -i 's/adrp x17, common_closure_bridge_handler@PAGE/adrp x17, common_closure_bridge_handler/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
-          sed -i 's/add x17, x17, common_closure_bridge_handler@PAGEOFF/add x17, x17, :lo12:common_closure_bridge_handler/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
-          
-          sed -i 's/adrp x17, get_routing_bridge_next_hop@PAGE/adrp x17, get_routing_bridge_next_hop/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
-          sed -i 's/add x17, x17, get_routing_bridge_next_hop@PAGEOFF/add x17, x17, :lo12:get_routing_bridge_next_hop/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
+          # 【外科手术 2】：热修复 ADRP 汇编指令，适配 NDK 27 严苛语法
+          # 移除旧式的 @PAGE 寻址，替换为新版编译器支持的标准语法
+          sed -i 's/@PAGE//g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          sed -i 's/@PAGEOFF/:lo12:/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
 
-          # 提取头文件供我们的 internal_hook.cc 使用
+          # 提取头文件供 internal_hook.cc 使用，保持原路径兼容性
           mkdir -p includes
           cp third_party/dobby/include/dobby.h includes/
           
           cd third_party/dobby
           mkdir build && cd build
           
+          # 使用云端最新的 NDK 27
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 【修复 3】：关键 CMake 参数
-          # 开启全局位置无关代码 (PIC)，并禁用会导致重定义的 SymbolResolver 插件
+          # 开启全局位置无关代码 (PIC)
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
