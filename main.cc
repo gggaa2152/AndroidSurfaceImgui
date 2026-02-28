@@ -19,30 +19,37 @@
 #include <android/log.h>
 #include <algorithm>
 #include <unistd.h>
+
+// =================================================================
+// 【新增】底层系统级头文件与驱动宏
+// =================================================================
 #include <mutex>         
 #include <atomic>        
 #include <linux/input.h> 
 #include <fcntl.h>       
-
-// 【新增】引入 Paradise 驱动头文件
 #include "driver.h"
+
+#define LOG_TAG "JKHelper"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // =================================================================
 // 1. 全局配置与状态
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
-// 【新增】底层驱动与触控全局变量
+// 【新增】全局线程控制与驱动状态
 std::atomic<bool> g_running{true};
 Paradise_hook_driver *g_driver = nullptr;
 pid_t g_gamePID = -1;
-uint64_t g_libBase = 0;
+uintptr_t g_libBase = 0;
 int g_touch_fd = -1;
+char g_last_status[256] = "正在等待初始化...";
 
-// 【极其重要】：请把开发者选项里“指针位置”测出来的 5 张牌的屏幕坐标填在下面！
+// 【新增】商店 5 张牌的物理坐标（请根据自己的手机分辨率修改测试）
 int g_shop_coords[5][2] = {
-    {1150, 1977},   // 第 1 张牌的 X, Y
-    {1600, 1977},   // 第 2 张牌的 X, Y
+    {1150, 1977},  // 第 1 张牌的 X, Y
+    {1600, 1977},  // 第 2 张牌的 X, Y
     {2050, 1977},  // 第 3 张牌的 X, Y
     {2500, 1977},  // 第 4 张牌的 X, Y
     {2950, 1977}   // 第 5 张牌的 X, Y
@@ -131,75 +138,108 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 1.5 底层硬件触控引擎
+// 1.5 【新增】增强型底层硬件触控逻辑
 // =================================================================
 void InitTouchDevice() {
-    for (int i = 0; i < 25; i++) {
+    LOGI("开始搜寻触控设备节点...");
+    for (int i = 0; i < 30; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
-        int fd = open(path, O_RDWR);
+        int fd = open(path, O_RDWR | O_NONBLOCK);
         if (fd >= 0) {
             unsigned long bitmask[EV_MAX / (sizeof(long) * 8) + 1] = {0};
             ioctl(fd, EVIOCGBIT(0, sizeof(bitmask)), bitmask);
             if (bitmask[EV_ABS / (sizeof(long) * 8)] & (1UL << (EV_ABS % (sizeof(long) * 8)))) {
                 g_touch_fd = fd;
+                LOGI("成功匹配触控设备: %s (fd: %d)", path, fd);
                 return;
             }
             close(fd);
         }
     }
+    LOGE("未能在 /dev/input/ 目录下找到具备绝对坐标能力的设备！");
 }
 
 void HardwareTap(int x, int y) {
-    if (g_touch_fd < 0) return;
-    struct input_event ev[6];
-    memset(ev, 0, sizeof(ev));
+    if (g_touch_fd < 0) {
+        LOGE("触控失败：未找到有效触控设备句柄");
+        return;
+    }
+    
+    LOGI("执行点击动作: X=%d, Y=%d", x, y);
+    static int tracking_id = 100;
+    struct input_event ev[12];
+    int count = 0;
 
-    // 屏幕按压事件注入
-    ev[0].type = EV_ABS; ev[0].code = ABS_MT_POSITION_X; ev[0].value = x;
-    ev[1].type = EV_ABS; ev[1].code = ABS_MT_POSITION_Y; ev[1].value = y;
-    ev[2].type = EV_KEY; ev[2].code = BTN_TOUCH; ev[2].value = 1;
-    ev[3].type = EV_SYN; ev[3].code = SYN_REPORT; ev[3].value = 0;
-    write(g_touch_fd, ev, sizeof(struct input_event) * 4);
+    // 按下阶段
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, 0 };
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, tracking_id++ };
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_X, x };
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_Y, y };
+    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 1 };
+    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
+    if (write(g_touch_fd, ev, sizeof(struct input_event) * count) < 0) {
+        LOGE("写入按下信号失败, errno: %d", errno);
+    }
 
-    usleep(15000); // 维持 15 毫秒压感
+    usleep(25000); 
 
-    // 屏幕抬起事件注入
-    memset(ev, 0, sizeof(ev));
-    ev[0].type = EV_KEY; ev[0].code = BTN_TOUCH; ev[0].value = 0;
-    ev[1].type = EV_SYN; ev[1].code = SYN_REPORT; ev[1].value = 0;
-    write(g_touch_fd, ev, sizeof(struct input_event) * 2);
+    // 抬起阶段
+    count = 0;
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, 0 };
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, -1 };
+    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 0 };
+    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
+    if (write(g_touch_fd, ev, sizeof(struct input_event) * count) < 0) {
+        LOGE("写入抬起信号失败, errno: %d", errno);
+    }
 }
 
-// 异步线程购买商店里的5张牌，避免卡死 UI
 void TestBuyAllCards() {
     std::thread([]() {
+        LOGI("触发一键拿牌测试流程...");
         for (int i = 0; i < 5; i++) {
             HardwareTap(g_shop_coords[i][0], g_shop_coords[i][1]);
-            std::this_thread::sleep_for(std::chrono::milliseconds(60)); // 每张牌点击间隔60ms
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+        LOGI("测试流程结束");
     }).detach();
 }
 
-// 后台驱动挂载与数据更新线程
+// =================================================================
+// 1.6 【新增】后台驱动逻辑同步线程
+// =================================================================
 void GameLogicThread() {
     InitTouchDevice();
-
-    // 实例化 Paradise 驱动
-    g_driver = new Paradise_hook_driver(); 
+    
+    LOGI("正在连接 Paradise 驱动...");
+    try {
+        g_driver = new Paradise_hook_driver();
+        LOGI("Paradise 驱动连接成功！");
+    } catch (...) {
+        LOGE("Paradise 驱动创建失败，可能未加载 .ko 或重启系统调用被拦截");
+        snprintf(g_last_status, sizeof(g_last_status), "错误：驱动连接失败");
+    }
 
     while (g_running) {
-        if (g_gamePID <= 0) {
-            // 利用驱动获取进程 PID 和基址
+        if (g_gamePID <= 0 && g_driver) {
             g_gamePID = g_driver->get_pid("com.tencent.jkchess");
             if (g_gamePID > 0) {
+                LOGI("找到游戏进程 PID: %d", g_gamePID);
                 g_driver->initialize(g_gamePID);
                 g_libBase = g_driver->get_module_base("libil2cpp.so");
+                if (g_libBase > 0) {
+                    LOGI("成功获取 libil2cpp 基址: 0x%lx", g_libBase);
+                    snprintf(g_last_status, sizeof(g_last_status), "就绪 | 基址: 0x%lx", g_libBase);
+                } else {
+                    LOGE("无法获取模块基址");
+                    snprintf(g_last_status, sizeof(g_last_status), "警告：无法获取基址");
+                }
+            } else {
+                snprintf(g_last_status, sizeof(g_last_status), "正在寻找游戏进程...");
             }
-        } else {
-            // 这里留空，未来放 ReadMem 和逻辑判断
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 }
 
@@ -1483,7 +1523,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver); 
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.1 (极速外设版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.1 (极速纯净版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         g_menuX = ImGui::GetWindowPos().x; 
         g_menuY = ImGui::GetWindowPos().y;
         
@@ -1505,29 +1545,31 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            // ==================================
-            // 【新增】底层系统面板，展示连接状态与测试按钮
-            // ==================================
+            // =================================================================
+            // 【新增】底层系统面板，展示驱动状态、触控状态与测试按钮
+            // =================================================================
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), (const char*)u8"当前状态: %s", g_last_status);
+            
             if (g_gamePID > 0) {
                 ImGui::TextColored(ImVec4(0.0f, 0.8f, 1.0f, 1.0f), (const char*)u8"[+] Paradise 驱动已连接 PID: %d", g_gamePID);
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), (const char*)u8"[-] 等待游戏开启...");
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), (const char*)u8"[-] 驱动等待游戏开启...");
             }
 
             if (g_touch_fd >= 0) {
                 ImGui::TextColored(ImVec4(0.0f, 0.8f, 1.0f, 1.0f), (const char*)u8"[+] 触控引擎就绪 (fd: %d)", g_touch_fd);
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), (const char*)u8"[-] 触控引擎未就绪(请赋予 root 权限)");
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), (const char*)u8"[-] 触控引擎未就绪(无 Root 权限)");
             }
 
             ImGui::Spacing();
-            if (ImGui::Button((const char*)u8"测试：一键秒拿 5 张牌", ImVec2(-1, 55 * g_autoScale))) {
+            if (ImGui::Button((const char*)u8"测试：硬件级一键秒拿 5 张牌", ImVec2(-1, 55 * g_autoScale))) {
                 TestBuyAllCards();
             }
             ImGui::Spacing();
             ImGui::Separator();
-            // ==================================
-            
+            // =================================================================
+
             static bool header_pred = true;
             if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
@@ -1645,16 +1687,14 @@ int main() {
     LoadConfig(); 
     UpdateFontHD(true);  
     
-    // 【修改点】使用全局变量 g_running，让后台线程与UI线程同步退出
+    // 【修改点】使用全局 g_running 替代原有的局部变量 running
+    std::thread logicThread(GameLogicThread);
     std::thread it([&] { 
         while(g_running) { 
             imgui.ProcessInputEvent(); 
             std::this_thread::yield(); 
         } 
     });
-
-    // 【新增】启动独立的数据逻辑线程，用来处理驱动获取和触控初始化
-    std::thread logicThread(GameLogicThread);
 
     while (g_running) {
         if (g_needUpdateFontSafe) { 
@@ -1664,8 +1704,10 @@ int main() {
         
         imgui.BeginFrame(); 
         
+        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
+        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
