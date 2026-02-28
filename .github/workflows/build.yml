@@ -11,12 +11,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Stable NDK 25
-        run: |
-          echo "[*] 正在全自动下载并安装稳定的 NDK r25c..."
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653"
-          echo "[+] NDK 25 安装成功！"
-
       - name: Download stb_image.h
         run: |
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
@@ -24,40 +18,40 @@ jobs:
       - name: Auto Setup Dobby Framework
         run: |
           echo "[*] 正在全自动拉取并编译 Dobby Hook 框架..."
-          git clone https://github.com/jmpews/Dobby.git third_party/dobby
+          git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【核弹级修复 1】：作者近期的代码改坏了安卓编译。我们强行回退到 2023 年底的绝对稳定版本！
-          cd third_party/dobby
-          git checkout $(git rev-list -n 1 --before="2023-10-01" HEAD)
-          cd ../../
+          # 【核弹级修复 1】：修补 Dobby 官方最新版的 OSMemory 报错Bug
+          sed -i 's/!OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)/mprotect(page, 4096, 7) != 0/g' third_party/dobby/common/os_arch_features.h || true
+          sed -i 's/OSMemory::PageSize()/4096/g' third_party/dobby/common/os_arch_features.h || true
+          sed -i '1i #include <sys/mman.h>' third_party/dobby/common/os_arch_features.h || true
           
-          # 【自动修复头文件】：全自动将头文件放入 includes 目录，兼容你的 internal_hook.cc
+          # 【核弹级修复 2】：修补老版本中 a.start 忘记加括号的语法拼写 Bug
+          sed -i 's/a.start < b.start/a.start() < b.start()/g' third_party/dobby/source/Backend/UserMode/PlatformUtil/Linux/ProcessRuntimeUtility.cc || true
+          
+          # 提取头文件供我们的 external_hook.cc 使用
           mkdir -p includes
           cp third_party/dobby/include/dobby.h includes/
           
           cd third_party/dobby
           mkdir build && cd build
           
-          # 明确指定刚下载的 NDK 25 路径
-          NDK_PATH=$ANDROID_HOME/ndk/25.2.9519653
+          # 直接使用最新的 NDK
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 【核弹级修复 2】：强行提升 API 级别到 28，并强行注入 -fPIC 解决 ADRP 汇编报错！
+          # 开启全局 PIC 支持（解决汇编报错），并关闭不必要的冲突插件
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
             -DCMAKE_ANDROID_NDK=$NDK_PATH \
-            -DANDROID_PLATFORM=android-28 \
-            -DCMAKE_C_FLAGS="-fPIC" \
-            -DCMAKE_CXX_FLAGS="-fPIC" \
-            -DCMAKE_ASM_FLAGS="-fPIC" \
-            -DDOBBY_GENERATE_SHARED=OFF
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DDOBBY_GENERATE_SHARED=OFF \
+            -DPlugin.SymbolResolver=OFF
           make -j4
           echo "[+] Dobby 编译完成！"
 
       - name: Compile 64bit Dual-End Binary
         run: |
-          # 强制使用极其稳定的 NDK 25 来编译我们的代码，完美兼容 Dobby 汇编
-          NDK_PATH=$ANDROID_HOME/ndk/25.2.9519653
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           BIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
