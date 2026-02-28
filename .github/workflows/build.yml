@@ -15,54 +15,6 @@ jobs:
         run: |
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
-      - name: Auto Setup Dobby Framework
-        run: |
-          echo "[*] 正在全自动拉取并执行源码级热修复..."
-          git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
-          
-          # 【核弹级修复 1】：彻底解决 arm64 汇编 NDK 27 兼容性
-          # 策略：直接将 Dobby 源码中的旧语法全文替换为 Clang 18 标准语法
-          echo "[*] 正在修正 arm64 汇编指令..."
-          ASM_DIR="third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64"
-          
-          # 修复 common_closure_bridge_handler 相关的跳转
-          sed -i 's/common_closure_bridge_handler@PAGE/common_closure_bridge_handler/g' $ASM_DIR/*.asm
-          sed -i 's/common_closure_bridge_handler@PAGEOFF/:lo12:common_closure_bridge_handler/g' $ASM_DIR/*.asm
-          
-          # 修复 get_routing_bridge_next_hop 相关的跳转
-          sed -i 's/get_routing_bridge_next_hop@PAGE/get_routing_bridge_next_hop/g' $ASM_DIR/*.asm
-          sed -i 's/get_routing_bridge_next_hop@PAGEOFF/:lo12:get_routing_bridge_next_hop/g' $ASM_DIR/*.asm
-
-          # 【核弹级修复 2】：彻底平替 OSMemory
-          # 策略：不再尝试包含头文件，直接在源码里把报错的调用直接改成系统原生函数
-          echo "[*] 正在修补内存管理 C++ 源码..."
-          HEADER="third_party/dobby/common/os_arch_features.h"
-          sed -i '1i #include <sys/mman.h>' $HEADER
-          sed -i 's/OSMemory::PageSize()/4096/g' $HEADER
-          # 修正逻辑：如果 mprotect 失败（不等于0），则返回 false/执行报错逻辑
-          sed -i 's/!OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)/mprotect(page, 4096, 7) != 0/g' $HEADER
-
-          # 自动补齐 includes 目录供项目使用
-          mkdir -p includes
-          cp third_party/dobby/include/dobby.h includes/
-          
-          cd third_party/dobby
-          mkdir build && cd build
-          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
-          
-          # 禁用干扰插件，开启 PIC
-          cmake .. \
-            -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
-            -DCMAKE_ANDROID_NDK=$NDK_PATH \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DDOBBY_GENERATE_SHARED=OFF \
-            -DPlugin.SymbolResolver=OFF \
-            -DPlugin.Android.BionicLinkerUtil=OFF \
-            -DDOBBY_DEBUG=OFF
-          make -j4
-          echo "[+] Dobby 静态库编译完成！"
-
       - name: Compile 64bit Dual-End Binary
         run: |
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
@@ -70,15 +22,16 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译内部 Hook SO
+          # 1. 编译内部 Hook SO (直接链接根目录的 libdobby.a 和 dobby.h)
+          # -I. 表示在根目录寻找头文件
           $CXX -O3 -shared -fPIC \
             internal_hook.cc \
-            -I. -I./includes -I./third_party/dobby/include \
-            ./third_party/dobby/build/libdobby.a \
+            -I. \
+            ./libdobby.a \
             -llog \
             -o libJKHook.so
 
-          # 2. 将 .so 转换为内嵌数组
+          # 2. 将 .so 转换为内嵌数组供主程序释放
           xxd -i libJKHook.so > hook_payload.h
 
           # 3. 编译 zstd
@@ -88,10 +41,9 @@ jobs:
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 4. 编译最终程序 (JKHelper_Daemon)
+          # 4. 编译最终产物 JKHelper_Daemon
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
-            -Wno-error=narrowing -Wno-format-security \
             -I. -I./includes -I./modules -I./third_party \
             -I./third_party/imgui -I./third_party/imgui/backends \
             -I./third_party/zstd/lib \
