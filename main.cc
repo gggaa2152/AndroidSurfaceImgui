@@ -1,36 +1,145 @@
-#ifdef BUILD_INJECTOR
+#include <stdarg.h>
+#include "Global.h"
+#include "AImGui.h"
+#include "imgui_internal.h"
+#include "imgui_impl_opengl3.h"
 
-// =================================================================
-// 【第一部分：注入器与后台监控专属逻辑 (被编译为 ELF 独立程序)】
-// =================================================================
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h" 
+
+#include <thread>      
+#include <cmath>       
+#include <fstream>      
+#include <string>
+#include <vector>
+#include <map>
+#include <chrono>
+#include <atomic>
+#include <GLES3/gl3.h>
+#include <EGL/egl.h>    
+#include <android/log.h>
+#include <algorithm>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+// --- 底层注入依赖 ---
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/user.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <dlfcn.h>
-#include <dirent.h>
-#include <elf.h>
 #include <sys/uio.h>
-#include <thread>
-#include <chrono>
-#include <fstream>
-#include <iostream>
 
-// 导入由 build.yml 中 xxd 动态生成的 .so 字节数组
-#include "payload.h"
+// 这个头文件会在编译时由 build.yml 自动生成 (内含 libJKHook_so 数组)
+#include "hook_payload.h"
 
 #ifndef NT_PRSTATUS
 #define NT_PRSTATUS 1
 #endif
 
-const char* TARGET_PACKAGE = "com.tencent.jkchess";
-const char* DROP_SO_PATH = "/data/data/com.tencent.jkchess/cache/libJKMenu.so";
+#define LOG_TAG "JKHelper_Daemon"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+const char* TARGET_PACKAGE = "com.tencent.jkchess";
+const char* DROP_SO_PATH = "/data/data/com.tencent.jkchess/cache/libJKHook.so";
+const char* g_configPath = "/data/jkchess_config.ini"; 
+
+std::atomic<bool> g_game_running(false);
+
+// =================================================================
+// 1. 全局配置与状态 (保留原版所有变量)
+// =================================================================
+bool g_predict_enemy = false;
+bool g_predict_hex = false;
+bool g_esp_board = true;
+bool g_esp_bench = false; 
+bool g_esp_shop = false;  
+bool g_esp_level = false; 
+bool g_auto_buy = false;
+bool g_instant = false;
+bool g_boardLocked = false; 
+
+bool g_auto_refresh = false;
+bool g_auto_buy_chosen = false;
+
+// 牌库显示状态与行列配置
+bool g_show_card_pool = false;
+int g_card_pool_rows = 2;
+int g_card_pool_cols = 5;
+float g_cardPoolX = 150.0f;
+float g_cardPoolY = 150.0f;
+float g_cardPoolScaleX = 1.0f; 
+float g_cardPoolScaleY = 1.0f; 
+float g_cardPoolAlpha = 1.0f; 
+
+// 预警功能状态
+bool g_card_warning = false;
+bool g_warning_tiers[7] = {false, false, false, false, true, false, false}; 
+int g_warning_threshold = 6;   
+
+bool g_menuCollapsed = false; 
+float g_anim[25] = {0.0f}; 
+
+float g_scale = 1.0f;            
+float g_autoScale = 1.0f;        
+float g_current_rendered_size = 0.0f; 
+
+// 各大模块的坐标与缩放比例
+float g_boardScale = 2.2f;       
+float g_boardManualScale = 1.0f; 
+float g_startX = 400.0f;
+float g_startY = 400.0f;    
+float g_menuX = 100.0f;
+float g_menuY = 100.0f;
+float g_menuW = 350.0f;
+float g_menuH = 550.0f; 
+
+float g_benchX = 200.0f;
+float g_benchY = 700.0f;
+float g_benchScale = 1.0f;
+
+float g_shopX = 200.0f;
+float g_shopY = 850.0f;
+float g_shopScale = 1.0f;
+
+float g_enemy_X = 100.0f;
+float g_enemy_Y = 100.0f;
+float g_enemy_Scale = 1.0f;
+
+float g_hex_X = 100.0f;
+float g_hex_Y = 220.0f;
+float g_hex_Scale = 1.0f;
+
+float g_autoW_X = 300.0f;
+float g_autoW_Y = 1000.0f;
+float g_autoW_Scale = 1.0f;
+
+float g_players_X = 1500.0f;
+float g_players_Y = 200.0f;
+float g_players_Scale = 1.0f;
+
+GLuint g_heroTexture = 0;           
+bool g_textureLoaded = false;    
+bool g_resLoaded = false; 
+bool g_needUpdateFontSafe = false;
+
+ImFont* g_mainFont = nullptr;
+ImFont* g_hugeNumFont = nullptr;
+
+int g_enemyBoard[4][7] = {
+    {1, 0, 0, 0, 1, 0, 0}, 
+    {0, 1, 0, 1, 0, 0, 0},
+    {0, 0, 0, 0, 0, 1, 0}, 
+    {1, 0, 1, 0, 1, 0, 1}
+};
+
+// =================================================================
+// 2. 底层 ptrace 注入引擎
+// =================================================================
 long get_module_base_remote(pid_t pid, const char* module_name) {
     FILE *fp; long addr = 0; char filename[64], line[1024];
     snprintf(filename, sizeof(filename), "/proc/%d/maps", pid);
@@ -109,7 +218,6 @@ int perform_injection(pid_t pid, const char* drop_path) {
     waitpid(pid, NULL, WUNTRACED);
     
     void* r_mmap = get_remote_func_addr(pid, "libc.so", (void*)mmap);
-    // 【修复核心】：去除 PROT_EXEC，防止 Android W^X 安全策略引发闪退
     long m_params[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
     long remote_mem = ptrace_call_target(pid, (uintptr_t)r_mmap, m_params, 6);
     
@@ -132,198 +240,13 @@ int perform_injection(pid_t pid, const char* drop_path) {
     
     ptrace(PTRACE_DETACH, pid, NULL, 0);
     
-    if (handle == 0) {
-        printf("[-] dlopen 加载被拒绝！\n");
-        return -1;
-    }
-    printf("[+] dlopen 执行成功！基址: 0x%lx\n", handle);
+    if (handle == 0) return -1;
     return 0;
 }
 
-int main(int argc, char** argv) {
-    printf("==================================================\n");
-    printf("   JKHelper 内嵌载荷引擎 (防闪退增强版)\n");
-    printf("==================================================\n");
-    
-    printf("[*] 正在释放内存载荷到沙盒...\n");
-    FILE* f = fopen(DROP_SO_PATH, "wb");
-    if(f) {
-        fwrite(libJKMenu_so, 1, libJKMenu_so_len, f);
-        fclose(f);
-        
-        struct stat st;
-        char app_dir[256];
-        snprintf(app_dir, sizeof(app_dir), "/data/data/%s", TARGET_PACKAGE);
-        if (stat(app_dir, &st) == 0) {
-            chown(DROP_SO_PATH, st.st_uid, st.st_gid);
-        }
-        chmod(DROP_SO_PATH, 0755);
-        printf("[+] 载荷部署完毕 (%d 字节)\n", libJKMenu_so_len);
-    } else {
-        printf("[-] 无法释放载荷，请检查 Root 权限！\n");
-        return 1;
-    }
-
-    printf("[*] 正在静默监控主进程...\n");
-
-    while (true) {
-        DIR* dir = opendir("/proc");
-        if (!dir) continue;
-        struct dirent* ptr; pid_t pid = 0;
-        
-        while ((ptr = readdir(dir)) != NULL) {
-            if (ptr->d_type == DT_DIR && atoi(ptr->d_name) > 0) {
-                char path[256]; snprintf(path, 256, "/proc/%s/cmdline", ptr->d_name);
-                std::ifstream f_cmd(path); std::string s; std::getline(f_cmd, s);
-                
-                if (s.find(TARGET_PACKAGE) != std::string::npos && s.find(":") == std::string::npos) { 
-                    pid_t temp_pid = atoi(ptr->d_name);
-                    if (get_module_base_remote(temp_pid, "libil2cpp.so") > 0) {
-                        pid = temp_pid; 
-                        break; 
-                    }
-                }
-            }
-        }
-        closedir(dir);
-
-        if (pid > 0) {
-            printf("[+] 发现游戏引擎完全启动 (PID: %d)\n", pid);
-            
-            printf("[*] 等待游戏主线程空闲以防死锁...\n");
-            int wait_times = 0;
-            while (!is_safe_to_inject(pid) && wait_times < 15) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                wait_times++;
-            }
-            
-            printf("[*] 时机成熟，执行安全注入...\n");
-            if (perform_injection(pid, DROP_SO_PATH) == 0) {
-                printf("[+] 注入成功！请在游戏画面查看菜单。\n");
-                while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
-                printf("[*] 游戏已退出，重新进入监控模式...\n");
-            } else {
-                printf("[-] 注入失败，10秒后重试...\n");
-                std::this_thread::sleep_for(std::chrono::seconds(10));
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    return 0;
-}
-
-#else
-
 // =================================================================
-// 【第二部分：ImGui 菜单界面与渲染逻辑 (被编译为 SO 内部插件)】
+// 3. 配置管理与基础资源
 // =================================================================
-#include <stdarg.h>
-#include "Global.h"
-#include "AImGui.h"
-#include "imgui_internal.h"
-#include "imgui_impl_opengl3.h"
-
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h" 
-
-#include <thread>      
-#include <cmath>       
-#include <fstream>      
-#include <string>
-#include <vector>
-#include <map>
-#include <chrono>
-#include <GLES3/gl3.h>
-#include <EGL/egl.h>    
-#include <android/log.h>
-#include <algorithm>
-#include <unistd.h>
-#include <pthread.h> // 【新增】底层线程库
-
-const char* TARGET_PACKAGE = "com.tencent.jkchess";
-const char* g_configPath = "/data/jkchess_config.ini"; 
-
-bool g_predict_enemy = false;
-bool g_predict_hex = false;
-bool g_esp_board = true;
-bool g_esp_bench = false; 
-bool g_esp_shop = false;  
-bool g_esp_level = false; 
-bool g_auto_buy = false;
-bool g_instant = false;
-bool g_boardLocked = false; 
-
-bool g_auto_refresh = false;
-bool g_auto_buy_chosen = false;
-
-bool g_show_card_pool = false;
-int g_card_pool_rows = 2;
-int g_card_pool_cols = 5;
-float g_cardPoolX = 150.0f;
-float g_cardPoolY = 150.0f;
-float g_cardPoolScaleX = 1.0f; 
-float g_cardPoolScaleY = 1.0f; 
-float g_cardPoolAlpha = 1.0f; 
-
-bool g_card_warning = false;
-bool g_warning_tiers[7] = {false, false, false, false, true, false, false}; 
-int g_warning_threshold = 6;   
-
-bool g_menuCollapsed = false; 
-float g_anim[25] = {0.0f}; 
-
-float g_scale = 1.0f;            
-float g_autoScale = 1.0f;        
-float g_current_rendered_size = 0.0f; 
-
-float g_boardScale = 2.2f;       
-float g_boardManualScale = 1.0f; 
-float g_startX = 400.0f;
-float g_startY = 400.0f;    
-float g_menuX = 100.0f;
-float g_menuY = 100.0f;
-float g_menuW = 350.0f;
-float g_menuH = 550.0f; 
-
-float g_benchX = 200.0f;
-float g_benchY = 700.0f;
-float g_benchScale = 1.0f;
-
-float g_shopX = 200.0f;
-float g_shopY = 850.0f;
-float g_shopScale = 1.0f;
-
-float g_enemy_X = 100.0f;
-float g_enemy_Y = 100.0f;
-float g_enemy_Scale = 1.0f;
-
-float g_hex_X = 100.0f;
-float g_hex_Y = 220.0f;
-float g_hex_Scale = 1.0f;
-
-float g_autoW_X = 300.0f;
-float g_autoW_Y = 1000.0f;
-float g_autoW_Scale = 1.0f;
-
-float g_players_X = 1500.0f;
-float g_players_Y = 200.0f;
-float g_players_Scale = 1.0f;
-
-GLuint g_heroTexture = 0;           
-bool g_textureLoaded = false;    
-bool g_resLoaded = false; 
-bool g_needUpdateFontSafe = false;
-
-ImFont* g_mainFont = nullptr;
-ImFont* g_hugeNumFont = nullptr;
-
-int g_enemyBoard[4][7] = {
-    {1, 0, 0, 0, 1, 0, 0}, 
-    {0, 1, 0, 1, 0, 0, 0},
-    {0, 0, 0, 0, 0, 1, 0}, 
-    {1, 0, 1, 0, 1, 0, 1}
-};
-
 void SaveConfig() {
     std::ofstream out(g_configPath);
     if (out.is_open()) {
@@ -414,10 +337,6 @@ void LoadConfig() {
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
                 else if (k == "cardPoolScaleX") g_cardPoolScaleX = std::stof(v);
                 else if (k == "cardPoolScaleY") g_cardPoolScaleY = std::stof(v);
-                else if (k == "cardPoolScale") { 
-                    g_cardPoolScaleX = std::stof(v);
-                    g_cardPoolScaleY = std::stof(v);
-                }
                 else if (k == "cardPoolAlpha") g_cardPoolAlpha = std::stof(v); 
                 else if (k == "cardPoolX") g_cardPoolX = std::stof(v);
                 else if (k == "cardPoolY") g_cardPoolY = std::stof(v);
@@ -620,6 +539,9 @@ void UpdateFontHD(bool force = false) {
     g_current_rendered_size = targetSize;
 }
 
+// =================================================================
+// 3. UI 交互与绘制逻辑
+// =================================================================
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, 
                            float& t_x, float& t_y, float& t_scale,
                            bool& isDragging, bool& isScaling, 
@@ -1104,7 +1026,6 @@ void DrawCardPool() {
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
-    // 独立 X和Y 缩放变量
     static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scaleX = g_cardPoolScaleX, t_scaleY = g_cardPoolScaleY;
     static bool first = true; 
     
@@ -1198,209 +1119,6 @@ void DrawCardPool() {
                 float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
                 d->AddText(numFont, fsz, ImVec2(x + (offset_szX - tSz.x) * 0.5f, y + offset_szY - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
             }
-        }
-    }
-}
-
-void DrawBoard() {
-    if (!g_esp_board) return;
-    ImDrawList* d = ImGui::GetForegroundDrawList();
-
-    static float t_x = g_startX, t_y = g_startY, t_scale = g_boardManualScale;
-    static bool firstFrame = true;
-    
-    if (firstFrame) { 
-        t_x = g_startX; 
-        t_y = g_startY; 
-        t_scale = g_boardManualScale; 
-        firstFrame = false; 
-    }
-
-    static bool isDragging = false, isScaling = false;
-    static ImVec2 dragOffset, scaleDragOffset;   
-
-    float baseSz = 38.0f * g_boardScale * g_autoScale;
-    float baseXStep = baseSz * 1.73205f;
-    float baseYStep = baseSz * 1.5f;
-
-    float h_dx = 7.0f * baseXStep;              
-    float h_dy = 1.5f * baseYStep;              
-    float c_dx = -baseXStep * 0.8f;             
-    float c_dy = 1.5f * baseYStep;              
-
-    HandleGridInteraction(g_startX, g_startY, g_boardManualScale, t_x, t_y, t_scale,
-                          isDragging, isScaling, dragOffset, scaleDragOffset,
-                          h_dx, h_dy, c_dx, c_dy, 
-                          -baseSz*2, -baseSz*2, 
-                          7.5f*baseXStep + baseSz*2, 3.0f*baseYStep + baseSz*2, 
-                          g_boardLocked, &g_esp_board);
-
-    if (!g_esp_board) return;
-
-    float curSz = baseSz * g_boardManualScale;
-    float curXStep = baseXStep * g_boardManualScale;
-    float curYStep = baseYStep * g_boardManualScale;
-    float time = (float)ImGui::GetTime();
-
-    if (!g_boardLocked) {
-        DrawScaleHandle(d, ImVec2(g_startX + h_dx * g_boardManualScale, g_startY + h_dy * g_boardManualScale), isScaling);
-        DrawCloseHandle(d, ImVec2(g_startX + c_dx * g_boardManualScale, g_startY + c_dy * g_boardManualScale), &g_esp_board);
-    }
-    
-    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
-
-    for(int r = 0; r < 4; r++) {
-        for(int c = 0; c < 7; c++) {
-            float cx = g_startX + c * curXStep + (r % 2 == 1 ? curXStep * 0.5f : 0);
-            float cy = g_startY + r * curYStep;
-            
-            float hue = fmodf(time * 0.3f + (cx + cy) * 0.0008f, 1.0f);
-            float rf, gf, bf; 
-            ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, rf, gf, bf);
-
-            if(g_enemyBoard[r][c]) {
-                if (g_textureLoaded) {
-                    DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
-                }
-                
-                float lvlFsz = ImGui::GetFontSize() * 2.5f * g_boardManualScale; 
-                const char* lvlTxt = "1/3";
-                ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
-                ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.4f);
-                d->AddText(numFont, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
-                d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
-            }
-            
-            ImVec2 pts[6];
-            for(int i = 0; i < 6; i++) {
-                float a = (60.0f * i - 30.0f) * (M_PI / 180.0f);
-                pts[i] = ImVec2(cx + curSz * cosf(a), cy + curSz * sinf(a));
-            }
-            d->AddPolyline(pts, 6, IM_COL32(rf*255, gf*255, bf*255, 220), ImDrawFlags_Closed, 2.5f * g_autoScale);
-        }
-    }
-}
-
-void DrawBench() {
-    static float alpha = 0.0f;
-    alpha = ImLerp(alpha, g_esp_bench ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
-    if (alpha < 0.01f) return;
-
-    ImDrawList* d = ImGui::GetForegroundDrawList();
-    static float t_x = g_benchX, t_y = g_benchY, t_scale = g_benchScale;
-    static bool first = true; 
-    
-    if (first) { 
-        t_x = g_benchX; 
-        t_y = g_benchY; 
-        t_scale = g_benchScale; 
-        first = false; 
-    }
-    
-    static bool isDragging = false, isScaling = false; 
-    static ImVec2 dragOffset, scaleDragOffset;
-
-    float baseSz = 40.0f * g_autoScale; 
-    float spacing = baseSz; 
-    float h_dx = 9 * spacing + baseSz * 0.3f; 
-    float h_dy = baseSz * 0.5f;
-    float c_dx = -baseSz * 0.3f; 
-    float c_dy = baseSz * 0.5f;
-
-    if (g_esp_bench) {
-        HandleGridInteraction(g_benchX, g_benchY, g_benchScale, t_x, t_y, t_scale,
-                              isDragging, isScaling, dragOffset, scaleDragOffset,
-                              h_dx, h_dy, c_dx, c_dy, 0, 0, 9*spacing, baseSz, g_boardLocked, &g_esp_bench);
-    }
-
-    float curSz = baseSz * g_benchScale; 
-    float curSpacing = spacing * g_benchScale;
-    float time = (float)ImGui::GetTime(); 
-    float rounding = 6.0f * g_autoScale * g_benchScale; 
-
-    if (!g_boardLocked && alpha > 0.9f) {
-        DrawScaleHandle(d, ImVec2(g_benchX + h_dx * g_benchScale, g_benchY + h_dy * g_benchScale), isScaling);
-        DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
-    }
-
-    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
-
-    for (int i = 0; i < 9; i++) {
-        float x = g_benchX + i * curSpacing; 
-        float y = g_benchY;
-        
-        float hue = fmodf(time * 0.3f + i * 0.05f, 1.0f); 
-        float r, g, b; 
-        ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
-        
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
-        
-        float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
-        const char* lvlTxt = "3";
-        ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
-        ImVec2 txtPos(x + curSz * 0.5f - tSz.x * 0.5f, y + curSz - tSz.y + 2.0f * g_autoScale * g_benchScale);
-        d->AddText(numFont, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
-        d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
-    }
-}
-
-void DrawShop() {
-    static float alpha = 0.0f;
-    alpha = ImLerp(alpha, g_esp_shop ? 1.0f : 0.0f, 1.0f - expf(-20.0f * ImGui::GetIO().DeltaTime));
-    if (alpha < 0.01f) return;
-
-    ImDrawList* d = ImGui::GetForegroundDrawList();
-    static float t_x = g_shopX, t_y = g_shopY, t_scale = g_shopScale;
-    static bool first = true; 
-    
-    if (first) { 
-        t_x = g_shopX; 
-        t_y = g_shopY; 
-        t_scale = g_shopScale; 
-        first = false; 
-    }
-    
-    static bool isDragging = false, isScaling = false; 
-    static ImVec2 dragOffset, scaleDragOffset;
-
-    float baseSz = 55.0f * g_autoScale; 
-    float spacing = baseSz; 
-    float h_dx = 5 * spacing + baseSz * 0.3f; 
-    float h_dy = baseSz * 0.5f;
-    float c_dx = -baseSz * 0.3f; 
-    float c_dy = baseSz * 0.5f;
-
-    if (g_esp_shop) {
-        HandleGridInteraction(g_shopX, g_shopY, g_shopScale, t_x, t_y, t_scale,
-                              isDragging, isScaling, dragOffset, scaleDragOffset,
-                              h_dx, h_dy, c_dx, c_dy, 0, 0, 5*spacing, baseSz, g_boardLocked, &g_esp_shop);
-    }
-
-    float curSz = baseSz * g_shopScale; 
-    float curSpacing = spacing * g_shopScale;
-    float time = (float)ImGui::GetTime(); 
-    float rounding = 8.0f * g_autoScale * g_shopScale; 
-
-    if (!g_boardLocked && alpha > 0.9f) {
-        DrawScaleHandle(d, ImVec2(g_shopX + h_dx * g_shopScale, g_shopY + h_dy * g_shopScale), isScaling);
-        DrawCloseHandle(d, ImVec2(g_shopX + c_dx * g_shopScale, g_shopY + c_dy * g_shopScale), &g_esp_shop);
-    }
-
-    for (int i = 0; i < 5; i++) {
-        float x = g_shopX + i * curSpacing; 
-        float y = g_shopY;
-        
-        float hue = fmodf(time * 0.3f + i * 0.08f, 1.0f); 
-        float r, g, b; 
-        ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, r, g, b);
-        
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 180 * alpha), rounding);
-        d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_shopScale);
-        
-        if (g_textureLoaded) {
-            float imgPad = 4.0f * g_autoScale * g_shopScale;
-            d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x+imgPad, y+imgPad), ImVec2(x+curSz-imgPad, y+curSz-imgPad), ImVec2(0,0), ImVec2(1,1), IM_COL32(255,255,255,255*alpha), rounding - imgPad * 0.5f);
         }
     }
 }
@@ -1680,7 +1398,7 @@ void DrawMenu() {
         if (!g_menuCollapsed) {
             ImGui::SetWindowFontScale(g_scale);
             
-            ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
+            ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] 外部守护防封模式 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
             static bool header_pred = true;
@@ -1789,54 +1507,28 @@ void DrawMenu() {
 }
 
 void MainRenderThread() {
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [1] 进入 MainRenderThread");
     ImGui::CreateContext();
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [2] ImGui 上下文已创建");
-
+    // 使用 Root 权限直接在屏幕外层画原生的透明悬浮窗 (绝对不封号)
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [3] AImGui 初始化完成");
     
-    // 增加：轮询等待 EGL 显示上下文，防止游戏黑屏时过早绘制引发无响应
-    int wait_count = 0;
-    while (eglGetCurrentDisplay() == EGL_NO_DISPLAY && wait_count < 30) {
-        __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> 等待游戏 EGL Context 就绪... (%d/30)", wait_count);
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        wait_count++;
-    }
-    
-    if (eglGetCurrentDisplay() == EGL_NO_DISPLAY) {
-        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] 获取 EGL Context 超时三十秒！菜单线程终止。");
-        return;
-    }
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [4] EGL 引擎已就绪！");
-
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
-    
     LoadConfig(); 
     UpdateFontHD(true);  
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [5] 字体与配置加载完毕，进入绘制主循环！");
     
-    static bool running = true; 
     std::thread it([&] { 
-        while(running) { 
+        while(g_game_running) { 
             imgui.ProcessInputEvent(); 
-            std::this_thread::sleep_for(std::chrono::milliseconds(5)); // 防止吃满 CPU
+            std::this_thread::sleep_for(std::chrono::milliseconds(5)); 
         } 
     });
 
-    bool first_frame = true;
-    while (running) {
-        if (first_frame) {
-            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [6] 正在向游戏提交第一帧绘制指令...");
-        }
-        
+    while (g_game_running) {
         if (g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false; 
         }
         
         imgui.BeginFrame(); 
-        
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1850,83 +1542,121 @@ void MainRenderThread() {
         DrawBoard(); 
         DrawBench(); 
         DrawShop();  
-        
         DrawPurePredictEnemy(); 
         DrawPurePredictHex();   
         DrawPlayersOverlay();   
-        
         DrawAutoBuyWindow(); 
         DrawCardPool(); 
-        
         DrawMenu();
         
         imgui.EndFrame(); 
-
-        if (first_frame) {
-            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [7] 第一帧画面成功上屏显示！");
-            first_frame = false;
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // 控制帧率，防止卡死
+        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // 控制刷新率
     }
     
     g_HexShader.Cleanup(); 
-    running = false; 
     if (it.joinable()) it.join(); 
+    ImGui::DestroyContext();
 }
 
 // =================================================================
-// 【终极安全包装】：使用 pthread 并强制延时，避免与游戏引擎初始化抢占资源
+// 3. 守护进程生命周期与注入发令员
 // =================================================================
-void* SafeRenderWrapper(void* arg) {
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 渲染派生线程启动，进入 8 秒蛰伏期以躲避安全检测...");
+int find_game_pid() {
+    DIR* dir = opendir("/proc");
+    if (!dir) return 0;
+    struct dirent* ptr; 
+    pid_t pid = 0;
     
-    // 确保游戏完全跳过腾讯 Logo 黑屏和 libil2cpp 初始化，再介入 EGL。
-    std::this_thread::sleep_for(std::chrono::seconds(8));
-
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 蛰伏结束，尝试拉起 MainRenderThread...");
-    try {
-        MainRenderThread();
-    } catch (const std::exception& e) {
-        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] MainRenderThread 发生标准异常: %s", e.what());
-    } catch (...) {
-        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] MainRenderThread 发生未知异常崩溃！");
-    }
-    return nullptr;
-}
-
-__attribute__((constructor)) void OnModuleLoaded() {
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "========== SO 被系统底层成功加载，触发 constructor ==========");
-    char cmd[256] = {0};
-    FILE* f = fopen("/proc/self/cmdline", "r");
-    if (f) {
-        fgets(cmd, sizeof(cmd), f); 
-        fclose(f);
-        __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> 当前寄生的进程名: [%s]", cmd);
-        
-        // 【核心判断】：确保只在主进程中启动菜单，且过滤掉冒号子进程
-        if (strstr(cmd, TARGET_PACKAGE) && !strstr(cmd, ":")) {
-            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 命中目标主进程！准备创建底层渲染线程...");
+    while ((ptr = readdir(dir)) != NULL) {
+        if (ptr->d_type == DT_DIR && atoi(ptr->d_name) > 0) {
+            char path[256]; snprintf(path, 256, "/proc/%s/cmdline", ptr->d_name);
+            std::ifstream f_cmd(path); std::string s; std::getline(f_cmd, s);
             
-            // 使用更底层的 pthread 创建分离线程，规避 libc++ 的 std::thread 锁冲突
-            pthread_t t;
-            pthread_attr_t attr;
-            pthread_attr_init(&attr);
-            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-            int ret = pthread_create(&t, &attr, SafeRenderWrapper, nullptr);
-            pthread_attr_destroy(&attr);
-            
-            if (ret == 0) {
-                __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] pthread 线程派生成功！");
-            } else {
-                __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] pthread_create 失败，系统拒绝创建线程，错误码: %d", ret);
+            // 过滤冒号子进程
+            if (s.find(TARGET_PACKAGE) != std::string::npos && s.find(":") == std::string::npos) { 
+                pid = atoi(ptr->d_name);
+                break; 
             }
-        } else {
-            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> 发现这是子进程，主动终止后续加载。");
         }
-    } else {
-        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] 无法读取 cmdline！");
     }
+    closedir(dir);
+    return pid;
 }
 
-#endif
+int main(int argc, char** argv) {
+    printf("==================================================\n");
+    printf("   JKHelper 双端分离守护模式 (UI 外置 + Hook 注入)\n");
+    printf("==================================================\n");
+
+    printf("[*] 正在释放内部纯净版 Hook 载荷...\n");
+    FILE* f = fopen(DROP_SO_PATH, "wb");
+    if(f) {
+        // 将 build.yml 打包的 libJKHook_so 写入磁盘
+        fwrite(libJKHook_so, 1, libJKHook_so_len, f);
+        fclose(f);
+        
+        struct stat st;
+        char app_dir[256];
+        snprintf(app_dir, sizeof(app_dir), "/data/data/%s", TARGET_PACKAGE);
+        if (stat(app_dir, &st) == 0) {
+            chown(DROP_SO_PATH, st.st_uid, st.st_gid);
+        }
+        chmod(DROP_SO_PATH, 0755);
+        printf("[+] 载荷部署完毕 (%d 字节)\n", libJKHook_so_len);
+    } else {
+        printf("[-] 无法释放载荷，请检查 Root 权限！\n");
+        return 1;
+    }
+
+    printf("[*] 正在静默监控游戏进程...\n");
+
+    while (true) {
+        pid_t pid = find_game_pid();
+        
+        if (pid > 0) {
+            printf("[+] 检测到游戏主进程 (PID: %d)，正在等待引擎就绪...\n", pid);
+            
+            // 等待游戏引擎加载完成
+            int wait_times = 0;
+            while (get_module_base_remote(pid, "libil2cpp.so") == 0 && wait_times < 15) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                wait_times++;
+            }
+            
+            // 引擎就绪后，等待线程进入安全状态
+            wait_times = 0;
+            while (!is_safe_to_inject(pid) && wait_times < 10) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                wait_times++;
+            }
+            
+            printf("[*] 时机成熟，执行 Dobby Hook 库注入...\n");
+            if (perform_injection(pid, DROP_SO_PATH) == 0) {
+                printf("[+] Hook 注入成功！\n");
+            } else {
+                printf("[-] Hook 注入失败！\n");
+            }
+            
+            printf("[+] 正在外层屏幕开启防封悬浮窗...\n");
+            
+            g_game_running = true;
+            std::thread render_thread(MainRenderThread);
+            
+            // 死循环监控游戏是否存活
+            while (kill(pid, 0) == 0) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+            
+            printf("[*] 检测到游戏已退出，自动折叠悬浮窗资源...\n");
+            g_game_running = false; 
+            
+            if (render_thread.joinable()) {
+                render_thread.join();
+            }
+            printf("[*] 资源清理完毕，重新进入静默监控状态...\n");
+        }
+        
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return 0;
+}
