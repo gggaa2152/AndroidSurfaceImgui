@@ -17,29 +17,32 @@ jobs:
 
       - name: Auto Setup Dobby Framework
         run: |
-          echo "[*] 正在全自动拉取并修复 Dobby Hook 框架..."
+          echo "[*] 正在全自动拉取并执行源码级热修复..."
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【精准修复 1】：彻底解决 OSMemory 未定义问题
-          # 策略：直接将 Dobby 源码中所有 OSMemory 调用替换为原生 mprotect 和常量，避开类定义陷阱
-          echo "[*] 正在进行源码级代码修补..."
-          sed -i '1i #include <sys/mman.h>\n#include <unistd.h>' third_party/dobby/common/os_arch_features.h
-          sed -i 's/OSMemory::PageSize()/4096/g' third_party/dobby/common/os_arch_features.h
-          sed -i 's/OSMemory::SetPermission(page, 4096, kReadExecute)/mprotect(page, 4096, 5) == 0/g' third_party/dobby/common/os_arch_features.h
-          sed -i 's/OSMemory::SetPermission/mprotect/g' third_party/dobby/common/os_arch_features.h || true
+          # 【核弹级修复 1】：彻底解决 arm64 汇编 NDK 27 兼容性
+          # 策略：直接将 Dobby 源码中的旧语法全文替换为 Clang 18 标准语法
+          echo "[*] 正在修正 arm64 汇编指令..."
+          ASM_DIR="third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64"
           
-          # 【精准修复 2】：热修复 arm64 汇编语法，适配 NDK 27 (Clang 18)
-          # 策略：先剥离后缀，再利用正则表达式强行在符号前插入 :lo12: 前缀
-          echo "[*] 正在修复 arm64 汇编 relocation 语法..."
-          sed -i 's/@PAGEOFF//g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
-          sed -i 's/@PAGE//g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
-          # 针对 add 指令，强行将 symbol 替换为 :lo12:symbol
-          sed -i 's/add x17, x17, \(.*\)/add x17, x17, :lo12:\1/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          # 修复 common_closure_bridge_handler 相关的跳转
+          sed -i 's/common_closure_bridge_handler@PAGE/common_closure_bridge_handler/g' $ASM_DIR/*.asm
+          sed -i 's/common_closure_bridge_handler@PAGEOFF/:lo12:common_closure_bridge_handler/g' $ASM_DIR/*.asm
+          
+          # 修复 get_routing_bridge_next_hop 相关的跳转
+          sed -i 's/get_routing_bridge_next_hop@PAGE/get_routing_bridge_next_hop/g' $ASM_DIR/*.asm
+          sed -i 's/get_routing_bridge_next_hop@PAGEOFF/:lo12:get_routing_bridge_next_hop/g' $ASM_DIR/*.asm
 
-          # 【精准修复 3】：修复老版本 Dobby 中的语法残缺 (a.start 缺少括号)
-          sed -i 's/a.start < b.start/a.start() < b.start()/g' third_party/dobby/source/Backend/UserMode/PlatformUtil/Linux/ProcessRuntimeUtility.cc || true
+          # 【核弹级修复 2】：彻底平替 OSMemory
+          # 策略：不再尝试包含头文件，直接在源码里把报错的调用直接改成系统原生函数
+          echo "[*] 正在修补内存管理 C++ 源码..."
+          HEADER="third_party/dobby/common/os_arch_features.h"
+          sed -i '1i #include <sys/mman.h>' $HEADER
+          sed -i 's/OSMemory::PageSize()/4096/g' $HEADER
+          # 修正逻辑：如果 mprotect 失败（不等于0），则返回 false/执行报错逻辑
+          sed -i 's/!OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)/mprotect(page, 4096, 7) != 0/g' $HEADER
 
-          # 自动补齐 includes 目录供你的 internal_hook.cc 使用
+          # 自动补齐 includes 目录供项目使用
           mkdir -p includes
           cp third_party/dobby/include/dobby.h includes/
           
@@ -47,7 +50,7 @@ jobs:
           mkdir build && cd build
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 开启全局 PIC 适配，并关闭冲突插件
+          # 禁用干扰插件，开启 PIC
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
@@ -67,7 +70,7 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译内部 Hook SO (链接刚才修复成功的 libdobby.a)
+          # 1. 编译内部 Hook SO
           $CXX -O3 -shared -fPIC \
             internal_hook.cc \
             -I. -I./includes -I./third_party/dobby/include \
@@ -85,7 +88,7 @@ jobs:
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 4. 编译最终产物 (外部 UI 守护进程)
+          # 4. 编译最终程序 (JKHelper_Daemon)
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing -Wno-format-security \
