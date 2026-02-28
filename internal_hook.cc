@@ -5,7 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "includes/dobby.h" // 确保你的工程里有 dobby.h 和对应的静态库
+#include <dobby.h> // 【已修复】直接引用 dobby.h
 
 #define LOG_TAG "JKHelper_Internal"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
