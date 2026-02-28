@@ -31,10 +31,11 @@ jobs:
             third_party/zstd/lib/decompress/*.c
 
           # 2. 编译主程序为“二合一”通用二进制文件 (ELF + SO)
-          # 【核心修改】：必须同时加上 -shared -fPIC 和 -fPIE -pie -rdynamic
-          $CXX -O3 -s -std=c++20 -shared -fPIC -fPIE -pie -rdynamic -static-libstdc++ \
+          # 【核心修改】：移除报错的 -pie 和 -fPIE，保留 -shared -fPIC -rdynamic
+          $CXX -O3 -s -std=c++20 -shared -fPIC -rdynamic -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing \
+            -Wno-format-security \
             -I. -I./includes -I./modules -I./third_party \
             -I./third_party/imgui -I./third_party/imgui/backends \
             -I./third_party/zstd/lib \
