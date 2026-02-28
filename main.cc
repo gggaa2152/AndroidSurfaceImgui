@@ -34,7 +34,7 @@
 #include <sys/uio.h>
 #include <sys/errno.h>
 
-// 由 build.yml 自动生成的头文件
+// 由 build.yml 自动生成的头文件 (包含 internal_hook.cc 编译出的 SO 数组)
 #include "hook_payload.h"
 
 #ifndef NT_PRSTATUS
@@ -151,7 +151,6 @@ void UpdateFontHD(bool force = false) {
 
     LOGI("[*] 正在执行字体库构建 (Size: %.1f)...", targetSize);
     
-    // 安全清理旧纹理
     if (io.BackendRendererUserData != nullptr) {
         ImGui_ImplOpenGL3_DestroyFontsTexture();
     }
@@ -160,6 +159,7 @@ void UpdateFontHD(bool force = false) {
     
     const char* fontPaths[] = {
         "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/product/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/SysSans-Hans-Regular.ttf",
         "/system/fonts/DroidSansFallback.ttf"
     };
@@ -167,22 +167,31 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for (const char* path : fontPaths) {
         if (access(path, R_OK) == 0) {
+            // 策略1：尝试完整中文集
             if (io.Fonts->AddFontFromFileTTF(path, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+                LOGI("[+] 加载中文字体成功: %s", path);
+                loaded = true; break;
+            }
+            // 策略2：如果失败，尝试默认范围（防止大字符集引起的内存问题）
+            if (io.Fonts->AddFontFromFileTTF(path, targetSize)) {
+                LOGI("[!] 加载字体成功(仅基础字符): %s", path);
                 loaded = true; break;
             }
         }
     }
 
-    if (!loaded) io.Fonts->AddFontDefault();
+    if (!loaded) {
+        LOGI("[*] 使用 ImGui 内部默认字体。");
+        io.Fonts->AddFontDefault();
+    }
 
     if (!io.Fonts->Build()) {
-        LOGE("[-] 字体构建失败，重置默认...");
+        LOGE("[-] 字体库 Build 失败，重置为极简模式...");
         io.Fonts->Clear();
         io.Fonts->AddFontDefault();
         io.Fonts->Build();
     }
 
-    // 只有在后端初始化的情况下才创建纹理
     if (io.BackendRendererUserData != nullptr) {
         ImGui_ImplOpenGL3_CreateFontsTexture();
     }
@@ -224,7 +233,7 @@ void DrawBoard() {
 void DrawMenu() {
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::SetWindowFontScale(g_scale);
-        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] 辅助已注入成功");
+        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] Dobby 静态注入成功");
         ImGui::Checkbox((const char*)u8"敌方棋盘显示", &g_esp_board);
         ImGui::Checkbox((const char*)u8"锁定位置", &g_boardLocked);
         if (ImGui::Button((const char*)u8"保存配置")) SaveConfig();
@@ -233,7 +242,7 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 4. 渲染线程 (修复 Shutdown 断言的关键)
+// 4. 渲染线程
 // =================================================================
 
 void MainRenderThread() {
@@ -241,7 +250,6 @@ void MainRenderThread() {
     ImGui::CreateContext();
     
     {
-        // 使用局部作用域确保 imgui 对象在 DestroyContext 之前被销毁
         android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
         
         LoadConfig(); 
@@ -255,6 +263,7 @@ void MainRenderThread() {
         });
 
         while (g_game_running) {
+            // 确保字体构建成功后再开始
             if (!ImGui::GetIO().Fonts->IsBuilt()) {
                 UpdateFontHD(true);
                 if (!ImGui::GetIO().Fonts->IsBuilt()) {
@@ -274,8 +283,7 @@ void MainRenderThread() {
         }
 
         if (it.joinable()) it.join();
-        LOGI("[*] 正在关闭 AImGui 渲染后端...");
-        // AImGui 析构函数将在这里被调用 (由于大括号作用域结束)
+        LOGI("[*] 正在关闭渲染后端...");
     }
 
     LOGI("[*] 正在销毁 ImGui 上下文...");
@@ -329,7 +337,7 @@ bool is_process_active(pid_t pid) {
 
 int main(int argc, char** argv) {
     LOGI("=============================================");
-    LOGI("   JKHelper Daemon 稳定修复版启动成功");
+    LOGI("   JKHelper Daemon 稳定版启动成功");
     LOGI("=============================================");
     system("setenforce 0 > /dev/null 2>&1");
     
@@ -365,8 +373,11 @@ int main(int argc, char** argv) {
             
             if (get_module_base_remote(pid, "libJKHook.so") == 0) {
                 LOGI("[!] 发现游戏进程 (%d)，正在注入...", pid);
-                while (get_module_base_remote(pid, "libil2cpp.so") == 0) std::this_thread::sleep_for(std::chrono::seconds(1));
-                if (perform_injection(pid, DROP_SO_PATH) == 0) {
+                while (get_module_base_remote(pid, "libil2cpp.so") == 0) {
+                    if (!is_process_active(pid)) break;
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+                if (is_process_active(pid) && perform_injection(pid, DROP_SO_PATH) == 0) {
                     g_game_running = true; 
                     std::thread(MainRenderThread).detach();
                 }
@@ -375,13 +386,11 @@ int main(int argc, char** argv) {
                 std::thread(MainRenderThread).detach();
             }
 
-            while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(1));
+            while (is_process_active(pid)) std::this_thread::sleep_for(std::chrono::seconds(1));
             
-            // 游戏退出后的关键流程
             g_game_running = false; 
-            LOGI("[*] 游戏已退出。正在等待渲染线程回收...");
-            // 给渲染线程一点缓冲时间来响应 g_game_running 的变化
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            LOGI("[*] 游戏已退出。正在清理资源...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(800));
         }
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
