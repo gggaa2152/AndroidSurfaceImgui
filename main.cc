@@ -115,7 +115,7 @@ long ptrace_call_target(pid_t pid, uintptr_t func, long *params, int num) {
 }
 
 // =================================================================
-// 3. UI 辅助函数 (强制修复版 UpdateFontHD)
+// 3. UI 辅助函数 (增强鲁棒性版)
 // =================================================================
 
 void SaveConfig() {
@@ -142,11 +142,8 @@ void LoadConfig() {
     }
 }
 
-// 核心修复函数
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
-    
-    // 基础分辨率兜底
     float screenY = io.DisplaySize.y > 100.0f ? io.DisplaySize.y : 1080.0f;
     float targetSize = std::clamp(20.0f * (screenY / 1080.0f), 15.0f, 50.0f);
     
@@ -154,11 +151,13 @@ void UpdateFontHD(bool force = false) {
 
     LOGI("[*] 正在执行字体库构建 (Size: %.1f)...", targetSize);
     
-    // 1. 清理旧资源
-    ImGui_ImplOpenGL3_DestroyFontsTexture(); 
+    // 安全清理旧纹理
+    if (io.BackendRendererUserData != nullptr) {
+        ImGui_ImplOpenGL3_DestroyFontsTexture();
+    }
+    
     io.Fonts->Clear(); 
     
-    // 2. 尝试加载系统字体 (带指针校验)
     const char* fontPaths[] = {
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/SysSans-Hans-Regular.ttf",
@@ -168,36 +167,26 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for (const char* path : fontPaths) {
         if (access(path, R_OK) == 0) {
-            ImFont* f = io.Fonts->AddFontFromFileTTF(path, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-            if (f) {
-                LOGI("[+] 成功加载系统字体: %s", path);
-                loaded = true;
-                break;
+            if (io.Fonts->AddFontFromFileTTF(path, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+                loaded = true; break;
             }
         }
     }
 
-    // 3. 强制回退：如果没加载任何字体，必须加一个默认的，否则 Build() 必败
-    if (!loaded || io.Fonts->Fonts.Size == 0) {
-        LOGE("[-] 系统字体载入失败，正在强制加载 ImGui 默认字体...");
-        io.Fonts->AddFontDefault();
-    }
+    if (!loaded) io.Fonts->AddFontDefault();
 
-    // 4. 执行构建
     if (!io.Fonts->Build()) {
-        LOGE("[-] 字体库 Build 失败，正在尝试终极恢复模式...");
+        LOGE("[-] 字体构建失败，重置默认...");
         io.Fonts->Clear();
         io.Fonts->AddFontDefault();
-        if (!io.Fonts->Build()) {
-            LOGE("[-] 致命错误：默认字体也无法 Build！");
-            return; 
-        }
+        io.Fonts->Build();
     }
 
-    // 5. 更新 GPU 纹理
-    ImGui_ImplOpenGL3_CreateFontsTexture();
+    // 只有在后端初始化的情况下才创建纹理
+    if (io.BackendRendererUserData != nullptr) {
+        ImGui_ImplOpenGL3_CreateFontsTexture();
+    }
     g_current_rendered_size = targetSize;
-    LOGI("[+] 字体纹理构建完成并已上传 GPU。");
 }
 
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, float& t_x, float& t_y, float& t_scale, bool& isDragging, bool& isScaling, ImVec2& dragOffset, ImVec2& scaleDragOffset, float h_dx, float h_dy, bool locked) {
@@ -235,7 +224,7 @@ void DrawBoard() {
 void DrawMenu() {
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::SetWindowFontScale(g_scale);
-        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] Dobby 静态注入成功");
+        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] 辅助已注入成功");
         ImGui::Checkbox((const char*)u8"敌方棋盘显示", &g_esp_board);
         ImGui::Checkbox((const char*)u8"锁定位置", &g_boardLocked);
         if (ImGui::Button((const char*)u8"保存配置")) SaveConfig();
@@ -244,46 +233,56 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 4. 线程控制与入口
+// 4. 渲染线程 (修复 Shutdown 断言的关键)
 // =================================================================
 
 void MainRenderThread() {
+    LOGI("[*] 渲染线程启动中...");
     ImGui::CreateContext();
-    android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
-    // 初始化配置
-    LoadConfig(); 
-    
-    // 启动输入处理线程
-    std::thread it([&] { 
-        while(g_game_running) { 
-            imgui.ProcessInputEvent(); 
-            std::this_thread::sleep_for(std::chrono::milliseconds(5)); 
-        } 
-    });
+    {
+        // 使用局部作用域确保 imgui 对象在 DestroyContext 之前被销毁
+        android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
+        
+        LoadConfig(); 
+        UpdateFontHD(true);  
+        
+        std::thread it([&] { 
+            while(g_game_running) { 
+                imgui.ProcessInputEvent(); 
+                std::this_thread::sleep_for(std::chrono::milliseconds(5)); 
+            } 
+        });
 
-    while (g_game_running) {
-        // 【关键保护】：每一帧渲染前确保字库已构建
-        if (!ImGui::GetIO().Fonts->IsBuilt()) {
-            UpdateFontHD(true);
+        while (g_game_running) {
             if (!ImGui::GetIO().Fonts->IsBuilt()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue; // 如果还没构建好，跳过这一帧渲染，防止 BeginFrame 断言
+                UpdateFontHD(true);
+                if (!ImGui::GetIO().Fonts->IsBuilt()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    continue;
+                }
             }
+
+            imgui.BeginFrame(); 
+            glDisable(GL_SCISSOR_TEST); glClearColor(0.0f, 0.0f, 0.0f, 0.0f); glClear(GL_COLOR_BUFFER_BIT);
+            
+            DrawBoard(); 
+            DrawMenu();
+            
+            imgui.EndFrame(); 
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
 
-        imgui.BeginFrame(); 
-        glDisable(GL_SCISSOR_TEST); glClearColor(0.0f, 0.0f, 0.0f, 0.0f); glClear(GL_COLOR_BUFFER_BIT);
-        
-        DrawBoard(); 
-        DrawMenu();
-        
-        imgui.EndFrame(); 
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        if (it.joinable()) it.join();
+        LOGI("[*] 正在关闭 AImGui 渲染后端...");
+        // AImGui 析构函数将在这里被调用 (由于大括号作用域结束)
     }
 
-    if (it.joinable()) it.join(); 
-    ImGui::DestroyContext();
+    LOGI("[*] 正在销毁 ImGui 上下文...");
+    if (ImGui::GetCurrentContext()) {
+        ImGui::DestroyContext();
+    }
+    LOGI("[+] 资源回收完毕，渲染线程安全退出。");
 }
 
 int perform_injection(pid_t pid, const char* drop_path) {
@@ -376,9 +375,13 @@ int main(int argc, char** argv) {
                 std::thread(MainRenderThread).detach();
             }
 
-            while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
+            while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(1));
+            
+            // 游戏退出后的关键流程
             g_game_running = false; 
-            LOGI("[*] 游戏已退出。");
+            LOGI("[*] 游戏已退出。正在等待渲染线程回收...");
+            // 给渲染线程一点缓冲时间来响应 g_game_running 的变化
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
