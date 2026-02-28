@@ -54,14 +54,11 @@ bool g_touch_flip_x = false;
 bool g_touch_flip_y = false;
 bool g_auto_detected_max = false;
 
-// 商店 5 张牌的物理坐标
-int g_shop_coords[5][2] = {
-    {1150, 1977},  // 第 1 张牌的 X, Y
-    {1600, 1977},  // 第 2 张牌的 X, Y
-    {2050, 1977},  // 第 3 张牌的 X, Y
-    {2500, 1977},  // 第 4 张牌的 X, Y
-    {2950, 1977}   // 第 5 张牌的 X, Y
-};
+// 【修改】动态触控坐标参数 (通过滑条控制)
+int g_touch_shop_x = 1150;      // 第一张牌的 X
+int g_touch_shop_y = 1977;      // 所有牌的 Y
+int g_touch_shop_spacing = 450; // 牌与牌的 X 轴间距
+bool g_show_touch_preview = true; // 实时预览准星开关
 
 bool g_predict_enemy = false;
 bool g_predict_hex = false;
@@ -148,6 +145,28 @@ int g_enemyBoard[4][7] = {
 // =================================================================
 // 1.1 触控可视化与日志数据结构
 // =================================================================
+std::mutex g_log_mutex;
+std::vector<std::string> g_app_logs;
+
+void AddLog(const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", buf);
+    
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    time_t t = time(nullptr);
+    struct tm* tm_info = localtime(&t);
+    char time_buf[16];
+    strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
+    
+    g_app_logs.push_back(std::string("[") + time_buf + "] " + buf);
+    if (g_app_logs.size() > 80) g_app_logs.erase(g_app_logs.begin());
+}
+
 struct TapRecord {
     int x; 
     int y;
@@ -163,7 +182,7 @@ bool g_show_tap_debug = true;
 // 1.5 增强型底层硬件触控逻辑 (多点触控版)
 // =================================================================
 void InitTouchDevice() {
-    LOGI("开始搜寻触控设备节点...");
+    AddLog("开始搜寻触控设备节点...");
     for (int i = 0; i < 30; i++) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
@@ -186,13 +205,13 @@ void InitTouchDevice() {
                     }
                 }
                 
-                LOGI("成功匹配触控设备: %s (fd: %d), 物理极值: X=%d, Y=%d", path, fd, g_touch_max_x, g_touch_max_y);
+                AddLog("成功匹配触控设备: %s (fd: %d), 物理极值: X=%d, Y=%d", path, fd, g_touch_max_x, g_touch_max_y);
                 return;
             }
             close(fd);
         }
     }
-    LOGE("未能在 /dev/input/ 目录下找到具备绝对坐标能力的设备！");
+    AddLog("未能在 /dev/input/ 目录下找到具备绝对坐标能力的设备！");
 }
 
 // 坐标映射助手函数
@@ -299,16 +318,17 @@ void HardwareMultiTap(const std::vector<std::pair<int, int>>& points) {
 
 void TestBuyAllCards() {
     std::thread([]() {
-        LOGI("触发多点触控：五指同按秒抢...");
+        AddLog("触发多点触控：五指同按秒抢...");
         std::vector<std::pair<int, int>> points;
+        // 【修改】直接通过滑条的参数实时计算出五张牌的位置
         for (int i = 0; i < 5; i++) {
-            points.push_back({g_shop_coords[i][0], g_shop_coords[i][1]});
+            points.push_back({g_touch_shop_x + i * g_touch_shop_spacing, g_touch_shop_y});
         }
         
         // 调用全新的多指触控函数，0 延迟秒全拿
         HardwareMultiTap(points);
         
-        LOGI("测试流程结束");
+        AddLog("多点触控指令已发送至底层完毕");
     }).detach();
 }
 
@@ -318,12 +338,12 @@ void TestBuyAllCards() {
 void GameLogicThread() {
     InitTouchDevice();
     
-    LOGI("正在连接 Paradise 驱动...");
+    AddLog("正在连接 Paradise 驱动...");
     try {
         g_driver = new Paradise_hook_driver();
-        LOGI("Paradise 驱动连接成功！");
+        AddLog("Paradise 驱动初始化成功！");
     } catch (...) {
-        LOGE("Paradise 驱动创建失败，可能未加载 .ko 或重启系统调用被拦截");
+        AddLog("错误：Paradise 驱动创建失败，可能未加载 .ko 或被拦截");
         snprintf(g_last_status, sizeof(g_last_status), "错误：驱动连接失败");
     }
 
@@ -331,14 +351,24 @@ void GameLogicThread() {
         if (g_gamePID <= 0 && g_driver) {
             g_gamePID = g_driver->get_pid("com.tencent.jkchess");
             if (g_gamePID > 0) {
-                LOGI("找到游戏进程 PID: %d", g_gamePID);
+                AddLog("找到游戏进程 PID: %d", g_gamePID);
                 g_driver->initialize(g_gamePID);
                 g_libBase = g_driver->get_module_base("libil2cpp.so");
                 if (g_libBase > 0) {
-                    LOGI("成功获取 libil2cpp 基址: 0x%lx", g_libBase);
-                    snprintf(g_last_status, sizeof(g_last_status), "就绪 | 基址: 0x%lx", g_libBase);
+                    AddLog("成功获取 libil2cpp 基址: 0x%lx", g_libBase);
+                    
+                    // 【核心方法】：验证驱动是否真正生效
+                    // 读取 libil2cpp.so 内存的开头，必定是 ELF 魔数 (0x464C457F)
+                    int magic = g_driver->read<int>(g_libBase);
+                    if (magic == 0x464C457F) { 
+                        AddLog("驱动读写正常！ELF魔数验证成功(生效中)。");
+                        snprintf(g_last_status, sizeof(g_last_status), "就绪 | 基址: 0x%lx (驱动已生效)", g_libBase);
+                    } else {
+                        AddLog("警告：驱动已连接但读取内存失败！读到: 0x%X", magic);
+                        snprintf(g_last_status, sizeof(g_last_status), "异常 | 无法读取内存(请检查读写权限)");
+                    }
                 } else {
-                    LOGE("无法获取模块基址");
+                    AddLog("无法获取模块基址");
                     snprintf(g_last_status, sizeof(g_last_status), "警告：无法获取基址");
                 }
             } else {
@@ -416,12 +446,17 @@ void SaveConfig() {
         out << "playersY=" << g_players_Y << "\n";
         out << "playersScale=" << g_players_Scale << "\n";
         
-        // 保存触控极值
+        // 保存触控极值与选项
         out << "touchMaxX=" << g_touch_max_x << "\n";
         out << "touchMaxY=" << g_touch_max_y << "\n";
         out << "touchSwapXY=" << g_touch_swap_xy << "\n";
         out << "touchFlipX=" << g_touch_flip_x << "\n";
         out << "touchFlipY=" << g_touch_flip_y << "\n";
+
+        // 保存滑条坐标
+        out << "touchShopX=" << g_touch_shop_x << "\n";
+        out << "touchShopY=" << g_touch_shop_y << "\n";
+        out << "touchShopSpacing=" << g_touch_shop_spacing << "\n";
 
         out.close();
     }
@@ -495,6 +530,9 @@ void LoadConfig() {
                 else if (k == "touchSwapXY") g_touch_swap_xy = (v == "1");
                 else if (k == "touchFlipX") g_touch_flip_x = (v == "1");
                 else if (k == "touchFlipY") g_touch_flip_y = (v == "1");
+                else if (k == "touchShopX") g_touch_shop_x = std::stoi(v);
+                else if (k == "touchShopY") g_touch_shop_y = std::stoi(v);
+                else if (k == "touchShopSpacing") g_touch_shop_spacing = std::stoi(v);
             } catch (...) {}
         }
         in.close();
@@ -1215,35 +1253,57 @@ void DrawTapVisuals() {
     }
 }
 
+// 【新增】实时在屏幕上画出 5 个绿色的靶心，方便玩家用滑条瞄准商店
+void DrawTouchPreview() {
+    if (!g_show_touch_preview) return;
+    
+    ImDrawList* d = ImGui::GetBackgroundDrawList();
+    for (int i = 0; i < 5; i++) {
+        // 通过滑条变量直接算出每一张牌的坐标
+        float px = g_touch_shop_x + i * g_touch_shop_spacing;
+        float py = g_touch_shop_y;
+        
+        ImVec2 center(px, py);
+        float line_len = 40.0f;
+        
+        // 画显眼的绿色靶心
+        d->AddCircle(center, 25.0f, IM_COL32(0, 255, 0, 255), 0, 4.0f);
+        d->AddCircleFilled(center, 5.0f, IM_COL32(0, 255, 0, 255));
+        d->AddLine(center - ImVec2(line_len, 0), center + ImVec2(line_len, 0), IM_COL32(0, 255, 0, 255), 2.0f);
+        d->AddLine(center - ImVec2(0, line_len), center + ImVec2(0, line_len), IM_COL32(0, 255, 0, 255), 2.0f);
+        
+        // 写字标明是第几张牌
+        char buf[32];
+        snprintf(buf, sizeof(buf), "牌 %d", i + 1);
+        d->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.5f, center + ImVec2(15.0f, 15.0f), IM_COL32(0, 255, 0, 255), buf);
+    }
+}
+
 void DrawTapDebugWindow() {
     if (!g_show_tap_debug) return;
     
     ImGui::SetNextWindowSize(ImVec2(450 * g_autoScale, 600 * g_autoScale), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin((const char*)u8"触控坐标诊断与校准", &g_show_tap_debug)) {
-        ImGui::TextWrapped((const char*)u8"如果红十字和小白点不重合，请修改下方的物理极值，并尝试勾选轴反转。极值可用 getevent -p 查询。");
+    if (ImGui::Begin((const char*)u8"系统诊断与日志中心", &g_show_tap_debug)) {
+        ImGui::TextWrapped((const char*)u8"如果红十字和小白点不重合，请在主菜单的【触控适配设置】中修改参数。");
         ImGui::Separator();
         
-        ImGui::TextColored(ImVec4(0, 1, 1, 1), (const char*)u8"[底层面板数据]");
-        ImGui::Text((const char*)u8"屏幕分辨率: %.0f x %.0f", ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
-        
-        if (g_auto_detected_max) {
-            ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"状态: 已成功自动获取底层极值");
-        } else {
-            ImGui::TextColored(ImVec4(1, 0, 0, 1), (const char*)u8"状态: 自动获取失败，请手动输入！");
+        ImGui::TextColored(ImVec4(0, 1, 1, 1), (const char*)u8"[系统运行与驱动日志]");
+        ImGui::BeginChild("app_log_region", ImVec2(0, 200 * g_autoScale), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        {
+            std::lock_guard<std::mutex> lock(g_log_mutex);
+            if (g_app_logs.empty()) {
+                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1.0), (const char*)u8"等待日志输出...");
+            } else {
+                for (auto it = g_app_logs.rbegin(); it != g_app_logs.rend(); ++it) {
+                    ImGui::TextWrapped("%s", it->c_str());
+                }
+            }
         }
-        
-        ImGui::InputInt((const char*)u8"触控极值 Max X", &g_touch_max_x, 100, 1000);
-        ImGui::InputInt((const char*)u8"触控极值 Max Y", &g_touch_max_y, 100, 1000);
+        ImGui::EndChild();
         
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), (const char*)u8"[坐标系校准选项]");
-        ImGui::Checkbox((const char*)u8"互换 X/Y 轴 (横屏游戏通常需勾选)", &g_touch_swap_xy);
-        ImGui::Checkbox((const char*)u8"X 轴数值反转", &g_touch_flip_x);
-        ImGui::Checkbox((const char*)u8"Y 轴数值反转", &g_touch_flip_y);
         
-        ImGui::Separator();
-        
-        ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"近期点击记录 (最新在最上):");
+        ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"[近期触控记录 (最新在最上)]");
         ImGui::BeginChild("tap_log_region", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
         
         std::lock_guard<std::mutex> lock(g_tap_mutex);
@@ -1766,12 +1826,53 @@ void DrawMenu() {
                 TestBuyAllCards();
             }
             
-            if (ImGui::Button((const char*)u8"呼出触控调试器", ImVec2(-1, 55 * g_autoScale))) {
+            if (ImGui::Button((const char*)u8"呼出系统日志与触控调试器", ImVec2(-1, 55 * g_autoScale))) {
                 g_show_tap_debug = true;
             }
             ImGui::Spacing();
             ImGui::Separator();
             // =================================================================
+
+            // 【修改】彻底动态化的触控坐标校准面板
+            static bool header_touch = true;
+            if (ModernAnimatedFolder((const char*)u8"触控适配设置", &header_touch, 12)) {
+                
+                ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), (const char*)u8"[商店坐标设置 (实时拖动预览)]");
+                ImGui::Checkbox((const char*)u8"显示坐标预览光标 (绿色准星)", &g_show_touch_preview);
+                
+                // 这三个滑条可以直接调整 5 张牌的位置
+                ImGui::PushItemWidth(150 * g_autoScale);
+                ImGui::SliderInt((const char*)u8"首张牌 X", &g_touch_shop_x, 0, 4000);
+                ImGui::SliderInt((const char*)u8"所有牌 Y", &g_touch_shop_y, 0, 4000);
+                ImGui::SliderInt((const char*)u8"卡牌间距", &g_touch_shop_spacing, 100, 1000);
+                ImGui::PopItemWidth();
+                
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), (const char*)u8"[底层硬件映射极值]");
+                if (g_auto_detected_max) {
+                    ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"状态: 已自动获取底层极值");
+                } else {
+                    ImGui::TextColored(ImVec4(1, 0, 0, 1), (const char*)u8"状态: 未获取，请手动修改");
+                }
+                
+                ImGui::PushItemWidth(140 * g_autoScale);
+                ImGui::InputInt((const char*)u8"物理极值 X", &g_touch_max_x, 100, 1000);
+                ImGui::InputInt((const char*)u8"物理极值 Y", &g_touch_max_y, 100, 1000);
+                ImGui::PopItemWidth();
+                
+                ImGui::Spacing();
+                ImGui::Checkbox((const char*)u8"互换 X/Y 轴 (横屏游戏常选)", &g_touch_swap_xy);
+                ImGui::Checkbox((const char*)u8"X 轴数值反转", &g_touch_flip_x);
+                ImGui::Checkbox((const char*)u8"Y 轴数值反转", &g_touch_flip_y);
+                
+                EndModernAnimatedFolder();
+            }
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
 
             static bool header_pred = true;
             if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
@@ -1926,6 +2027,25 @@ int main() {
         
         DrawAutoBuyWindow(); 
         DrawCardPool(); 
+        
+        // 【新增】在所有 UI 之上绘制触控坐标预览光标
+        if (g_show_touch_preview && !g_menuCollapsed) {
+            ImDrawList* bg_d = ImGui::GetBackgroundDrawList();
+            for (int i = 0; i < 5; i++) {
+                float px = g_touch_shop_x + i * g_touch_shop_spacing;
+                float py = g_touch_shop_y;
+                ImVec2 center(px, py);
+                
+                bg_d->AddCircle(center, 25.0f, IM_COL32(0, 255, 0, 255), 0, 4.0f);
+                bg_d->AddCircleFilled(center, 5.0f, IM_COL32(0, 255, 0, 255));
+                bg_d->AddLine(center - ImVec2(40.0f, 0), center + ImVec2(40.0f, 0), IM_COL32(0, 255, 0, 255), 2.0f);
+                bg_d->AddLine(center - ImVec2(0, 40.0f), center + ImVec2(0, 40.0f), IM_COL32(0, 255, 0, 255), 2.0f);
+                
+                char buf[32];
+                snprintf(buf, sizeof(buf), "牌 %d", i + 1);
+                bg_d->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.5f, center + ImVec2(15.0f, 15.0f), IM_COL32(0, 255, 0, 255), buf);
+            }
+        }
         
         DrawTapVisuals();
         DrawTapDebugWindow();
