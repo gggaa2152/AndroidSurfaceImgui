@@ -138,6 +138,18 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
+// 1.1 【新增】触控可视化与日志数据结构
+// =================================================================
+struct TapRecord {
+    int x; 
+    int y;
+    std::chrono::steady_clock::time_point time;
+};
+std::vector<TapRecord> g_recent_taps;
+std::mutex g_tap_mutex;
+bool g_show_tap_debug = true; // 默认开启触控诊断窗
+
+// =================================================================
 // 1.5 【新增】增强型底层硬件触控逻辑
 // =================================================================
 void InitTouchDevice() {
@@ -166,6 +178,13 @@ void HardwareTap(int x, int y) {
         return;
     }
     
+    // 【新增】将点击记录保存到队列中，用于 UI 渲染准星和日志
+    {
+        std::lock_guard<std::mutex> lock(g_tap_mutex);
+        g_recent_taps.push_back({x, y, std::chrono::steady_clock::now()});
+        if (g_recent_taps.size() > 30) g_recent_taps.erase(g_recent_taps.begin()); // 最多保留30条
+    }
+
     LOGI("执行点击动作: X=%d, Y=%d", x, y);
     static int tracking_id = 100;
     struct input_event ev[12];
@@ -1061,6 +1080,74 @@ void DrawCardPool() {
 }
 
 // =================================================================
+// 6.6 【新增】绘制触控可视化准星与日志窗口
+// =================================================================
+void DrawTapVisuals() {
+    if (!g_show_tap_debug) return;
+    
+    ImDrawList* d = ImGui::GetForegroundDrawList();
+    auto now = std::chrono::steady_clock::now();
+
+    std::lock_guard<std::mutex> lock(g_tap_mutex);
+    for (auto it = g_recent_taps.begin(); it != g_recent_taps.end(); ) {
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->time).count();
+        if (duration > 4000) { 
+            // 4秒后自动消失
+            it = g_recent_taps.erase(it);
+        } else {
+            // 实现淡出动画
+            float alpha = 1.0f - (duration / 4000.0f);
+            ImVec2 p((float)it->x, (float)it->y);
+            
+            // 绘制红色核心圆
+            d->AddCircleFilled(p, 10.0f * g_autoScale, IM_COL32(255, 0, 0, 180 * alpha));
+            // 绘制黄色波纹光圈
+            float pulse = 15.0f + 15.0f * (duration / 1000.0f); // 随时间扩散
+            d->AddCircle(p, pulse * g_autoScale, IM_COL32(255, 255, 0, 255 * alpha), 0, 3.0f * g_autoScale);
+            
+            // 绘制巨大的十字瞄准线 (让你一眼看出点在哪)
+            float line_len = 50.0f * g_autoScale;
+            d->AddLine(p - ImVec2(line_len, 0), p + ImVec2(line_len, 0), IM_COL32(255, 255, 255, 255 * alpha), 2.5f * g_autoScale);
+            d->AddLine(p - ImVec2(0, line_len), p + ImVec2(0, line_len), IM_COL32(255, 255, 255, 255 * alpha), 2.5f * g_autoScale);
+
+            // 显示发送的坐标文本
+            char buf[32];
+            snprintf(buf, sizeof(buf), "(%d, %d)", it->x, it->y);
+            ImFont* font = ImGui::GetFont();
+            float fsz = ImGui::GetFontSize() * 1.2f;
+            d->AddText(font, fsz, p + ImVec2(15 * g_autoScale, 15 * g_autoScale), IM_COL32(0, 255, 255, 255 * alpha), buf);
+
+            ++it;
+        }
+    }
+}
+
+void DrawTapDebugWindow() {
+    if (!g_show_tap_debug) return;
+    
+    ImGui::SetNextWindowSize(ImVec2(350 * g_autoScale, 400 * g_autoScale), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin((const char*)u8"触控坐标诊断器", &g_show_tap_debug)) {
+        ImGui::TextWrapped((const char*)u8"屏幕上会显示红色十字光标，代表程序发送给系统的实际物理坐标。如果光标聚在一起，说明需要调整坐标系映射。");
+        ImGui::Separator();
+        
+        ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"近期点击记录 (最新在最上):");
+        ImGui::BeginChild("tap_log_region", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        
+        std::lock_guard<std::mutex> lock(g_tap_mutex);
+        if (g_recent_taps.empty()) {
+            ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1.0), (const char*)u8"暂无点击记录...");
+        } else {
+            // 倒序遍历，最新的显示在上面
+            for (auto it = g_recent_taps.rbegin(); it != g_recent_taps.rend(); ++it) {
+                ImGui::Text(">> 点击 -> X: %d, Y: %d", it->x, it->y);
+            }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
+}
+
+// =================================================================
 // 棋盘、备战席、商店渲染
 // =================================================================
 void DrawBoard() {
@@ -1566,6 +1653,10 @@ void DrawMenu() {
             if (ImGui::Button((const char*)u8"测试：硬件级一键秒拿 5 张牌", ImVec2(-1, 55 * g_autoScale))) {
                 TestBuyAllCards();
             }
+            // 【新增】调试按钮
+            if (ImGui::Button((const char*)u8"呼出触控调试器", ImVec2(-1, 55 * g_autoScale))) {
+                g_show_tap_debug = true;
+            }
             ImGui::Spacing();
             ImGui::Separator();
             // =================================================================
@@ -1707,7 +1798,6 @@ int main() {
         // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
-        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
@@ -1726,6 +1816,10 @@ int main() {
         
         DrawAutoBuyWindow(); 
         DrawCardPool(); 
+        
+        // 【新增】渲染触控可视化
+        DrawTapVisuals();
+        DrawTapDebugWindow();
         
         DrawMenu();
         
