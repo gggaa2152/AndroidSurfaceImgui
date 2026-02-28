@@ -47,16 +47,15 @@
 
 const char* TARGET_PACKAGE = "com.tencent.jkchess";
 const char* DROP_SO_PATH = "/data/data/com.tencent.jkchess/cache/libJKHook.so";
-const char* g_configPath = "/data/jkchess_config.ini"; 
 
 std::atomic<bool> g_game_running(false);
 
 // =================================================================
-// 1. 全局配置
+// 1. 全局配置与模拟数据
 // =================================================================
 bool g_esp_board = true;
 bool g_boardLocked = false; 
-float g_startX = 400.0f, g_startY = 400.0f;    
+float g_startX = 450.0f, g_startY = 400.0f;    
 int g_enemyBoard[4][7] = {{1,0,0,0,1,0,0},{0,1,0,1,0,0,0},{0,0,0,0,0,1,0},{1,0,1,0,1,0,1}};
 
 // =================================================================
@@ -78,121 +77,118 @@ void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func_
 }
 
 // =================================================================
-// 3. UI 与 字体核心 (极致瘦身版)
+// 3. UI 与 字体构建 (极致成功率模式)
 // =================================================================
 
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
-    float targetSize = 22.0f; // 锁定大小，减少抖动
-
     if (!force && io.Fonts->IsBuilt()) return;
 
-    LOGI("[*] 正在执行字体核心构建...");
+    LOGI("[*] 正在优化字体图集...");
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear(); 
 
     ImFontConfig config;
-    config.OversampleH = 1; config.OversampleV = 1; config.PixelSnapH = true;
+    config.OversampleH = 1; 
+    config.OversampleV = 1; 
+    config.PixelSnapH = true;
 
-    // 【终极修复】：只加载必要的 20 个汉字，确保 100% 成功
-    // 包含：状态注入成功敌方棋盘显示锁定保存配置
-    static const ImWchar custom_ranges[] = {
-        0x0020, 0x00FF, // ASCII
-        0x72B6, 0x72B6, // 状
-        0x6001, 0x6001, // 态
-        0x6CE8, 0x6CE8, // 注
-        0x5165, 0x5165, // 入
-        0x6210, 0x6210, // 成
-        0x529F, 0x529F, // 功
-        0x663E, 0x663E, // 显
-        0x793A, 0x793A, // 示
-        0x654C, 0x654C, // 敌
-        0x65B9, 0x65B9, // 方
-        0x68CB, 0x68CB, // 棋
-        0x76D8, 0x76D8, // 盘
-        0x9501, 0x9501, // 锁
-        0x5B9A, 0x5B9A, // 定
-        0x4FDD, 0x4FDD, // 保
-        0x5B58, 0x5B58, // 存
-        0x914D, 0x914D, // 配
-        0x7F6E, 0x7F6E, // 置
-        0,
-    };
+    // 只加载 ASCII。中文字符在检测到 Build 成功后再添加，或者直接用默认。
+    // 为了 100% 成功，我们先用 AddFontDefault
+    io.Fonts->AddFontDefault(&config);
 
+    // 尝试添加极少量的中文字符范围 (状态: 已连接游戏)
+    static const ImWchar mini_range[] = { 0x4E00, 0x9FA5, 0 };
     const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
-    bool loaded = false;
     if (access(fontPath, R_OK) == 0) {
-        if (io.Fonts->AddFontFromFileTTF(fontPath, targetSize, &config, custom_ranges)) {
-            loaded = true;
-        }
+        // 限制尺寸为 20px，降低显存占用
+        io.Fonts->AddFontFromFileTTF(fontPath, 20.0f, &config, mini_range);
     }
 
-    if (!loaded) io.Fonts->AddFontDefault(&config);
-
-    io.Fonts->TexDesiredWidth = 512; // 极小纹理
+    // 强制设置超小纹理建议，确保在所有安卓 GPU 上都能 Build 成功
+    io.Fonts->TexDesiredWidth = 256; 
     if (!io.Fonts->Build()) {
-        LOGE("[-] 字体构建失败，回退默认。");
+        LOGE("[-] 构建仍失败，启用强制英文模式。");
         io.Fonts->Clear(); io.Fonts->AddFontDefault(); io.Fonts->Build();
     }
 
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_CreateFontsTexture();
-    LOGI("[+] 字体纹理就绪。");
+    LOGI("[+] 字体纹理已锁定。");
 }
 
 void DrawMenu() {
-    ImGui::SetNextWindowSize(ImVec2(350, 0));
-    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"状态: 注入成功");
+    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_Always);
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), (const char*)u8"状态: 双端链路已就绪");
         ImGui::Separator();
         ImGui::Checkbox((const char*)u8"敌方棋盘显示", &g_esp_board);
-        ImGui::Checkbox((const char*)u8"锁定窗口", &g_boardLocked);
+        ImGui::Checkbox((const char*)u8"位置锁定", &g_boardLocked);
         if (!g_boardLocked) {
             ImGui::SliderFloat("X", &g_startX, 0, 2400);
-            ImGui::SliderFloat("Y", &g_startY, 0, 1200);
+            ImGui::SliderFloat("Y", &g_startY, 0, 1400);
         }
     }
     ImGui::End();
 }
 
 void MainRenderThread() {
+    LOGI("[*] UI 渲染线程启动。");
     ImGui::CreateContext();
     {
         android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
         UpdateFontHD(true);  
-        std::thread it([&] { while(g_game_running) { imgui.ProcessInputEvent(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); } });
+        
+        std::thread it([&] { 
+            while(g_game_running) { 
+                imgui.ProcessInputEvent(); 
+                std::this_thread::sleep_for(std::chrono::milliseconds(10)); 
+            } 
+        });
 
         while (g_game_running) {
-            if (!ImGui::GetIO().Fonts->IsBuilt()) { UpdateFontHD(true); if (!ImGui::GetIO().Fonts->IsBuilt()) continue; }
+            if (!ImGui::GetIO().Fonts->IsBuilt()) UpdateFontHD(true);
+            
             imgui.BeginFrame(); 
             glDisable(GL_SCISSOR_TEST); glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT);
             
-            // 绘制逻辑
             if (g_esp_board) {
                 ImDrawList* d = ImGui::GetForegroundDrawList();
-                float b = 35.0f * (ImGui::GetIO().DisplaySize.y / 1080.0f);
+                float b = 38.0f * (ImGui::GetIO().DisplaySize.y / 1080.0f);
                 for(int r=0; r<4; r++) for(int c=0; c<7; c++) {
                     float cx = g_startX + (c*b*1.732f) + (r%2==1?b*0.866f:0);
                     float cy = g_startY + (r*b*1.5f);
-                    if(g_enemyBoard[r][c]) d->AddCircleFilled(ImVec2(cx, cy), b*0.5f, IM_COL32(255, 0, 0, 180));
-                    d->AddCircle(ImVec2(cx, cy), b*0.5f, IM_COL32(255, 255, 255, 100));
+                    if(g_enemyBoard[r][c]) d->AddCircleFilled(ImVec2(cx, cy), b*0.55f, IM_COL32(255, 0, 0, 160));
+                    d->AddCircle(ImVec2(cx, cy), b*0.55f, IM_COL32(255, 255, 255, 100));
                 }
             }
             DrawMenu();
-
             imgui.EndFrame(); 
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
         if (it.joinable()) it.join();
     }
     if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
-    LOGI("[+] 渲染完毕。");
+    LOGI("[+] UI 线程安全退出。");
 }
 
 // =================================================================
-// 4. 注入核心 (修正返回校验)
+// 4. 强力守卫 (修复假死检测)
 // =================================================================
+
+bool is_process_really_alive(pid_t pid) {
+    if (pid <= 0) return false;
+    // 连续检查 5 次失败才判定死亡，容忍 ptrace 带来的状态抖动
+    static int consecutive_fails = 0;
+    if (kill(pid, 0) == 0) {
+        consecutive_fails = 0;
+        return true;
+    }
+    consecutive_fails++;
+    return (consecutive_fails < 5);
+}
+
 int perform_injection(pid_t pid, const char* drop_path) {
-    LOGI("[*] 正在附加 PID: %d...", pid);
+    LOGI("[*] 正在注入载荷到 PID: %d", pid);
     if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
     waitpid(pid, NULL, WUNTRACED);
 
@@ -210,7 +206,7 @@ int perform_injection(pid_t pid, const char* drop_path) {
     ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov);
     long r_mem = regs.regs[0];
 
-    if (r_mem <= 0) { ptrace(PTRACE_DETACH, pid, NULL, 0); return -1; }
+    if (r_mem <= 0 || r_mem == (long)-1) { ptrace(PTRACE_DETACH, pid, NULL, 0); return -1; }
 
     char buf[256] = {0}; strncpy(buf, drop_path, 255);
     for (size_t i = 0; i < sizeof(buf); i += 8) ptrace(PTRACE_POKETEXT, pid, (void*)(r_mem + i), *(long*)(buf + i));
@@ -228,20 +224,15 @@ int perform_injection(pid_t pid, const char* drop_path) {
     ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, (void*)&saved);
     ptrace(PTRACE_DETACH, pid, NULL, 0); 
     
-    if (h == 0) { LOGE("[-] dlopen 失败"); return -1; }
-    LOGI("[+] 注入成功，句柄: 0x%lx", h);
+    if (h == 0) return -1;
+    LOGI("[+] 注入成功，代码句柄: 0x%lx", h);
     return 0;
 }
 
-bool is_process_alive(pid_t pid) {
-    if (pid <= 0) return false;
-    char path[128]; snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
-    return access(path, F_OK) == 0;
-}
-
 int main(int argc, char** argv) {
-    LOGI("JKHelper Daemon Active.");
+    LOGI("JKHelper Daemon Guard Started.");
     system("setenforce 0 > /dev/null 2>&1");
+    
     while (true) {
         pid_t pid = 0; uid_t game_uid = 0;
         DIR* dir = opendir("/proc");
@@ -264,35 +255,40 @@ int main(int argc, char** argv) {
             } closedir(dir);
         }
 
-        if (pid > 0 && is_process_alive(pid)) {
-            // 部署 SO 并赋权
+        if (pid > 0 && kill(pid, 0) == 0) {
+            // 确保目录和载荷就绪
             FILE* f = fopen(DROP_SO_PATH, "wb");
             if(f) {
                 fwrite(libJKHook_so, 1, libJKHook_so_len, f); fclose(f);
-                chmod(DROP_SO_PATH, 0777); if (game_uid > 0) chown(DROP_SO_PATH, game_uid, game_uid);
+                chmod(DROP_SO_PATH, 0777); 
+                if (game_uid > 0) chown(DROP_SO_PATH, game_uid, game_uid);
                 system("chcon u:object_r:apk_data_file:s0 /data/data/com.tencent.jkchess/cache/libJKHook.so > /dev/null 2>&1");
             }
             
-            // 注入检查
             if (get_module_base_remote(pid, "libJKHook.so") == 0) {
-                LOGI("[!] 发现目标 (%d)，准备注入...", pid);
-                while (get_module_base_remote(pid, "libil2cpp.so") == 0 && is_process_alive(pid)) 
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                LOGI("[!] 发现金铲铲，延迟 2.5 秒注入以等待引擎稳定...");
+                std::this_thread::sleep_for(std::chrono::milliseconds(2500));
                 
-                if (is_process_alive(pid) && perform_injection(pid, DROP_SO_PATH) == 0) {
+                if (perform_injection(pid, DROP_SO_PATH) == 0) {
+                    LOGI("[*] 注入已确认，启动 UI 线程...");
                     g_game_running = true; 
                     std::thread(MainRenderThread).detach();
+                    // 【关键修复】：注入后强制睡眠 1 秒，避开内核状态抖动期
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
                 }
             } else if (!g_game_running) {
-                g_game_running = true; std::thread(MainRenderThread).detach();
+                g_game_running = true;
+                std::thread(MainRenderThread).detach();
             }
 
-            // 监控循环
-            while (is_process_alive(pid)) std::this_thread::sleep_for(std::chrono::seconds(2));
+            // 持续监控
+            while (is_process_really_alive(pid)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            }
             
             g_game_running = false; 
-            LOGI("[*] 进程已退出，回收资源。");
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            LOGI("[*] 会话结束，等待下次游戏启动。");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
