@@ -20,25 +20,26 @@ jobs:
           echo "[*] 正在全自动拉取并编译 Dobby Hook 框架..."
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【核弹级修复 1】：修补 Dobby 官方最新版的 OSMemory 报错Bug
-          sed -i 's/!OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)/mprotect(page, 4096, 7) != 0/g' third_party/dobby/common/os_arch_features.h || true
-          sed -i 's/OSMemory::PageSize()/4096/g' third_party/dobby/common/os_arch_features.h || true
-          sed -i '1i #include <sys/mman.h>' third_party/dobby/common/os_arch_features.h || true
+          # 【外科手术级修复 1】：修补 Dobby 官方最新版的 OSMemory 报错 Bug
+          sed -i '1i #include <sys/mman.h>' third_party/dobby/common/os_arch_features.h
+          sed -i 's/OSMemory::PageSize()/4096/g' third_party/dobby/common/os_arch_features.h
+          sed -i 's/!OSMemory::SetPermission(page, 4096, kReadExecute)/mprotect(page, 4096, 7) != 0/g' third_party/dobby/common/os_arch_features.h
           
-          # 【核弹级修复 2】：修补老版本中 a.start 忘记加括号的语法拼写 Bug
-          sed -i 's/a.start < b.start/a.start() < b.start()/g' third_party/dobby/source/Backend/UserMode/PlatformUtil/Linux/ProcessRuntimeUtility.cc || true
+          # 【外科手术级修复 2】：修补 NDK 27 汇编器报错 (隐藏 ADRP 指令的符号寻址)
+          sed -i '1i .hidden common_closure_bridge_handler' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
+          sed -i '1i .hidden get_routing_bridge_next_hop' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm || true
           
-          # 提取头文件供我们的 external_hook.cc 使用
+          # 提取头文件供我们的 internal_hook.cc 使用
           mkdir -p includes
           cp third_party/dobby/include/dobby.h includes/
           
           cd third_party/dobby
           mkdir build && cd build
           
-          # 直接使用最新的 NDK
+          # 使用云端自带的最新的 NDK 27
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 开启全局 PIC 支持（解决汇编报错），并关闭不必要的冲突插件
+          # 开启全局 PIC 支持，并关闭无用的符号解析插件
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
