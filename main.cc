@@ -21,44 +21,9 @@
 #include <unistd.h>
 
 // =================================================================
-// 底层系统级头文件与驱动宏
-// =================================================================
-#include <mutex>         
-#include <atomic>        
-#include <linux/input.h> 
-#include <fcntl.h>       
-#include "driver.h"
-
-#define LOG_TAG "JKHelper"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
-// =================================================================
 // 1. 全局配置与状态
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
-
-// 全局线程控制与驱动状态
-std::atomic<bool> g_running{true};
-Paradise_hook_driver *g_driver = nullptr;
-pid_t g_gamePID = -1;
-uintptr_t g_libBase = 0;
-int g_touch_fd = -1;
-char g_last_status[256] = "正在等待初始化...";
-
-// 触控面板参数与校准开关
-int g_touch_max_x = 32767;
-int g_touch_max_y = 32767;
-bool g_touch_swap_xy = false;
-bool g_touch_flip_x = false;
-bool g_touch_flip_y = false;
-bool g_auto_detected_max = false;
-
-// 【修改】动态触控坐标参数 (通过滑条控制)
-int g_touch_shop_x = 1150;      // 第一张牌的 X
-int g_touch_shop_y = 1977;      // 所有牌的 Y
-int g_touch_shop_spacing = 450; // 牌与牌的 X 轴间距
-bool g_show_touch_preview = true; // 实时预览准星开关
 
 bool g_predict_enemy = false;
 bool g_predict_hex = false;
@@ -79,7 +44,9 @@ int g_card_pool_rows = 2;
 int g_card_pool_cols = 5;
 float g_cardPoolX = 150.0f;
 float g_cardPoolY = 150.0f;
-float g_cardPoolScale = 1.0f; 
+// 将牌库的等比缩放拆分为 X轴 和 Y轴 独立缩放，实现全方向拉伸
+float g_cardPoolScaleX = 1.0f; 
+float g_cardPoolScaleY = 1.0f; 
 float g_cardPoolAlpha = 1.0f; 
 
 // 预警功能状态
@@ -112,7 +79,6 @@ float g_shopX = 200.0f;
 float g_shopY = 850.0f;
 float g_shopScale = 1.0f;
 
-// 全新纯悬浮预测坐标
 float g_enemy_X = 100.0f;
 float g_enemy_Y = 100.0f;
 float g_enemy_Scale = 1.0f;
@@ -125,7 +91,6 @@ float g_autoW_X = 300.0f;
 float g_autoW_Y = 1000.0f;
 float g_autoW_Scale = 1.0f;
 
-// 整合的 8 人玩家信息覆盖层坐标
 float g_players_X = 1500.0f;
 float g_players_Y = 200.0f;
 float g_players_Scale = 1.0f;
@@ -135,249 +100,15 @@ bool g_textureLoaded = false;
 bool g_resLoaded = false; 
 bool g_needUpdateFontSafe = false;
 
+ImFont* g_mainFont = nullptr;
+ImFont* g_hugeNumFont = nullptr;
+
 int g_enemyBoard[4][7] = {
     {1, 0, 0, 0, 1, 0, 0}, 
     {0, 1, 0, 1, 0, 0, 0},
     {0, 0, 0, 0, 0, 1, 0}, 
     {1, 0, 1, 0, 1, 0, 1}
 };
-
-// =================================================================
-// 1.1 触控可视化与日志数据结构
-// =================================================================
-std::mutex g_log_mutex;
-std::vector<std::string> g_app_logs;
-
-void AddLog(const char* fmt, ...) {
-    char buf[1024];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    
-    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", buf);
-    
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    time_t t = time(nullptr);
-    struct tm* tm_info = localtime(&t);
-    char time_buf[16];
-    strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
-    
-    g_app_logs.push_back(std::string("[") + time_buf + "] " + buf);
-    if (g_app_logs.size() > 80) g_app_logs.erase(g_app_logs.begin());
-}
-
-struct TapRecord {
-    int x; 
-    int y;
-    int mapped_x;
-    int mapped_y;
-    std::chrono::steady_clock::time_point time;
-};
-std::vector<TapRecord> g_recent_taps;
-std::mutex g_tap_mutex;
-bool g_show_tap_debug = true; 
-
-// =================================================================
-// 1.5 增强型底层硬件触控逻辑 (多点触控版)
-// =================================================================
-void InitTouchDevice() {
-    AddLog("开始搜寻触控设备节点...");
-    for (int i = 0; i < 30; i++) {
-        char path[64];
-        snprintf(path, sizeof(path), "/dev/input/event%d", i);
-        int fd = open(path, O_RDWR | O_NONBLOCK);
-        if (fd >= 0) {
-            unsigned long bitmask[EV_MAX / (sizeof(long) * 8) + 1] = {0};
-            ioctl(fd, EVIOCGBIT(0, sizeof(bitmask)), bitmask);
-            if (bitmask[EV_ABS / (sizeof(long) * 8)] & (1UL << (EV_ABS % (sizeof(long) * 8)))) {
-                g_touch_fd = fd;
-                
-                // 尝试自动获取底层面板的最大坐标边界
-                struct input_absinfo abs_x, abs_y;
-                if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &abs_x) >= 0 && 
-                    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &abs_y) >= 0) {
-                    
-                    if (abs_x.maximum > 0 && abs_y.maximum > 0) {
-                        g_touch_max_x = abs_x.maximum;
-                        g_touch_max_y = abs_y.maximum;
-                        g_auto_detected_max = true;
-                    }
-                }
-                
-                AddLog("成功匹配触控设备: %s (fd: %d), 物理极值: X=%d, Y=%d", path, fd, g_touch_max_x, g_touch_max_y);
-                return;
-            }
-            close(fd);
-        }
-    }
-    AddLog("未能在 /dev/input/ 目录下找到具备绝对坐标能力的设备！");
-}
-
-// 坐标映射助手函数
-void MapScreenToTouch(int x, int y, int& mapped_x, int& mapped_y) {
-    float scr_w = ImGui::GetIO().DisplaySize.x;
-    float scr_h = ImGui::GetIO().DisplaySize.y;
-    if (scr_w < 10) scr_w = 2400.0f; 
-    if (scr_h < 10) scr_h = 1080.0f;
-
-    float rx = (float)x / scr_w;
-    float ry = (float)y / scr_h;
-
-    if (g_touch_swap_xy) { float temp = rx; rx = ry; ry = temp; }
-    if (g_touch_flip_x) { rx = 1.0f - rx; }
-    if (g_touch_flip_y) { ry = 1.0f - ry; }
-
-    mapped_x = (int)(rx * g_touch_max_x);
-    mapped_y = (int)(ry * g_touch_max_y);
-
-    mapped_x = std::clamp(mapped_x, 0, g_touch_max_x);
-    mapped_y = std::clamp(mapped_y, 0, g_touch_max_y);
-}
-
-// 记录日志助手函数
-void RecordTapForUI(int x, int y, int mapped_x, int mapped_y) {
-    std::lock_guard<std::mutex> lock(g_tap_mutex);
-    g_recent_taps.push_back({x, y, mapped_x, mapped_y, std::chrono::steady_clock::now()});
-    if (g_recent_taps.size() > 30) g_recent_taps.erase(g_recent_taps.begin()); 
-}
-
-// 单指触控 (用于以后只买一张牌)
-void HardwareTap(int x, int y) {
-    if (g_touch_fd < 0) return;
-    
-    int mapped_x, mapped_y;
-    MapScreenToTouch(x, y, mapped_x, mapped_y);
-    RecordTapForUI(x, y, mapped_x, mapped_y);
-
-    static int tracking_id = 100;
-    struct input_event ev[12];
-    int count = 0;
-
-    // 按下阶段
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, 0 };
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, tracking_id++ };
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_X, mapped_x }; 
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_Y, mapped_y }; 
-    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 1 };
-    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
-    write(g_touch_fd, ev, sizeof(struct input_event) * count);
-
-    // 【防漏牌修复】：延长按压时间到 50ms，确保游戏引擎完整捕获
-    usleep(50000); 
-
-    // 抬起阶段
-    count = 0;
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, 0 };
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, -1 };
-    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 0 };
-    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
-    write(g_touch_fd, ev, sizeof(struct input_event) * count);
-}
-
-// 【全新添加】真正的五指同时按下：一次性秒拿
-void HardwareMultiTap(const std::vector<std::pair<int, int>>& points) {
-    if (g_touch_fd < 0 || points.empty()) return;
-
-    static int tracking_id = 1000;
-    struct input_event ev[128]; // 足够容纳 5 个手指的事件
-    int count = 0;
-
-    // ================== 五指同时按下阶段 ==================
-    for (size_t i = 0; i < points.size() && i < 10; ++i) { // 绝大多数屏幕支持10点触控
-        int mapped_x, mapped_y;
-        MapScreenToTouch(points[i].first, points[i].second, mapped_x, mapped_y);
-        RecordTapForUI(points[i].first, points[i].second, mapped_x, mapped_y);
-
-        // 分配不同的 Slot (手指ID)
-        ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, (int)i };
-        ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, tracking_id++ };
-        ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_X, mapped_x };
-        ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_Y, mapped_y };
-    }
-    
-    // 只需发送一次屏幕被触摸的标志
-    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 1 };
-    // 一次性提交所有五根手指的状态
-    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
-    write(g_touch_fd, ev, sizeof(struct input_event) * count);
-
-    // 【防漏牌修复】：给游戏引擎 50ms 的反应时间处理这 5 个点击
-    usleep(50000); 
-
-    // ================== 五指同时抬起阶段 ==================
-    count = 0;
-    for (size_t i = 0; i < points.size() && i < 10; ++i) {
-        ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, (int)i };
-        ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, -1 }; // -1 代表手指离开
-    }
-    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 0 };
-    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
-    write(g_touch_fd, ev, sizeof(struct input_event) * count);
-}
-
-void TestBuyAllCards() {
-    std::thread([]() {
-        AddLog("触发多点触控：五指同按秒抢...");
-        std::vector<std::pair<int, int>> points;
-        // 【修改】直接通过滑条的参数实时计算出五张牌的位置
-        for (int i = 0; i < 5; i++) {
-            points.push_back({g_touch_shop_x + i * g_touch_shop_spacing, g_touch_shop_y});
-        }
-        
-        // 调用全新的多指触控函数，0 延迟秒全拿
-        HardwareMultiTap(points);
-        
-        AddLog("多点触控指令已发送至底层完毕");
-    }).detach();
-}
-
-// =================================================================
-// 1.6 后台驱动逻辑同步线程
-// =================================================================
-void GameLogicThread() {
-    InitTouchDevice();
-    
-    AddLog("正在连接 Paradise 驱动...");
-    try {
-        g_driver = new Paradise_hook_driver();
-        AddLog("Paradise 驱动初始化成功！");
-    } catch (...) {
-        AddLog("错误：Paradise 驱动创建失败，可能未加载 .ko 或被拦截");
-        snprintf(g_last_status, sizeof(g_last_status), "错误：驱动连接失败");
-    }
-
-    while (g_running) {
-        if (g_gamePID <= 0 && g_driver) {
-            g_gamePID = g_driver->get_pid("com.tencent.jkchess");
-            if (g_gamePID > 0) {
-                AddLog("找到游戏进程 PID: %d", g_gamePID);
-                g_driver->initialize(g_gamePID);
-                g_libBase = g_driver->get_module_base("libil2cpp.so");
-                if (g_libBase > 0) {
-                    AddLog("成功获取 libil2cpp 基址: 0x%lx", g_libBase);
-                    
-                    // 【核心方法】：验证驱动是否真正生效
-                    // 读取 libil2cpp.so 内存的开头，必定是 ELF 魔数 (0x464C457F)
-                    int magic = g_driver->read<int>(g_libBase);
-                    if (magic == 0x464C457F) { 
-                        AddLog("驱动读写正常！ELF魔数验证成功(生效中)。");
-                        snprintf(g_last_status, sizeof(g_last_status), "就绪 | 基址: 0x%lx (驱动已生效)", g_libBase);
-                    } else {
-                        AddLog("警告：驱动已连接但读取内存失败！读到: 0x%X", magic);
-                        snprintf(g_last_status, sizeof(g_last_status), "异常 | 无法读取内存(请检查读写权限)");
-                    }
-                } else {
-                    AddLog("无法获取模块基址");
-                    snprintf(g_last_status, sizeof(g_last_status), "警告：无法获取基址");
-                }
-            } else {
-                snprintf(g_last_status, sizeof(g_last_status), "正在寻找游戏进程...");
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-}
 
 // =================================================================
 // 2. 配置管理
@@ -394,7 +125,8 @@ void SaveConfig() {
         out << "showCardPool=" << g_show_card_pool << "\n";
         out << "cardPoolRows=" << g_card_pool_rows << "\n";
         out << "cardPoolCols=" << g_card_pool_cols << "\n";
-        out << "cardPoolScale=" << g_cardPoolScale << "\n";
+        out << "cardPoolScaleX=" << g_cardPoolScaleX << "\n";
+        out << "cardPoolScaleY=" << g_cardPoolScaleY << "\n";
         out << "cardPoolAlpha=" << g_cardPoolAlpha << "\n"; 
         out << "cardPoolX=" << g_cardPoolX << "\n";         
         out << "cardPoolY=" << g_cardPoolY << "\n";         
@@ -446,18 +178,6 @@ void SaveConfig() {
         out << "playersY=" << g_players_Y << "\n";
         out << "playersScale=" << g_players_Scale << "\n";
         
-        // 保存触控极值与选项
-        out << "touchMaxX=" << g_touch_max_x << "\n";
-        out << "touchMaxY=" << g_touch_max_y << "\n";
-        out << "touchSwapXY=" << g_touch_swap_xy << "\n";
-        out << "touchFlipX=" << g_touch_flip_x << "\n";
-        out << "touchFlipY=" << g_touch_flip_y << "\n";
-
-        // 保存滑条坐标
-        out << "touchShopX=" << g_touch_shop_x << "\n";
-        out << "touchShopY=" << g_touch_shop_y << "\n";
-        out << "touchShopSpacing=" << g_touch_shop_spacing << "\n";
-
         out.close();
     }
 }
@@ -481,7 +201,12 @@ void LoadConfig() {
                 else if (k == "showCardPool") g_show_card_pool = (v == "1");
                 else if (k == "cardPoolRows") g_card_pool_rows = std::stoi(v);
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
-                else if (k == "cardPoolScale") g_cardPoolScale = std::stof(v);
+                else if (k == "cardPoolScaleX") g_cardPoolScaleX = std::stof(v);
+                else if (k == "cardPoolScaleY") g_cardPoolScaleY = std::stof(v);
+                else if (k == "cardPoolScale") { // 兼容老版本配置文件
+                    g_cardPoolScaleX = std::stof(v);
+                    g_cardPoolScaleY = std::stof(v);
+                }
                 else if (k == "cardPoolAlpha") g_cardPoolAlpha = std::stof(v); 
                 else if (k == "cardPoolX") g_cardPoolX = std::stof(v);
                 else if (k == "cardPoolY") g_cardPoolY = std::stof(v);
@@ -525,14 +250,6 @@ void LoadConfig() {
                 else if (k == "playersX") g_players_X = std::stof(v); 
                 else if (k == "playersY") g_players_Y = std::stof(v);
                 else if (k == "playersScale") g_players_Scale = std::stof(v);
-                else if (k == "touchMaxX" && !g_auto_detected_max) g_touch_max_x = std::stoi(v);
-                else if (k == "touchMaxY" && !g_auto_detected_max) g_touch_max_y = std::stoi(v);
-                else if (k == "touchSwapXY") g_touch_swap_xy = (v == "1");
-                else if (k == "touchFlipX") g_touch_flip_x = (v == "1");
-                else if (k == "touchFlipY") g_touch_flip_y = (v == "1");
-                else if (k == "touchShopX") g_touch_shop_x = std::stoi(v);
-                else if (k == "touchShopY") g_touch_shop_y = std::stoi(v);
-                else if (k == "touchShopSpacing") g_touch_shop_spacing = std::stoi(v);
             } catch (...) {}
         }
         in.close();
@@ -642,32 +359,28 @@ void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float screenH = (io.DisplaySize.y > 100.0f) ? io.DisplaySize.y : 2400.0f; 
     g_autoScale = screenH / 1080.0f;
-    float targetSize = std::clamp(18.0f * g_autoScale, 12.0f, 100.0f); 
+    float targetSize = std::clamp(18.0f * g_autoScale, 12.0f, 60.0f); 
     
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
     
     ImGui_ImplOpenGL3_DestroyFontsTexture(); 
     io.Fonts->Clear(); 
+    g_mainFont = nullptr;
+    g_hugeNumFont = nullptr;
     
-    ImFontConfig config;
+    ImFontConfig configMain;
+    float mainResFactor = 1.5f; 
+    configMain.OversampleH = 1; 
+    configMain.OversampleV = 1;
+    configMain.PixelSnapH = true; 
     
-    // ==============================================================
-    // 【核心修复】开启字体超采样 (Super-Sampling) 解决放大模糊
-    // ==============================================================
-    // 基础放大倍率设为 2.5，这样就算拖拽面板放大 2.5 倍，也是 1:1 像素完美渲染
-    float highResFactor = 2.5f; 
-    
-    // 显存安全锁：防止高分辨率设备（如 4K 屏）上烘焙极巨大的纹理导致内存溢出
-    if (targetSize * highResFactor > 90.0f) {
-        highResFactor = 90.0f / targetSize;
-    }
-    highResFactor = std::max(1.2f, highResFactor); // 保底系数
-
-    // 禁用 ImGui 默认的冗余横向过采样，因为我们已经在物理尺寸上整体放大了，
-    // 如果再开 Oversample 会导致宽度二次翻倍，浪费内存。
-    config.OversampleH = 1; 
-    config.OversampleV = 1; 
-    config.PixelSnapH = true;
+    ImFontConfig configNum;
+    float numResFactor = 4.0f; 
+    if (targetSize * numResFactor > 200.0f) numResFactor = 200.0f / targetSize; 
+    configNum.OversampleH = 2; 
+    configNum.OversampleV = 2;
+    configNum.PixelSnapH = false;
+    static const ImWchar numRanges[] = { 0x0020, 0x00FF, 0 }; 
     
     const char* fonts[] = { 
         "/system/fonts/SysSans-Hans-Regular.ttf", 
@@ -678,20 +391,20 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for(const char* path : fonts) {
         if (access(path, R_OK) == 0) { 
-            // 步骤 1：以超高分辨率将字体烘焙到纹理上
-            ImFont* font = io.Fonts->AddFontFromFileTTF(path, targetSize * highResFactor, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
-            if (font) {
-                // 步骤 2：欺骗 ImGui，在逻辑计算排版尺寸时，将其缩小回正常尺寸。
-                // 这保证了所有菜单大小不发生形变，但却拥有高清抗锯齿贴图。
-                font->Scale = 1.0f / highResFactor; 
-                loaded = true; 
-                break; 
-            }
+            g_mainFont = io.Fonts->AddFontFromFileTTF(path, targetSize * mainResFactor, &configMain, io.Fonts->GetGlyphRangesChineseSimplifiedCommon()); 
+            if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
+            
+            g_hugeNumFont = io.Fonts->AddFontFromFileTTF(path, targetSize * numResFactor, &configNum, numRanges);
+            if (g_hugeNumFont) g_hugeNumFont->Scale = 1.0f / numResFactor;
+            
+            loaded = true; 
+            break; 
         }
     }
-    if(!loaded) {
-        ImFont* font = io.Fonts->AddFontDefault();
-        if (font) font->Scale = 1.0f / highResFactor;
+    
+    if(!loaded || !g_mainFont) {
+        g_mainFont = io.Fonts->AddFontDefault();
+        if (g_mainFont) g_mainFont->Scale = 1.0f / mainResFactor;
     }
     
     io.Fonts->Build(); 
@@ -770,6 +483,76 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale,
     out_scale = ImLerp(out_scale, t_scale, smoothness);
 }
 
+void HandleGridInteractionXY(float& out_x, float& out_y, float& out_scaleX, float& out_scaleY, 
+                             float& t_x, float& t_y, float& t_scaleX, float& t_scaleY,
+                             bool& isDragging, bool& isScaling, 
+                             ImVec2& dragOffset, ImVec2& scaleDragOffset,
+                             float h_dx_unscaled, float h_dy_unscaled, 
+                             float c_dx_unscaled, float c_dy_unscaled,
+                             float hitMinX_unscaled, float hitMinY_unscaled, 
+                             float hitMaxX_unscaled, float hitMaxY_unscaled, 
+                             bool locked, bool* isOpen) 
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (!locked) {
+        float scaleHandleX = out_x + h_dx_unscaled * out_scaleX;
+        float scaleHandleY = out_y + h_dy_unscaled * out_scaleY;
+        ImVec2 p_scale(scaleHandleX, scaleHandleY);
+        
+        float closeHandleX = out_x + c_dx_unscaled * out_scaleX;
+        float closeHandleY = out_y + c_dy_unscaled * out_scaleY;
+        ImVec2 p_close(closeHandleX, closeHandleY);
+
+        if (!ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
+            if (isOpen && ImLengthSqr(io.MousePos - p_close) < (4900.0f * g_autoScale * g_autoScale)) {
+                *isOpen = false; 
+                return; 
+            }
+            else if (ImLengthSqr(io.MousePos - p_scale) < (4900.0f * g_autoScale * g_autoScale)) { 
+                isScaling = true;
+                ImVec2 targetHandleCenter(t_x + h_dx_unscaled * t_scaleX, t_y + h_dy_unscaled * t_scaleY);
+                scaleDragOffset = io.MousePos - targetHandleCenter;
+            } 
+            else {
+                ImRect area(ImVec2(out_x + hitMinX_unscaled * out_scaleX, out_y + hitMinY_unscaled * out_scaleY), 
+                            ImVec2(out_x + hitMaxX_unscaled * out_scaleX, out_y + hitMaxY_unscaled * out_scaleY));
+                if (area.Contains(io.MousePos)) {
+                    isDragging = true; 
+                    dragOffset = ImVec2(t_x - io.MousePos.x, t_y - io.MousePos.y);
+                }
+            }
+        }
+        
+        if (isScaling) {
+            if (ImGui::IsMouseDown(0)) {
+                ImVec2 targetHandleCenter = io.MousePos - scaleDragOffset;
+                float newSx = (targetHandleCenter.x - t_x) / (h_dx_unscaled > 0.01f ? h_dx_unscaled : 0.01f);
+                float newSy = (targetHandleCenter.y - t_y) / (h_dy_unscaled > 0.01f ? h_dy_unscaled : 0.01f);
+                t_scaleX = std::clamp(newSx, 0.2f, 5.0f);
+                t_scaleY = std::clamp(newSy, 0.2f, 5.0f);
+            } else { 
+                isScaling = false; 
+            }
+        }
+        
+        if (isDragging && !isScaling) {
+            if (ImGui::IsMouseDown(0)) { 
+                t_x = io.MousePos.x + dragOffset.x; 
+                t_y = io.MousePos.y + dragOffset.y; 
+            } 
+            else { 
+                isDragging = false; 
+            }
+        }
+    }
+
+    float smoothness = 1.0f - expf(-20.0f * io.DeltaTime);
+    out_x = ImLerp(out_x, t_x, smoothness); 
+    out_y = ImLerp(out_y, t_y, smoothness); 
+    out_scaleX = ImLerp(out_scaleX, t_scaleX, smoothness);
+    out_scaleY = ImLerp(out_scaleY, t_scaleY, smoothness);
+}
+
 void DrawScaleHandle(ImDrawList* d, ImVec2 p_handle, bool isScaling) {
     ImU32 coreColor = isScaling ? IM_COL32(0, 255, 180, 255) : IM_COL32(255, 255, 255, 255);
     d->AddCircleFilled(p_handle, 16.0f * g_autoScale, IM_COL32(255, 215, 0, 240));
@@ -814,7 +597,7 @@ void DrawPurePredictEnemy() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    ImFont* font = ImGui::GetFont();
+    ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
     const char* txt = (const char*)u8"玩家 3";
     float fsz = ImGui::GetFontSize() * 1.5f; 
     ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, txt);
@@ -867,7 +650,7 @@ void DrawPurePredictHex() {
     static bool isDragging = false, isScaling = false; 
     static ImVec2 dragOffset, scaleDragOffset;
 
-    ImFont* font = ImGui::GetFont();
+    ImFont* font = g_mainFont ? g_mainFont : ImGui::GetFont();
     float fsz = ImGui::GetFontSize() * 1.5f; 
     const char* t1 = (const char*)u8"银色"; 
     const char* t2 = (const char*)u8"金色"; 
@@ -960,7 +743,8 @@ void DrawPlayersOverlay() {
 
     float curAvatarR = avatar_r * g_players_Scale;
     float curRowH = row_h * g_players_Scale;
-    ImFont* font = ImGui::GetFont();
+    
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     for (int i = 0; i < 8; i++) {
         float cx = g_players_X + curAvatarR;
@@ -978,10 +762,10 @@ void DrawPlayersOverlay() {
             float fsz = ImGui::GetFontSize() * g_players_Scale * 1.1f;
             char buf[32]; 
             snprintf(buf, sizeof(buf), "G:28/LV5");
-            ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+            ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
             
             d->AddRectFilled(ImVec2(draw_x, cy - tSz.y*0.6f), ImVec2(draw_x + tSz.x + 10.0f*g_autoScale*g_players_Scale, cy + tSz.y*0.6f), IM_COL32(15, 20, 25, 160 * alpha * esp_anim[i]), 4.0f * g_autoScale);
-            d->AddText(font, fsz, ImVec2(draw_x + 5.0f*g_autoScale*g_players_Scale, cy - tSz.y*0.5f), IM_COL32(255, 215, 0, 255 * alpha * esp_anim[i]), buf);
+            d->AddText(numFont, fsz, ImVec2(draw_x + 5.0f*g_autoScale*g_players_Scale, cy - tSz.y*0.5f), IM_COL32(255, 215, 0, 255 * alpha * esp_anim[i]), buf);
             
             draw_x += 120.0f * g_autoScale * g_players_Scale * esp_anim[i];
         }
@@ -1004,9 +788,9 @@ void DrawPlayersOverlay() {
             float fsz = ImGui::GetFontSize() * 0.8f * g_players_Scale;
             char buf[16]; 
             snprintf(buf, sizeof(buf), "7/12");
-            ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+            ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
             
-            d->AddText(font, fsz, ImVec2(draw_x + (img_sz - tSz.x)*0.5f, img_y + img_sz - bg_h + (bg_h - tSz.y)*0.5f), IM_COL32(255, 100, 100, 255*final_a), buf);
+            d->AddText(numFont, fsz, ImVec2(draw_x + (img_sz - tSz.x)*0.5f, img_y + img_sz - bg_h + (bg_h - tSz.y)*0.5f), IM_COL32(255, 100, 100, 255*final_a), buf);
         }
     }
 }
@@ -1117,7 +901,7 @@ void DrawAutoBuyWindow() {
 }
 
 // =================================================================
-// 6.5 高级牌库显示窗口 
+// 6.5 高级牌库显示窗口
 // =================================================================
 void DrawCardPool() {
     static float alpha = 0.0f;
@@ -1127,13 +911,14 @@ void DrawCardPool() {
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
-    static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scale = g_cardPoolScale;
+    static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scaleX = g_cardPoolScaleX, t_scaleY = g_cardPoolScaleY;
     static bool first = true; 
     
     if (first) { 
         t_x = g_cardPoolX; 
         t_y = g_cardPoolY; 
-        t_scale = g_cardPoolScale; 
+        t_scaleX = g_cardPoolScaleX; 
+        t_scaleY = g_cardPoolScaleY;
         first = false; 
     }
     
@@ -1154,7 +939,7 @@ void DrawCardPool() {
     float h_dy = totalH_unscaled + 10.0f * g_autoScale;
     
     if (g_show_card_pool) {
-        HandleGridInteraction(g_cardPoolX, g_cardPoolY, g_cardPoolScale, t_x, t_y, t_scale,
+        HandleGridInteractionXY(g_cardPoolX, g_cardPoolY, g_cardPoolScaleX, g_cardPoolScaleY, t_x, t_y, t_scaleX, t_scaleY,
                               isDragging, isScaling, dragOffset, scaleDragOffset,
                               h_dx, h_dy, 0, 0, -15.0f * g_autoScale, -15.0f * g_autoScale, 
                               totalW_unscaled + 15.0f * g_autoScale, totalH_unscaled + 15.0f * g_autoScale, 
@@ -1162,11 +947,15 @@ void DrawCardPool() {
     }
 
     if (!g_boardLocked && alpha > 0.9f) {
-        DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScale, g_cardPoolY + h_dy * g_cardPoolScale), isScaling);
+        DrawScaleHandle(d, ImVec2(g_cardPoolX + h_dx * g_cardPoolScaleX, g_cardPoolY + h_dy * g_cardPoolScaleY), isScaling);
     }
 
-    float curSz = baseImgSz * g_cardPoolScale; 
-    float curGap = gap * g_cardPoolScale;
+    float curSzX = baseImgSz * g_cardPoolScaleX; 
+    float curSzY = baseImgSz * g_cardPoolScaleY;
+    float curGapX = gap * g_cardPoolScaleX;
+    float curGapY = gap * g_cardPoolScaleY;
+
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     if (g_textureLoaded) {
         int draw_rows = std::ceil(current_rows); 
@@ -1180,143 +969,43 @@ void DrawCardPool() {
                 if (cell_anim < 0.01f) continue;
                 
                 float final_alpha = alpha * cell_anim * g_cardPoolAlpha;
-                float offset_sz = curSz * cell_anim; 
-                float center_offset = (curSz - offset_sz) * 0.5f;
+                float offset_szX = curSzX * cell_anim; 
+                float offset_szY = curSzY * cell_anim; 
+                float center_offsetX = (curSzX - offset_szX) * 0.5f;
+                float center_offsetY = (curSzY - offset_szY) * 0.5f;
 
-                float x = g_cardPoolX + c * (curSz + curGap) + center_offset;
-                float y = g_cardPoolY + r * (curSz + curGap) + center_offset;
+                float x = g_cardPoolX + c * (curSzX + curGapX) + center_offsetX;
+                float y = g_cardPoolY + r * (curSzY + curGapY) + center_offsetY;
                 
                 float hue = fmodf((float)ImGui::GetTime() * 0.2f + (r * draw_cols + c) * 0.1f, 1.0f);
                 float br, bg, bb_col;
                 ImGui::ColorConvertHSVtoRGB(hue, 0.8f, 1.0f, br, bg, bb_col);
                 ImU32 borderColor = IM_COL32(br*255, bg*255, bb_col*255, 255 * final_alpha);
+                
+                float avgScale = (g_cardPoolScaleX + g_cardPoolScaleY) * 0.5f;
 
                 if (use_rounding_safeguard) {
-                    float rounding = 6.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                    d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding, ImDrawFlags_RoundCornersAll);
-                    float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                    d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
-                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
+                    float rounding = 6.0f * g_autoScale * avgScale * cell_anim;
+                    d->AddImageRounded((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha), rounding, ImDrawFlags_RoundCornersAll);
+                    float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
+                    d->AddRectFilled(ImVec2(x, y + offset_szY - textBgH), ImVec2(x + offset_szX, y + offset_szY), IM_COL32(0, 0, 0, 200 * final_alpha), rounding, ImDrawFlags_RoundCornersBottom);
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), borderColor, rounding, ImDrawFlags_RoundCornersAll, 1.5f * g_autoScale * avgScale * cell_anim);
                 } else {
-                    d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
-                    float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                    d->AddRectFilled(ImVec2(x, y + offset_sz - textBgH), ImVec2(x + offset_sz, y + offset_sz), IM_COL32(0, 0, 0, 200 * final_alpha));
-                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_sz, y + offset_sz), borderColor, 0, 0, 1.5f * g_autoScale * g_cardPoolScale * cell_anim);
+                    d->AddImage((ImTextureID)(intptr_t)g_heroTexture, ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255 * final_alpha));
+                    float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
+                    d->AddRectFilled(ImVec2(x, y + offset_szY - textBgH), ImVec2(x + offset_szX, y + offset_szY), IM_COL32(0, 0, 0, 200 * final_alpha));
+                    d->AddRect(ImVec2(x, y), ImVec2(x + offset_szX, y + offset_szY), borderColor, 0, 0, 1.5f * g_autoScale * avgScale * cell_anim);
                 }
                 
-                ImFont* font = ImGui::GetFont();
-                float fsz = ImGui::GetFontSize() * g_cardPoolScale * 0.8f * cell_anim; 
+                float fsz = ImGui::GetFontSize() * avgScale * 0.8f * cell_anim; 
                 char buf[16]; 
                 snprintf(buf, sizeof(buf), "5/12");
-                ImVec2 tSz = font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
-                float textBgH = 14.0f * g_autoScale * g_cardPoolScale * cell_anim;
-                d->AddText(font, fsz, ImVec2(x + (offset_sz - tSz.x) * 0.5f, y + offset_sz - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
+                ImVec2 tSz = numFont->CalcTextSizeA(fsz, FLT_MAX, 0.0f, buf);
+                float textBgH = 14.0f * g_autoScale * g_cardPoolScaleY * cell_anim;
+                d->AddText(numFont, fsz, ImVec2(x + (offset_szX - tSz.x) * 0.5f, y + offset_szY - textBgH + (textBgH - tSz.y) * 0.5f), IM_COL32(255, 255, 255, 255 * final_alpha), buf);
             }
         }
     }
-}
-
-// =================================================================
-// 6.6 绘制触控可视化准星与日志窗口
-// =================================================================
-void DrawTapVisuals() {
-    if (!g_show_tap_debug) return;
-    
-    ImDrawList* d = ImGui::GetForegroundDrawList();
-    auto now = std::chrono::steady_clock::now();
-
-    std::lock_guard<std::mutex> lock(g_tap_mutex);
-    for (auto it = g_recent_taps.begin(); it != g_recent_taps.end(); ) {
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->time).count();
-        if (duration > 4000) { 
-            it = g_recent_taps.erase(it);
-        } else {
-            float alpha = 1.0f - (duration / 4000.0f);
-            ImVec2 p((float)it->x, (float)it->y);
-            
-            d->AddCircleFilled(p, 10.0f * g_autoScale, IM_COL32(255, 0, 0, 180 * alpha));
-            float pulse = 15.0f + 15.0f * (duration / 1000.0f);
-            d->AddCircle(p, pulse * g_autoScale, IM_COL32(255, 255, 0, 255 * alpha), 0, 3.0f * g_autoScale);
-            
-            float line_len = 50.0f * g_autoScale;
-            d->AddLine(p - ImVec2(line_len, 0), p + ImVec2(line_len, 0), IM_COL32(255, 255, 255, 255 * alpha), 2.5f * g_autoScale);
-            d->AddLine(p - ImVec2(0, line_len), p + ImVec2(0, line_len), IM_COL32(255, 255, 255, 255 * alpha), 2.5f * g_autoScale);
-
-            char buf[64];
-            snprintf(buf, sizeof(buf), "UI像素(%d,%d)\n底层映射(%d,%d)", it->x, it->y, it->mapped_x, it->mapped_y);
-            ImFont* font = ImGui::GetFont();
-            float fsz = ImGui::GetFontSize() * 1.2f;
-            d->AddText(font, fsz, p + ImVec2(15 * g_autoScale, 15 * g_autoScale), IM_COL32(0, 255, 255, 255 * alpha), buf);
-
-            ++it;
-        }
-    }
-}
-
-// 【新增】实时在屏幕上画出 5 个绿色的靶心，方便玩家用滑条瞄准商店
-void DrawTouchPreview() {
-    if (!g_show_touch_preview) return;
-    
-    ImDrawList* d = ImGui::GetBackgroundDrawList();
-    for (int i = 0; i < 5; i++) {
-        // 通过滑条变量直接算出每一张牌的坐标
-        float px = g_touch_shop_x + i * g_touch_shop_spacing;
-        float py = g_touch_shop_y;
-        
-        ImVec2 center(px, py);
-        float line_len = 40.0f;
-        
-        // 画显眼的绿色靶心
-        d->AddCircle(center, 25.0f, IM_COL32(0, 255, 0, 255), 0, 4.0f);
-        d->AddCircleFilled(center, 5.0f, IM_COL32(0, 255, 0, 255));
-        d->AddLine(center - ImVec2(line_len, 0), center + ImVec2(line_len, 0), IM_COL32(0, 255, 0, 255), 2.0f);
-        d->AddLine(center - ImVec2(0, line_len), center + ImVec2(0, line_len), IM_COL32(0, 255, 0, 255), 2.0f);
-        
-        // 写字标明是第几张牌
-        char buf[32];
-        snprintf(buf, sizeof(buf), "牌 %d", i + 1);
-        d->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.5f, center + ImVec2(15.0f, 15.0f), IM_COL32(0, 255, 0, 255), buf);
-    }
-}
-
-void DrawTapDebugWindow() {
-    if (!g_show_tap_debug) return;
-    
-    ImGui::SetNextWindowSize(ImVec2(450 * g_autoScale, 600 * g_autoScale), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin((const char*)u8"系统诊断与日志中心", &g_show_tap_debug)) {
-        ImGui::TextWrapped((const char*)u8"如果红十字和小白点不重合，请在主菜单的【触控适配设置】中修改参数。");
-        ImGui::Separator();
-        
-        ImGui::TextColored(ImVec4(0, 1, 1, 1), (const char*)u8"[系统运行与驱动日志]");
-        ImGui::BeginChild("app_log_region", ImVec2(0, 200 * g_autoScale), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-        {
-            std::lock_guard<std::mutex> lock(g_log_mutex);
-            if (g_app_logs.empty()) {
-                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1.0), (const char*)u8"等待日志输出...");
-            } else {
-                for (auto it = g_app_logs.rbegin(); it != g_app_logs.rend(); ++it) {
-                    ImGui::TextWrapped("%s", it->c_str());
-                }
-            }
-        }
-        ImGui::EndChild();
-        
-        ImGui::Spacing();
-        
-        ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"[近期触控记录 (最新在最上)]");
-        ImGui::BeginChild("tap_log_region", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-        
-        std::lock_guard<std::mutex> lock(g_tap_mutex);
-        if (g_recent_taps.empty()) {
-            ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1.0), (const char*)u8"暂无点击记录...");
-        } else {
-            for (auto it = g_recent_taps.rbegin(); it != g_recent_taps.rend(); ++it) {
-                ImGui::Text("像素(%d, %d) -> 底层发送(%d, %d)", it->x, it->y, it->mapped_x, it->mapped_y);
-            }
-        }
-        ImGui::EndChild();
-    }
-    ImGui::End();
 }
 
 // =================================================================
@@ -1366,6 +1055,8 @@ void DrawBoard() {
         DrawScaleHandle(d, ImVec2(g_startX + h_dx * g_boardManualScale, g_startY + h_dy * g_boardManualScale), isScaling);
         DrawCloseHandle(d, ImVec2(g_startX + c_dx * g_boardManualScale, g_startY + c_dy * g_boardManualScale), &g_esp_board);
     }
+    
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
 
     for(int r = 0; r < 4; r++) {
         for(int c = 0; c < 7; c++) {
@@ -1381,13 +1072,12 @@ void DrawBoard() {
                     DrawHero(d, ImVec2(cx, cy), curSz * 0.95f); 
                 }
                 
-                ImFont* font = ImGui::GetFont();
                 float lvlFsz = ImGui::GetFontSize() * 2.5f * g_boardManualScale; 
                 const char* lvlTxt = "1/3";
-                ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+                ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
                 ImVec2 txtPos(cx - tSz.x*0.5f, cy + curSz * 0.4f);
-                d->AddText(font, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
-                d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
+                d->AddText(numFont, lvlFsz, txtPos + ImVec2(2.0f, 2.0f), IM_COL32(0,0,0,255), lvlTxt); 
+                d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255), lvlTxt); 
             }
             
             ImVec2 pts[6];
@@ -1442,6 +1132,8 @@ void DrawBench() {
         DrawCloseHandle(d, ImVec2(g_benchX + c_dx * g_benchScale, g_benchY + c_dy * g_benchScale), &g_esp_bench);
     }
 
+    ImFont* numFont = g_hugeNumFont ? g_hugeNumFont : ImGui::GetFont();
+
     for (int i = 0; i < 9; i++) {
         float x = g_benchX + i * curSpacing; 
         float y = g_benchY;
@@ -1453,13 +1145,12 @@ void DrawBench() {
         d->AddRectFilled(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(20, 20, 25, 150 * alpha), rounding);
         d->AddRect(ImVec2(x, y), ImVec2(x+curSz, y+curSz), IM_COL32(r*255, g*255, b*255, 255 * alpha), rounding, 0, 1.5f * g_autoScale * g_benchScale);
         
-        ImFont* font = ImGui::GetFont();
         float lvlFsz = ImGui::GetFontSize() * 1.2f * g_benchScale;
         const char* lvlTxt = "3";
-        ImVec2 tSz = font->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
+        ImVec2 tSz = numFont->CalcTextSizeA(lvlFsz, FLT_MAX, 0.0f, lvlTxt);
         ImVec2 txtPos(x + curSz * 0.5f - tSz.x * 0.5f, y + curSz - tSz.y + 2.0f * g_autoScale * g_benchScale);
-        d->AddText(font, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
-        d->AddText(font, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
+        d->AddText(numFont, lvlFsz, txtPos + ImVec2(1.5f, 1.5f), IM_COL32(0,0,0,255 * alpha), lvlTxt); 
+        d->AddText(numFont, lvlFsz, txtPos, IM_COL32(255, 215, 0, 255 * alpha), lvlTxt); 
     }
 }
 
@@ -1782,7 +1473,7 @@ void DrawMenu() {
     ImGui::SetNextWindowPos(ImVec2(g_menuX, g_menuY), ImGuiCond_FirstUseEver); 
     ImGui::SetNextWindowSize(ImVec2(g_menuW, g_menuH), ImGuiCond_FirstUseEver);
 
-    if (ImGui::Begin((const char*)u8"金铲铲全能助手 v3.1 (极速纯净版)", NULL, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
         g_menuX = ImGui::GetWindowPos().x; 
         g_menuY = ImGui::GetWindowPos().y;
         
@@ -1804,89 +1495,19 @@ void DrawMenu() {
             ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] VSYNC 模式已开启 | FPS: %.1f", io.Framerate);
             ImGui::Separator();
             
-            // =================================================================
-            // 底层系统面板，展示驱动状态、触控状态与测试按钮
-            // =================================================================
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), (const char*)u8"当前状态: %s", g_last_status);
-            
-            if (g_gamePID > 0) {
-                ImGui::TextColored(ImVec4(0.0f, 0.8f, 1.0f, 1.0f), (const char*)u8"[+] Paradise 驱动已连接 PID: %d", g_gamePID);
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), (const char*)u8"[-] 驱动等待游戏开启...");
-            }
-
-            if (g_touch_fd >= 0) {
-                ImGui::TextColored(ImVec4(0.0f, 0.8f, 1.0f, 1.0f), (const char*)u8"[+] 触控引擎就绪 (fd: %d)", g_touch_fd);
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), (const char*)u8"[-] 触控引擎未就绪(无 Root 权限)");
-            }
-
-            ImGui::Spacing();
-            if (ImGui::Button((const char*)u8"测试：硬件级五指秒拿 5 张牌", ImVec2(-1, 55 * g_autoScale))) {
-                TestBuyAllCards();
-            }
-            
-            if (ImGui::Button((const char*)u8"呼出系统日志与触控调试器", ImVec2(-1, 55 * g_autoScale))) {
-                g_show_tap_debug = true;
-            }
-            ImGui::Spacing();
-            ImGui::Separator();
-            // =================================================================
-
-            // 【修改】彻底动态化的触控坐标校准面板
-            static bool header_touch = true;
-            if (ModernAnimatedFolder((const char*)u8"触控适配设置", &header_touch, 12)) {
-                
-                ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), (const char*)u8"[商店坐标设置 (实时拖动预览)]");
-                ImGui::Checkbox((const char*)u8"显示坐标预览光标 (绿色准星)", &g_show_touch_preview);
-                
-                // 这三个滑条可以直接调整 5 张牌的位置
-                ImGui::PushItemWidth(150 * g_autoScale);
-                ImGui::SliderInt((const char*)u8"首张牌 X", &g_touch_shop_x, 0, 4000);
-                ImGui::SliderInt((const char*)u8"所有牌 Y", &g_touch_shop_y, 0, 4000);
-                ImGui::SliderInt((const char*)u8"卡牌间距", &g_touch_shop_spacing, 100, 1000);
-                ImGui::PopItemWidth();
-                
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
-
-                ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), (const char*)u8"[底层硬件映射极值]");
-                if (g_auto_detected_max) {
-                    ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"状态: 已自动获取底层极值");
-                } else {
-                    ImGui::TextColored(ImVec4(1, 0, 0, 1), (const char*)u8"状态: 未获取，请手动修改");
-                }
-                
-                ImGui::PushItemWidth(140 * g_autoScale);
-                ImGui::InputInt((const char*)u8"物理极值 X", &g_touch_max_x, 100, 1000);
-                ImGui::InputInt((const char*)u8"物理极值 Y", &g_touch_max_y, 100, 1000);
-                ImGui::PopItemWidth();
-                
-                ImGui::Spacing();
-                ImGui::Checkbox((const char*)u8"互换 X/Y 轴 (横屏游戏常选)", &g_touch_swap_xy);
-                ImGui::Checkbox((const char*)u8"X 轴数值反转", &g_touch_flip_x);
-                ImGui::Checkbox((const char*)u8"Y 轴数值反转", &g_touch_flip_y);
-                
-                EndModernAnimatedFolder();
-            }
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
             static bool header_pred = true;
-            if (ModernAnimatedFolder((const char*)u8"预测系统", &header_pred, 2)) {
+            if (ModernAnimatedFolder((const char*)u8"预测功能", &header_pred, 2)) {
                 ModernToggle((const char*)u8"预测对手", &g_predict_enemy, 1); 
                 ModernToggle((const char*)u8"预测海克斯", &g_predict_hex, 2); 
                 EndModernAnimatedFolder();
             }
             
             static bool header_esp = true;
-            if (ModernAnimatedFolder((const char*)u8"投食透视", &header_esp, 4)) {
+            if (ModernAnimatedFolder((const char*)u8"透视功能", &header_esp, 4)) {
                 ModernToggle((const char*)u8"对手棋盘透视", &g_esp_board, 3); 
-                ModernToggle((const char*)u8"备战席投食", &g_esp_bench, 4); 
-                ModernToggle((const char*)u8"商店投食", &g_esp_shop, 5);
-                ModernToggle((const char*)u8"金币等级投食", &g_esp_level, 9); 
+                ModernToggle((const char*)u8"备战席透视", &g_esp_bench, 4); 
+                ModernToggle((const char*)u8"商店透视", &g_esp_shop, 5);
+                ModernToggle((const char*)u8"金币等级透视", &g_esp_level, 9); 
                 EndModernAnimatedFolder();
             }
 
@@ -1894,10 +1515,10 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
             
-            ModernToggle((const char*)u8"锁定所有窗体", &g_boardLocked, 8); 
-            ModernToggle((const char*)u8"云端自动拿牌", &g_auto_buy, 6); 
+            ModernToggle((const char*)u8"锁定所有窗口", &g_boardLocked, 8); 
+            ModernToggle((const char*)u8"自动拿牌", &g_auto_buy, 6); 
             
-            ModernToggle((const char*)u8"牌库透视显示", &g_show_card_pool, 10);
+            ModernToggle((const char*)u8"牌库显示", &g_show_card_pool, 10);
             static float cardpool_anim = 0.0f; 
             cardpool_anim = ImLerp(cardpool_anim, g_show_card_pool ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1915,7 +1536,7 @@ void DrawMenu() {
 
             ImGui::Spacing(); 
 
-            ModernToggle((const char*)u8"卡牌数量预警", &g_card_warning, 11);
+            ModernToggle((const char*)u8"卡牌预警数量", &g_card_warning, 11);
             static float warn_anim = 0.0f; 
             warn_anim = ImLerp(warn_anim, g_card_warning ? 1.0f : 0.0f, 1.0f - expf(-15.0f * io.DeltaTime));
             
@@ -1934,7 +1555,7 @@ void DrawMenu() {
             ImGui::Separator(); 
             ImGui::Spacing();
 
-            if (ModernToggle((const char*)u8"极速退游 (秒退)", &g_instant, 7)) {
+            if (ModernToggle((const char*)u8"极速退游", &g_instant, 7)) {
                 if (g_instant) {
                     ImGui::OpenPopup((const char*)u8"警告: 确认退出?");
                 }
@@ -1980,9 +1601,9 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 8. 主循环
+// 8. 后台渲染守护线程 (用于 .so 内部注入)
 // =================================================================
-int main() {
+void MainRenderThread() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
@@ -1991,15 +1612,15 @@ int main() {
     LoadConfig(); 
     UpdateFontHD(true);  
     
-    std::thread logicThread(GameLogicThread);
+    static bool running = true; 
     std::thread it([&] { 
-        while(g_running) { 
+        while(running) { 
             imgui.ProcessInputEvent(); 
             std::this_thread::yield(); 
         } 
     });
 
-    while (g_running) {
+    while (running) {
         if (g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false; 
@@ -2007,8 +1628,10 @@ int main() {
         
         imgui.BeginFrame(); 
         
+        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
+        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
@@ -2028,28 +1651,6 @@ int main() {
         DrawAutoBuyWindow(); 
         DrawCardPool(); 
         
-        // 【新增】在所有 UI 之上绘制触控坐标预览光标
-        if (g_show_touch_preview && !g_menuCollapsed) {
-            ImDrawList* bg_d = ImGui::GetBackgroundDrawList();
-            for (int i = 0; i < 5; i++) {
-                float px = g_touch_shop_x + i * g_touch_shop_spacing;
-                float py = g_touch_shop_y;
-                ImVec2 center(px, py);
-                
-                bg_d->AddCircle(center, 25.0f, IM_COL32(0, 255, 0, 255), 0, 4.0f);
-                bg_d->AddCircleFilled(center, 5.0f, IM_COL32(0, 255, 0, 255));
-                bg_d->AddLine(center - ImVec2(40.0f, 0), center + ImVec2(40.0f, 0), IM_COL32(0, 255, 0, 255), 2.0f);
-                bg_d->AddLine(center - ImVec2(0, 40.0f), center + ImVec2(0, 40.0f), IM_COL32(0, 255, 0, 255), 2.0f);
-                
-                char buf[32];
-                snprintf(buf, sizeof(buf), "牌 %d", i + 1);
-                bg_d->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.5f, center + ImVec2(15.0f, 15.0f), IM_COL32(0, 255, 0, 255), buf);
-            }
-        }
-        
-        DrawTapVisuals();
-        DrawTapDebugWindow();
-        
         DrawMenu();
         
         imgui.EndFrame(); 
@@ -2057,8 +1658,15 @@ int main() {
     }
     
     g_HexShader.Cleanup(); 
-    g_running = false; 
+    running = false; 
     if (it.joinable()) it.join(); 
-    if (logicThread.joinable()) logicThread.join(); 
-    return 0;
+}
+
+// =================================================================
+// 9. .so 库注入入口点 (Constructor)
+// 当动态库被 dlopen 强行注入加载时，会自动执行此方法。
+// =================================================================
+void __attribute__((constructor)) OnLibLoaded() {
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper", "ImGui 内部模块 .so 注入成功！正在启动渲染线程...");
+    std::thread(MainRenderThread).detach();
 }
