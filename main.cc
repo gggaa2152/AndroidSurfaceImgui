@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 // =================================================================
-// 【新增】底层系统级头文件与驱动宏
+// 底层系统级头文件与驱动宏
 // =================================================================
 #include <mutex>         
 #include <atomic>        
@@ -160,7 +160,7 @@ std::mutex g_tap_mutex;
 bool g_show_tap_debug = true; 
 
 // =================================================================
-// 1.5 增强型底层硬件触控逻辑
+// 1.5 增强型底层硬件触控逻辑 (多点触控版)
 // =================================================================
 void InitTouchDevice() {
     LOGI("开始搜寻触控设备节点...");
@@ -195,13 +195,8 @@ void InitTouchDevice() {
     LOGE("未能在 /dev/input/ 目录下找到具备绝对坐标能力的设备！");
 }
 
-void HardwareTap(int x, int y) {
-    if (g_touch_fd < 0) {
-        LOGE("触控失败：未找到有效触控设备句柄");
-        return;
-    }
-    
-    // 将屏幕像素坐标 (像素) 映射到 触控面板坐标 (物理比例)
+// 坐标映射助手函数
+void MapScreenToTouch(int x, int y, int& mapped_x, int& mapped_y) {
     float scr_w = ImGui::GetIO().DisplaySize.x;
     float scr_h = ImGui::GetIO().DisplaySize.y;
     if (scr_w < 10) scr_w = 2400.0f; 
@@ -210,26 +205,32 @@ void HardwareTap(int x, int y) {
     float rx = (float)x / scr_w;
     float ry = (float)y / scr_h;
 
-    // 应用校准转换 (横竖屏旋转支持)
     if (g_touch_swap_xy) { float temp = rx; rx = ry; ry = temp; }
     if (g_touch_flip_x) { rx = 1.0f - rx; }
     if (g_touch_flip_y) { ry = 1.0f - ry; }
 
-    int mapped_x = (int)(rx * g_touch_max_x);
-    int mapped_y = (int)(ry * g_touch_max_y);
+    mapped_x = (int)(rx * g_touch_max_x);
+    mapped_y = (int)(ry * g_touch_max_y);
 
-    // 边界安全钳制
     mapped_x = std::clamp(mapped_x, 0, g_touch_max_x);
     mapped_y = std::clamp(mapped_y, 0, g_touch_max_y);
+}
 
-    // 将点击记录保存到队列中
-    {
-        std::lock_guard<std::mutex> lock(g_tap_mutex);
-        g_recent_taps.push_back({x, y, mapped_x, mapped_y, std::chrono::steady_clock::now()});
-        if (g_recent_taps.size() > 30) g_recent_taps.erase(g_recent_taps.begin()); 
-    }
+// 记录日志助手函数
+void RecordTapForUI(int x, int y, int mapped_x, int mapped_y) {
+    std::lock_guard<std::mutex> lock(g_tap_mutex);
+    g_recent_taps.push_back({x, y, mapped_x, mapped_y, std::chrono::steady_clock::now()});
+    if (g_recent_taps.size() > 30) g_recent_taps.erase(g_recent_taps.begin()); 
+}
 
-    LOGI("屏幕坐标: (%d, %d) -> 映射后硬件坐标: (%d, %d)", x, y, mapped_x, mapped_y);
+// 单指触控 (用于以后只买一张牌)
+void HardwareTap(int x, int y) {
+    if (g_touch_fd < 0) return;
+    
+    int mapped_x, mapped_y;
+    MapScreenToTouch(x, y, mapped_x, mapped_y);
+    RecordTapForUI(x, y, mapped_x, mapped_y);
+
     static int tracking_id = 100;
     struct input_event ev[12];
     int count = 0;
@@ -241,11 +242,10 @@ void HardwareTap(int x, int y) {
     ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_Y, mapped_y }; 
     ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 1 };
     ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
-    if (write(g_touch_fd, ev, sizeof(struct input_event) * count) < 0) {
-        LOGE("写入按下信号失败, errno: %d", errno);
-    }
+    write(g_touch_fd, ev, sizeof(struct input_event) * count);
 
-    usleep(25000); 
+    // 【防漏牌修复】：延长按压时间到 50ms，确保游戏引擎完整捕获
+    usleep(50000); 
 
     // 抬起阶段
     count = 0;
@@ -253,18 +253,61 @@ void HardwareTap(int x, int y) {
     ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, -1 };
     ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 0 };
     ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
-    if (write(g_touch_fd, ev, sizeof(struct input_event) * count) < 0) {
-        LOGE("写入抬起信号失败, errno: %d", errno);
+    write(g_touch_fd, ev, sizeof(struct input_event) * count);
+}
+
+// 【全新添加】真正的五指同时按下：一次性秒拿
+void HardwareMultiTap(const std::vector<std::pair<int, int>>& points) {
+    if (g_touch_fd < 0 || points.empty()) return;
+
+    static int tracking_id = 1000;
+    struct input_event ev[128]; // 足够容纳 5 个手指的事件
+    int count = 0;
+
+    // ================== 五指同时按下阶段 ==================
+    for (size_t i = 0; i < points.size() && i < 10; ++i) { // 绝大多数屏幕支持10点触控
+        int mapped_x, mapped_y;
+        MapScreenToTouch(points[i].first, points[i].second, mapped_x, mapped_y);
+        RecordTapForUI(points[i].first, points[i].second, mapped_x, mapped_y);
+
+        // 分配不同的 Slot (手指ID)
+        ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, (int)i };
+        ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, tracking_id++ };
+        ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_X, mapped_x };
+        ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_Y, mapped_y };
     }
+    
+    // 只需发送一次屏幕被触摸的标志
+    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 1 };
+    // 一次性提交所有五根手指的状态
+    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
+    write(g_touch_fd, ev, sizeof(struct input_event) * count);
+
+    // 【防漏牌修复】：给游戏引擎 50ms 的反应时间处理这 5 个点击
+    usleep(50000); 
+
+    // ================== 五指同时抬起阶段 ==================
+    count = 0;
+    for (size_t i = 0; i < points.size() && i < 10; ++i) {
+        ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, (int)i };
+        ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, -1 }; // -1 代表手指离开
+    }
+    ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 0 };
+    ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
+    write(g_touch_fd, ev, sizeof(struct input_event) * count);
 }
 
 void TestBuyAllCards() {
     std::thread([]() {
-        LOGI("触发一键拿牌测试流程...");
+        LOGI("触发多点触控：五指同按秒抢...");
+        std::vector<std::pair<int, int>> points;
         for (int i = 0; i < 5; i++) {
-            HardwareTap(g_shop_coords[i][0], g_shop_coords[i][1]);
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            points.push_back({g_shop_coords[i][0], g_shop_coords[i][1]});
         }
+        
+        // 调用全新的多指触控函数，0 延迟秒全拿
+        HardwareMultiTap(points);
+        
         LOGI("测试流程结束");
     }).detach();
 }
@@ -1180,7 +1223,6 @@ void DrawTapDebugWindow() {
         ImGui::TextWrapped((const char*)u8"如果红十字和小白点不重合，请修改下方的物理极值，并尝试勾选轴反转。极值可用 getevent -p 查询。");
         ImGui::Separator();
         
-        // 【核心修改】将触控极值开放为可手动输入的控件
         ImGui::TextColored(ImVec4(0, 1, 1, 1), (const char*)u8"[底层面板数据]");
         ImGui::Text((const char*)u8"屏幕分辨率: %.0f x %.0f", ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
         
@@ -1190,7 +1232,6 @@ void DrawTapDebugWindow() {
             ImGui::TextColored(ImVec4(1, 0, 0, 1), (const char*)u8"状态: 自动获取失败，请手动输入！");
         }
         
-        // 加入手动输入框，避免写死
         ImGui::InputInt((const char*)u8"触控极值 Max X", &g_touch_max_x, 100, 1000);
         ImGui::InputInt((const char*)u8"触控极值 Max Y", &g_touch_max_y, 100, 1000);
         
@@ -1721,7 +1762,7 @@ void DrawMenu() {
             }
 
             ImGui::Spacing();
-            if (ImGui::Button((const char*)u8"测试：硬件级一键秒拿 5 张牌", ImVec2(-1, 55 * g_autoScale))) {
+            if (ImGui::Button((const char*)u8"测试：硬件级五指秒拿 5 张牌", ImVec2(-1, 55 * g_autoScale))) {
                 TestBuyAllCards();
             }
             
