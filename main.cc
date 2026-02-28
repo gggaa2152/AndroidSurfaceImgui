@@ -29,7 +29,6 @@
 #endif
 
 const char* TARGET_PACKAGE = "com.tencent.jkchess";
-const char* DROP_SO_PATH = "/data/local/tmp/libJKMenu.so";
 
 long get_module_base_remote(pid_t pid, const char* module_name) {
     FILE *fp; long addr = 0; char filename[64], line[1024];
@@ -51,63 +50,132 @@ void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func)
     return (void *)((uintptr_t)local_func - local_base + remote_base);
 }
 
-int ptrace_call_target(pid_t pid, uintptr_t func_addr, long *params, int num_params) {
+// 【安全修复1】：增加信号转发循环，防止吃掉游戏自带的信号导致崩溃
+long ptrace_call_target(pid_t pid, uintptr_t func_addr, long *params, int num_params) {
     struct user_pt_regs regs, saved_regs;
     struct iovec iov = {&regs, sizeof(regs)};
     if (ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov) < 0) return -1;
     memcpy(&saved_regs, &regs, sizeof(regs));
+    
     for (int i = 0; i < num_params && i < 8; i++) regs.regs[i] = params[i];
-    regs.pc = func_addr; regs.regs[30] = 0; 
+    regs.pc = func_addr; 
+    regs.regs[30] = 0; // 设置 LR = 0，使得函数返回时触发 SIGSEGV
+    
+    if (ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov) < 0) return -1;
+    if (ptrace(PTRACE_CONT, pid, NULL, 0) < 0) return -1;
+    
+    int status = 0;
+    while (waitpid(pid, &status, WUNTRACED) > 0) {
+        if (WIFSTOPPED(status)) {
+            int sig = WSTOPSIG(status);
+            if (sig == SIGSEGV) {
+                struct user_pt_regs check_regs;
+                struct iovec check_iov = {&check_regs, sizeof(check_regs)};
+                ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &check_iov);
+                // 如果 PC 是 0，说明是我们的断点触发了
+                if (check_regs.pc == 0) break;
+            }
+            // 否则将信号转发给目标进程
+            ptrace(PTRACE_CONT, pid, NULL, sig);
+        } else {
+            break;
+        }
+    }
+    
+    // 获取返回值 (x0)
+    struct user_pt_regs ret_regs;
+    struct iovec ret_iov = {&ret_regs, sizeof(ret_regs)};
+    ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &ret_iov);
+    long ret_val = ret_regs.regs[0];
+
+    // 恢复现场
+    iov.iov_base = &saved_regs; 
+    iov.iov_len = sizeof(saved_regs);
     ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
-    ptrace(PTRACE_CONT, pid, NULL, NULL);
-    int status = 0; waitpid(pid, &status, WUNTRACED);
-    iov.iov_base = &saved_regs; ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
-    return 0;
+    return ret_val;
 }
 
-int perform_injection(pid_t pid) {
+// 【安全修复2】：检测游戏主线程是否空闲，防止打断 malloc 引发死锁
+bool is_safe_to_inject(pid_t pid) {
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/wchan", pid);
+    std::ifstream f(path);
+    std::string wchan;
+    if (std::getline(f, wchan)) {
+        // 主线程在 epoll 或 futex 睡眠时注入最安全
+        if (wchan.find("epoll") != std::string::npos || wchan.find("futex") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int perform_injection(pid_t pid, const char* drop_path) {
     if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
     waitpid(pid, NULL, WUNTRACED);
     
     void* r_mmap = get_remote_func_addr(pid, "libc.so", (void*)mmap);
-    long m_params[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
+    long m_params[] = {0, 1024, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
     ptrace_call_target(pid, (uintptr_t)r_mmap, m_params, 6);
     
     struct user_pt_regs regs; struct iovec iov = {&regs, sizeof(regs)};
     ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov);
     uintptr_t remote_mem = regs.regs[0];
     
-    // 把缓存在磁盘的 SO 路径写进进程
-    for (size_t i = 0; i < strlen(DROP_SO_PATH) + 1; i += 4)
-        ptrace(PTRACE_POKETEXT, pid, (void*)(remote_mem + i), *(uint32_t*)(DROP_SO_PATH + i));
+    // 写入包含 0 的完整字符串
+    char path_buf[256] = {0};
+    strncpy(path_buf, drop_path, sizeof(path_buf) - 1);
+    for (size_t i = 0; i < sizeof(path_buf); i += 4) {
+        ptrace(PTRACE_POKETEXT, pid, (void*)(remote_mem + i), *(uint32_t*)(path_buf + i));
+    }
         
     void* r_dlopen = get_remote_func_addr(pid, "libdl.so", (void*)dlopen);
     if (!r_dlopen) r_dlopen = get_remote_func_addr(pid, "libc.so", (void*)dlopen);
     
-    long d_params[] = {(long)remote_mem, RTLD_NOW};
-    ptrace_call_target(pid, (uintptr_t)r_dlopen, d_params, 2);
+    // 2 = RTLD_NOW
+    long d_params[] = {(long)remote_mem, 2};
+    long handle = ptrace_call_target(pid, (uintptr_t)r_dlopen, d_params, 2);
+    
     ptrace(PTRACE_DETACH, pid, NULL, 0);
+    
+    if (handle == 0) {
+        printf("[-] dlopen 执行失败！链接器拒绝加载。\n");
+        return -1;
+    }
+    printf("[+] dlopen 执行成功！基址: 0x%lx\n", handle);
     return 0;
 }
 
 int main(int argc, char** argv) {
     printf("==================================================\n");
-    printf("   JKHelper 内嵌载荷引擎 (单文件版已启动)\n");
+    printf("   JKHelper 内嵌载荷引擎 (安全增强版)\n");
     printf("==================================================\n");
     
-    printf("[*] 正在释放内存中的 ImGui 载荷...\n");
+    // 【安全修复3】：将 SO 释放在游戏的私有目录，防止 Android Linker 命名空间拒绝加载
+    char DROP_SO_PATH[256];
+    snprintf(DROP_SO_PATH, sizeof(DROP_SO_PATH), "/data/data/%s/cache/libJKMenu.so", TARGET_PACKAGE);
+
+    printf("[*] 正在释放内存载荷到沙盒...\n");
     FILE* f = fopen(DROP_SO_PATH, "wb");
     if(f) {
         fwrite(libJKMenu_so, 1, libJKMenu_so_len, f);
         fclose(f);
-        chmod(DROP_SO_PATH, 0777);
-        printf("[+] 载荷释放成功 (%d 字节)\n", libJKMenu_so_len);
+        
+        // 赋予文件属于游戏的 UID，防止游戏进程因为权限不足无法加载
+        struct stat st;
+        char app_dir[256];
+        snprintf(app_dir, sizeof(app_dir), "/data/data/%s", TARGET_PACKAGE);
+        if (stat(app_dir, &st) == 0) {
+            chown(DROP_SO_PATH, st.st_uid, st.st_gid);
+        }
+        chmod(DROP_SO_PATH, 0755);
+        printf("[+] 载荷部署完毕 (%d 字节)\n", libJKMenu_so_len);
     } else {
         printf("[-] 无法释放载荷，请检查 Root 权限！\n");
         return 1;
     }
 
-    printf("[*] 正在静默监控游戏主进程...\n");
+    printf("[*] 正在静默监控主进程...\n");
 
     while (true) {
         DIR* dir = opendir("/proc");
@@ -119,11 +187,10 @@ int main(int argc, char** argv) {
                 char path[256]; snprintf(path, 256, "/proc/%s/cmdline", ptr->d_name);
                 std::ifstream f_cmd(path); std::string s; std::getline(f_cmd, s);
                 
-                // 【核心修复】：精准匹配主进程，排除任何带 ":" 的后台服务进程
+                // 排除 :push :msf 等子进程
                 if (s.find(TARGET_PACKAGE) != std::string::npos && s.find(":") == std::string::npos) { 
                     pid_t temp_pid = atoi(ptr->d_name);
-                    
-                    // 【终极防护】：检测到进程还不够，必须确认 libil2cpp.so (游戏引擎) 已加载完毕！
+                    // 确保游戏引擎已经加载
                     if (get_module_base_remote(temp_pid, "libil2cpp.so") > 0) {
                         pid = temp_pid; 
                         break; 
@@ -134,17 +201,24 @@ int main(int argc, char** argv) {
         closedir(dir);
 
         if (pid > 0) {
-            printf("[+] 捕捉到游戏引擎完全启动 (PID: %d)，执行精准注入...\n", pid);
-            // 引擎已经加载，只需稍等 1 秒即可注入
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            printf("[+] 发现游戏引擎完全启动 (PID: %d)\n", pid);
             
-            if (perform_injection(pid) == 0) {
-                printf("[+] 注入成功！请进入游戏画面查看 ImGui 菜单。\n");
+            // 等待主线程进入安全空闲状态 (epoll)
+            printf("[*] 等待游戏主线程空闲以防死锁...\n");
+            int wait_times = 0;
+            while (!is_safe_to_inject(pid) && wait_times < 15) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                wait_times++;
+            }
+            
+            printf("[*] 时机成熟，执行安全注入...\n");
+            if (perform_injection(pid, DROP_SO_PATH) == 0) {
+                printf("[+] 注入成功！请在游戏画面查看菜单。\n");
                 while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
                 printf("[*] 游戏已退出，重新进入监控模式...\n");
             } else {
-                printf("[-] 注入失败，可能反作弊拦截了 ptrace，重试中...\n");
-                std::this_thread::sleep_for(std::chrono::seconds(5));
+                printf("[-] 注入失败，10秒后重试...\n");
+                std::this_thread::sleep_for(std::chrono::seconds(10));
             }
         }
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -1043,6 +1117,7 @@ void DrawCardPool() {
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
+    // 独立 X和Y 缩放变量
     static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scaleX = g_cardPoolScaleX, t_scaleY = g_cardPoolScaleY;
     static bool first = true; 
     
@@ -1785,16 +1860,29 @@ void MainRenderThread() {
     if (it.joinable()) it.join(); 
 }
 
+// 【安全修复4】：增加对 egl 引擎初始化的延时等待，防止过早拉起渲染线程导致闪退
 __attribute__((constructor)) void OnModuleLoaded() {
     char cmd[256] = {0};
     FILE* f = fopen("/proc/self/cmdline", "r");
     if (f) {
         fgets(cmd, sizeof(cmd), f); 
         fclose(f);
-        // 【核心判断】：确保只在主进程中启动菜单，且过滤掉冒号子进程
         if (strstr(cmd, TARGET_PACKAGE) && !strstr(cmd, ":")) {
-            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "ImGui 载荷已成功注入并确认主进程，正在拉起渲染线程...");
-            std::thread(MainRenderThread).detach();
+            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "ImGui 载荷已注入游戏主进程！等待游戏引擎加载...");
+            
+            std::thread([]() {
+                // 等待游戏创建 EGL 显示上下文，最长等待 20 秒
+                int wait_count = 0;
+                while (eglGetCurrentDisplay() == EGL_NO_DISPLAY && wait_count < 20) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    wait_count++;
+                }
+                // 引擎就绪后，再缓冲 2 秒，确保游戏黑屏加载已完全结束
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                
+                __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "游戏引擎就绪，正式拉起菜单渲染线程！");
+                MainRenderThread();
+            }).detach();
         }
     }
 }
