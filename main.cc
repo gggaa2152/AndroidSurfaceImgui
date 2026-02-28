@@ -38,7 +38,7 @@
 // =================================================================
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
-// 【新增】全局线程控制与驱动状态
+// 全局线程控制与驱动状态
 std::atomic<bool> g_running{true};
 Paradise_hook_driver *g_driver = nullptr;
 pid_t g_gamePID = -1;
@@ -46,7 +46,15 @@ uintptr_t g_libBase = 0;
 int g_touch_fd = -1;
 char g_last_status[256] = "正在等待初始化...";
 
-// 【新增】商店 5 张牌的物理坐标（请根据自己的手机分辨率修改测试）
+// 触控面板参数与校准开关
+int g_touch_max_x = 32767;
+int g_touch_max_y = 32767;
+bool g_touch_swap_xy = false;
+bool g_touch_flip_x = false;
+bool g_touch_flip_y = false;
+bool g_auto_detected_max = false;
+
+// 商店 5 张牌的物理坐标
 int g_shop_coords[5][2] = {
     {1150, 1977},  // 第 1 张牌的 X, Y
     {1600, 1977},  // 第 2 张牌的 X, Y
@@ -120,7 +128,7 @@ float g_autoW_X = 300.0f;
 float g_autoW_Y = 1000.0f;
 float g_autoW_Scale = 1.0f;
 
-// 整合的 8 人玩家信息覆盖层坐标 (头像、金币等级、预警)
+// 整合的 8 人玩家信息覆盖层坐标
 float g_players_X = 1500.0f;
 float g_players_Y = 200.0f;
 float g_players_Scale = 1.0f;
@@ -138,19 +146,21 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 1.1 【新增】触控可视化与日志数据结构
+// 1.1 触控可视化与日志数据结构
 // =================================================================
 struct TapRecord {
     int x; 
     int y;
+    int mapped_x;
+    int mapped_y;
     std::chrono::steady_clock::time_point time;
 };
 std::vector<TapRecord> g_recent_taps;
 std::mutex g_tap_mutex;
-bool g_show_tap_debug = true; // 默认开启触控诊断窗
+bool g_show_tap_debug = true; 
 
 // =================================================================
-// 1.5 【新增】增强型底层硬件触控逻辑
+// 1.5 增强型底层硬件触控逻辑
 // =================================================================
 void InitTouchDevice() {
     LOGI("开始搜寻触控设备节点...");
@@ -163,7 +173,20 @@ void InitTouchDevice() {
             ioctl(fd, EVIOCGBIT(0, sizeof(bitmask)), bitmask);
             if (bitmask[EV_ABS / (sizeof(long) * 8)] & (1UL << (EV_ABS % (sizeof(long) * 8)))) {
                 g_touch_fd = fd;
-                LOGI("成功匹配触控设备: %s (fd: %d)", path, fd);
+                
+                // 尝试自动获取底层面板的最大坐标边界
+                struct input_absinfo abs_x, abs_y;
+                if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &abs_x) >= 0 && 
+                    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &abs_y) >= 0) {
+                    
+                    if (abs_x.maximum > 0 && abs_y.maximum > 0) {
+                        g_touch_max_x = abs_x.maximum;
+                        g_touch_max_y = abs_y.maximum;
+                        g_auto_detected_max = true;
+                    }
+                }
+                
+                LOGI("成功匹配触控设备: %s (fd: %d), 物理极值: X=%d, Y=%d", path, fd, g_touch_max_x, g_touch_max_y);
                 return;
             }
             close(fd);
@@ -178,14 +201,35 @@ void HardwareTap(int x, int y) {
         return;
     }
     
-    // 【新增】将点击记录保存到队列中，用于 UI 渲染准星和日志
+    // 将屏幕像素坐标 (像素) 映射到 触控面板坐标 (物理比例)
+    float scr_w = ImGui::GetIO().DisplaySize.x;
+    float scr_h = ImGui::GetIO().DisplaySize.y;
+    if (scr_w < 10) scr_w = 2400.0f; 
+    if (scr_h < 10) scr_h = 1080.0f;
+
+    float rx = (float)x / scr_w;
+    float ry = (float)y / scr_h;
+
+    // 应用校准转换 (横竖屏旋转支持)
+    if (g_touch_swap_xy) { float temp = rx; rx = ry; ry = temp; }
+    if (g_touch_flip_x) { rx = 1.0f - rx; }
+    if (g_touch_flip_y) { ry = 1.0f - ry; }
+
+    int mapped_x = (int)(rx * g_touch_max_x);
+    int mapped_y = (int)(ry * g_touch_max_y);
+
+    // 边界安全钳制
+    mapped_x = std::clamp(mapped_x, 0, g_touch_max_x);
+    mapped_y = std::clamp(mapped_y, 0, g_touch_max_y);
+
+    // 将点击记录保存到队列中
     {
         std::lock_guard<std::mutex> lock(g_tap_mutex);
-        g_recent_taps.push_back({x, y, std::chrono::steady_clock::now()});
-        if (g_recent_taps.size() > 30) g_recent_taps.erase(g_recent_taps.begin()); // 最多保留30条
+        g_recent_taps.push_back({x, y, mapped_x, mapped_y, std::chrono::steady_clock::now()});
+        if (g_recent_taps.size() > 30) g_recent_taps.erase(g_recent_taps.begin()); 
     }
 
-    LOGI("执行点击动作: X=%d, Y=%d", x, y);
+    LOGI("屏幕坐标: (%d, %d) -> 映射后硬件坐标: (%d, %d)", x, y, mapped_x, mapped_y);
     static int tracking_id = 100;
     struct input_event ev[12];
     int count = 0;
@@ -193,8 +237,8 @@ void HardwareTap(int x, int y) {
     // 按下阶段
     ev[count++] = { {0,0}, EV_ABS, ABS_MT_SLOT, 0 };
     ev[count++] = { {0,0}, EV_ABS, ABS_MT_TRACKING_ID, tracking_id++ };
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_X, x };
-    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_Y, y };
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_X, mapped_x }; 
+    ev[count++] = { {0,0}, EV_ABS, ABS_MT_POSITION_Y, mapped_y }; 
     ev[count++] = { {0,0}, EV_KEY, BTN_TOUCH, 1 };
     ev[count++] = { {0,0}, EV_SYN, SYN_REPORT, 0 };
     if (write(g_touch_fd, ev, sizeof(struct input_event) * count) < 0) {
@@ -226,7 +270,7 @@ void TestBuyAllCards() {
 }
 
 // =================================================================
-// 1.6 【新增】后台驱动逻辑同步线程
+// 1.6 后台驱动逻辑同步线程
 // =================================================================
 void GameLogicThread() {
     InitTouchDevice();
@@ -329,6 +373,13 @@ void SaveConfig() {
         out << "playersY=" << g_players_Y << "\n";
         out << "playersScale=" << g_players_Scale << "\n";
         
+        // 保存触控极值
+        out << "touchMaxX=" << g_touch_max_x << "\n";
+        out << "touchMaxY=" << g_touch_max_y << "\n";
+        out << "touchSwapXY=" << g_touch_swap_xy << "\n";
+        out << "touchFlipX=" << g_touch_flip_x << "\n";
+        out << "touchFlipY=" << g_touch_flip_y << "\n";
+
         out.close();
     }
 }
@@ -396,6 +447,11 @@ void LoadConfig() {
                 else if (k == "playersX") g_players_X = std::stof(v); 
                 else if (k == "playersY") g_players_Y = std::stof(v);
                 else if (k == "playersScale") g_players_Scale = std::stof(v);
+                else if (k == "touchMaxX" && !g_auto_detected_max) g_touch_max_x = std::stoi(v);
+                else if (k == "touchMaxY" && !g_auto_detected_max) g_touch_max_y = std::stoi(v);
+                else if (k == "touchSwapXY") g_touch_swap_xy = (v == "1");
+                else if (k == "touchFlipX") g_touch_flip_x = (v == "1");
+                else if (k == "touchFlipY") g_touch_flip_y = (v == "1");
             } catch (...) {}
         }
         in.close();
@@ -1080,7 +1136,7 @@ void DrawCardPool() {
 }
 
 // =================================================================
-// 6.6 【新增】绘制触控可视化准星与日志窗口
+// 6.6 绘制触控可视化准星与日志窗口
 // =================================================================
 void DrawTapVisuals() {
     if (!g_show_tap_debug) return;
@@ -1092,27 +1148,21 @@ void DrawTapVisuals() {
     for (auto it = g_recent_taps.begin(); it != g_recent_taps.end(); ) {
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->time).count();
         if (duration > 4000) { 
-            // 4秒后自动消失
             it = g_recent_taps.erase(it);
         } else {
-            // 实现淡出动画
             float alpha = 1.0f - (duration / 4000.0f);
             ImVec2 p((float)it->x, (float)it->y);
             
-            // 绘制红色核心圆
             d->AddCircleFilled(p, 10.0f * g_autoScale, IM_COL32(255, 0, 0, 180 * alpha));
-            // 绘制黄色波纹光圈
-            float pulse = 15.0f + 15.0f * (duration / 1000.0f); // 随时间扩散
+            float pulse = 15.0f + 15.0f * (duration / 1000.0f);
             d->AddCircle(p, pulse * g_autoScale, IM_COL32(255, 255, 0, 255 * alpha), 0, 3.0f * g_autoScale);
             
-            // 绘制巨大的十字瞄准线 (让你一眼看出点在哪)
             float line_len = 50.0f * g_autoScale;
             d->AddLine(p - ImVec2(line_len, 0), p + ImVec2(line_len, 0), IM_COL32(255, 255, 255, 255 * alpha), 2.5f * g_autoScale);
             d->AddLine(p - ImVec2(0, line_len), p + ImVec2(0, line_len), IM_COL32(255, 255, 255, 255 * alpha), 2.5f * g_autoScale);
 
-            // 显示发送的坐标文本
-            char buf[32];
-            snprintf(buf, sizeof(buf), "(%d, %d)", it->x, it->y);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "UI像素(%d,%d)\n底层映射(%d,%d)", it->x, it->y, it->mapped_x, it->mapped_y);
             ImFont* font = ImGui::GetFont();
             float fsz = ImGui::GetFontSize() * 1.2f;
             d->AddText(font, fsz, p + ImVec2(15 * g_autoScale, 15 * g_autoScale), IM_COL32(0, 255, 255, 255 * alpha), buf);
@@ -1125,9 +1175,31 @@ void DrawTapVisuals() {
 void DrawTapDebugWindow() {
     if (!g_show_tap_debug) return;
     
-    ImGui::SetNextWindowSize(ImVec2(350 * g_autoScale, 400 * g_autoScale), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin((const char*)u8"触控坐标诊断器", &g_show_tap_debug)) {
-        ImGui::TextWrapped((const char*)u8"屏幕上会显示红色十字光标，代表程序发送给系统的实际物理坐标。如果光标聚在一起，说明需要调整坐标系映射。");
+    ImGui::SetNextWindowSize(ImVec2(450 * g_autoScale, 600 * g_autoScale), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin((const char*)u8"触控坐标诊断与校准", &g_show_tap_debug)) {
+        ImGui::TextWrapped((const char*)u8"如果红十字和小白点不重合，请修改下方的物理极值，并尝试勾选轴反转。极值可用 getevent -p 查询。");
+        ImGui::Separator();
+        
+        // 【核心修改】将触控极值开放为可手动输入的控件
+        ImGui::TextColored(ImVec4(0, 1, 1, 1), (const char*)u8"[底层面板数据]");
+        ImGui::Text((const char*)u8"屏幕分辨率: %.0f x %.0f", ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+        
+        if (g_auto_detected_max) {
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"状态: 已成功自动获取底层极值");
+        } else {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), (const char*)u8"状态: 自动获取失败，请手动输入！");
+        }
+        
+        // 加入手动输入框，避免写死
+        ImGui::InputInt((const char*)u8"触控极值 Max X", &g_touch_max_x, 100, 1000);
+        ImGui::InputInt((const char*)u8"触控极值 Max Y", &g_touch_max_y, 100, 1000);
+        
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), (const char*)u8"[坐标系校准选项]");
+        ImGui::Checkbox((const char*)u8"互换 X/Y 轴 (横屏游戏通常需勾选)", &g_touch_swap_xy);
+        ImGui::Checkbox((const char*)u8"X 轴数值反转", &g_touch_flip_x);
+        ImGui::Checkbox((const char*)u8"Y 轴数值反转", &g_touch_flip_y);
+        
         ImGui::Separator();
         
         ImGui::TextColored(ImVec4(0, 1, 0, 1), (const char*)u8"近期点击记录 (最新在最上):");
@@ -1137,9 +1209,8 @@ void DrawTapDebugWindow() {
         if (g_recent_taps.empty()) {
             ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1.0), (const char*)u8"暂无点击记录...");
         } else {
-            // 倒序遍历，最新的显示在上面
             for (auto it = g_recent_taps.rbegin(); it != g_recent_taps.rend(); ++it) {
-                ImGui::Text(">> 点击 -> X: %d, Y: %d", it->x, it->y);
+                ImGui::Text("像素(%d, %d) -> 底层发送(%d, %d)", it->x, it->y, it->mapped_x, it->mapped_y);
             }
         }
         ImGui::EndChild();
@@ -1352,7 +1423,7 @@ void DrawShop() {
 }
 
 // =================================================================
-// 7. 顶级定制菜单 UI 控件 (修复了回弹与重影问题)
+// 7. 顶级定制菜单 UI 控件
 // =================================================================
 bool ModernToggle(const char* label, bool* v, int idx) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -1633,7 +1704,7 @@ void DrawMenu() {
             ImGui::Separator();
             
             // =================================================================
-            // 【新增】底层系统面板，展示驱动状态、触控状态与测试按钮
+            // 底层系统面板，展示驱动状态、触控状态与测试按钮
             // =================================================================
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), (const char*)u8"当前状态: %s", g_last_status);
             
@@ -1653,7 +1724,7 @@ void DrawMenu() {
             if (ImGui::Button((const char*)u8"测试：硬件级一键秒拿 5 张牌", ImVec2(-1, 55 * g_autoScale))) {
                 TestBuyAllCards();
             }
-            // 【新增】调试按钮
+            
             if (ImGui::Button((const char*)u8"呼出触控调试器", ImVec2(-1, 55 * g_autoScale))) {
                 g_show_tap_debug = true;
             }
@@ -1778,7 +1849,6 @@ int main() {
     LoadConfig(); 
     UpdateFontHD(true);  
     
-    // 【修改点】使用全局 g_running 替代原有的局部变量 running
     std::thread logicThread(GameLogicThread);
     std::thread it([&] { 
         while(g_running) { 
@@ -1795,7 +1865,6 @@ int main() {
         
         imgui.BeginFrame(); 
         
-        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1817,7 +1886,6 @@ int main() {
         DrawAutoBuyWindow(); 
         DrawCardPool(); 
         
-        // 【新增】渲染触控可视化
         DrawTapVisuals();
         DrawTapDebugWindow();
         
