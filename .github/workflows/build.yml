@@ -17,34 +17,21 @@ jobs:
 
       - name: Auto Setup Dobby Framework
         run: |
-          echo "[*] 正在全自动拉取并编译 Dobby Hook 框架..."
+          echo "[*] 正在全自动拉取并修复 Dobby Hook 框架..."
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【外科手术级修复 1】：强行补齐 Dobby 作者漏写的 OSMemory 类定义
-          echo "[*] 正在注入 OSMemory 补丁..."
-          cat << 'EOF' > patch.h
-          #include <sys/mman.h>
-          #ifndef OS_MEMORY_SHIM
-          #define OS_MEMORY_SHIM
-          #define kReadExecute 7
-          class OSMemory {
-          public:
-              static int PageSize() { return 4096; }
-              static bool SetPermission(void* page, int size, int perm) { return mprotect(page, size, perm) == 0; }
-          };
-          #endif
-          EOF
-          cat third_party/dobby/common/os_arch_features.h >> patch.h
-          mv patch.h third_party/dobby/common/os_arch_features.h
+          # 【修复 1】：修复 Dobby 源码中 OSMemory 未定义的逻辑错误
+          # 不再手动定义类（防止重定义），而是强行插入缺失的头文件引用
+          sed -i '1i #include "PlatformUnifiedInterface/platform.h"' third_party/dobby/common/os_arch_features.h || true
           
-          # 【外科手术级修复 2】：强行修改底层汇编，将绝对寻址替换为 PIC 兼容的 GOT 表寻址
-          echo "[*] 正在热修复 ADRP 汇编指令..."
-          sed -i 's/adrp x17, common_closure_bridge_handler@PAGE/adrp x17, :got:common_closure_bridge_handler/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
-          sed -i 's/add x17, x17, common_closure_bridge_handler@PAGEOFF/ldr x17, [x17, #:got_lo12:common_closure_bridge_handler]/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
+          # 【修复 2】：热修复汇编代码，适配 NDK 27 / Clang 18 的严苛语法
+          # 将旧的 @PAGE 寻址替换为新版标准 ELF 寻址
+          sed -i 's/adrp x17, common_closure_bridge_handler@PAGE/adrp x17, common_closure_bridge_handler/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
+          sed -i 's/add x17, x17, common_closure_bridge_handler@PAGEOFF/add x17, x17, :lo12:common_closure_bridge_handler/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
           
-          sed -i 's/adrp x17, get_routing_bridge_next_hop@PAGE/adrp x17, :got:get_routing_bridge_next_hop/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
-          sed -i 's/add x17, x17, get_routing_bridge_next_hop@PAGEOFF/ldr x17, [x17, #:got_lo12:get_routing_bridge_next_hop]/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
-          
+          sed -i 's/adrp x17, get_routing_bridge_next_hop@PAGE/adrp x17, get_routing_bridge_next_hop/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
+          sed -i 's/add x17, x17, get_routing_bridge_next_hop@PAGEOFF/add x17, x17, :lo12:get_routing_bridge_next_hop/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
+
           # 提取头文件供我们的 internal_hook.cc 使用
           mkdir -p includes
           cp third_party/dobby/include/dobby.h includes/
@@ -52,17 +39,18 @@ jobs:
           cd third_party/dobby
           mkdir build && cd build
           
-          # 放心使用最新的 NDK 27，不再需要降级
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 开启全局 PIC 支持，完美适配新版 Clang
+          # 【修复 3】：关键 CMake 参数
+          # 开启全局位置无关代码 (PIC)，并禁用会导致重定义的 SymbolResolver 插件
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
             -DCMAKE_ANDROID_NDK=$NDK_PATH \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DDOBBY_GENERATE_SHARED=OFF \
-            -DPlugin.SymbolResolver=OFF
+            -DPlugin.SymbolResolver=OFF \
+            -DPlugin.Android.BionicLinkerUtil=OFF
           make -j4
           echo "[+] Dobby 编译完成！"
 
@@ -73,7 +61,7 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译纯净版内部 Hook SO (链接刚刚编译出的 Dobby 静态库)
+          # 1. 编译纯净版内部 Hook SO
           $CXX -O3 -shared -fPIC \
             internal_hook.cc \
             -I. -I./includes -I./third_party/dobby/include \
