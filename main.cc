@@ -92,11 +92,11 @@ long get_module_base_remote(pid_t pid, const char* module_name) {
     } return addr;
 }
 
-void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func) {
+void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func_addr) {
     long lb = get_module_base_remote(getpid(), module_name); 
     long rb = get_module_base_remote(pid, module_name);
     if (!lb || !rb) return NULL; 
-    return (void *)((uintptr_t)local_func - lb + rb);
+    return (void *)((uintptr_t)local_func_addr - lb + rb);
 }
 
 long ptrace_call_target(pid_t pid, uintptr_t func, long *params, int num) {
@@ -115,7 +115,7 @@ long ptrace_call_target(pid_t pid, uintptr_t func, long *params, int num) {
 }
 
 // =================================================================
-// 3. UI 辅助函数 (增强鲁棒性版)
+// 3. UI 辅助函数 (深度修复版 UpdateFontHD)
 // =================================================================
 
 void SaveConfig() {
@@ -156,46 +156,59 @@ void UpdateFontHD(bool force = false) {
     }
     
     io.Fonts->Clear(); 
+
+    // 配置字体加载参数，优化内存占用，防止 Build() 失败
+    ImFontConfig config;
+    config.OversampleH = 1; // 禁用过采样以节省显存 (默认为 3)
+    config.OversampleV = 1;
+    config.PixelSnapH = true;
     
     const char* fontPaths[] = {
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/product/fonts/NotoSansCJK-Regular.ttc",
-        "/system/fonts/SysSans-Hans-Regular.ttf",
-        "/system/fonts/DroidSansFallback.ttf"
+        "/system/fonts/DroidSansFallback.ttf",
+        "/system/fonts/SysSans-Hans-Regular.ttf"
     };
 
     bool loaded = false;
     for (const char* path : fontPaths) {
         if (access(path, R_OK) == 0) {
-            // 策略1：尝试完整中文集
-            if (io.Fonts->AddFontFromFileTTF(path, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
-                LOGI("[+] 加载中文字体成功: %s", path);
+            // 策略1：加载常用中文集
+            if (io.Fonts->AddFontFromFileTTF(path, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+                LOGI("[+] 加载常用中文字体集成功: %s", path);
                 loaded = true; break;
             }
-            // 策略2：如果失败，尝试默认范围（防止大字符集引起的内存问题）
-            if (io.Fonts->AddFontFromFileTTF(path, targetSize)) {
-                LOGI("[!] 加载字体成功(仅基础字符): %s", path);
+            // 策略2：加载完整范围（如果上一条因为范围数据不匹配失败）
+            if (io.Fonts->AddFontFromFileTTF(path, targetSize, &config)) {
+                LOGI("[!] 加载字体成功(基础字符): %s", path);
                 loaded = true; break;
             }
         }
     }
 
     if (!loaded) {
-        LOGI("[*] 使用 ImGui 内部默认字体。");
-        io.Fonts->AddFontDefault();
+        LOGI("[*] 无法加载外部字体，使用内置默认字体。");
+        io.Fonts->AddFontDefault(&config);
     }
 
+    // 显式设置纹理宽度建议，有助于某些设备的图集生成
+    io.Fonts->TexDesiredWidth = 2048;
+
     if (!io.Fonts->Build()) {
-        LOGE("[-] 字体库 Build 失败，重置为极简模式...");
+        LOGE("[-] 字体库高级 Build 失败，正在回退到极简模式...");
         io.Fonts->Clear();
-        io.Fonts->AddFontDefault();
-        io.Fonts->Build();
+        io.Fonts->AddFontDefault(); // 没有任何参数的加载
+        if (!io.Fonts->Build()) {
+            LOGE("[-] 致命错误：即使是默认字体也无法构建。");
+            return;
+        }
     }
 
     if (io.BackendRendererUserData != nullptr) {
         ImGui_ImplOpenGL3_CreateFontsTexture();
     }
     g_current_rendered_size = targetSize;
+    LOGI("[+] 字体纹理构建成功并已同步至渲染器。");
 }
 
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, float& t_x, float& t_y, float& t_scale, bool& isDragging, bool& isScaling, ImVec2& dragOffset, ImVec2& scaleDragOffset, float h_dx, float h_dy, bool locked) {
@@ -263,7 +276,7 @@ void MainRenderThread() {
         });
 
         while (g_game_running) {
-            // 确保字体构建成功后再开始
+            // 确保字体构建成功后再开始渲染，否则 BeginFrame 会触发断言
             if (!ImGui::GetIO().Fonts->IsBuilt()) {
                 UpdateFontHD(true);
                 if (!ImGui::GetIO().Fonts->IsBuilt()) {
@@ -354,9 +367,11 @@ int main(int argc, char** argv) {
                         std::string cmd; std::getline(f_cmd, cmd, '\0'); 
                         if (cmd == TARGET_PACKAGE) {
                             pid = atoi(ptr->d_name);
-                            struct stat st; snprintf(path, 256, "/proc/%d", pid);
-                            if (stat(path, &st) == 0) game_uid = st.st_uid;
-                            break; 
+                            if (is_process_active(pid)) {
+                                struct stat st; snprintf(path, 256, "/proc/%d", pid);
+                                if (stat(path, &st) == 0) game_uid = st.st_uid;
+                                break; 
+                            } else pid = 0;
                         }
                     }
                 }
