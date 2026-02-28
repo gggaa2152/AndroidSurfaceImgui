@@ -20,29 +20,25 @@ jobs:
           echo "[*] 正在全自动拉取并修复 Dobby Hook 框架..."
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【外科手术修复 1】：修复 ADRP 汇编语法冲突 (关键：必须先处理 PAGEOFF)
-          # 将 symbol@PAGEOFF 替换为 :lo12:symbol
-          # 将 symbol@PAGE 替换为 symbol
-          echo "[*] 正在修复 arm64 汇编语法..."
-          sed -i 's/\([a-zA-Z0-9_]*\)@PAGEOFF/:lo12:\1/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
-          sed -i 's/\([a-zA-Z0-9_]*\)@PAGE/\1/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          # 【精准修复 1】：修复 arm64 汇编语法冲突 (必须先替换 PAGEOFF，再替换 PAGE)
+          echo "[*] 正在修复汇编语法以适配 NDK 27..."
+          sed -i 's/@PAGEOFF/:lo12:/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          sed -i 's/@PAGE//g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
 
-          # 【外科手术修复 2】：解决 OSMemory 未定义问题
-          # 采用最稳健的方案：直接在头文件顶部注入一个简单的兼容层，避免重定义冲突
-          echo "[*] 正在注入 OSMemory 兼容补丁..."
-          sed -i '1i #include <sys/mman.h>\n#define kReadExecute 7\nclass OSMemory { public: static int PageSize() { return 4096; } static bool SetPermission(void* a, size_t s, int p) { return mprotect(a, s, p) == 0; } };' third_party/dobby/common/os_arch_features.h
+          # 【精准修复 2】：修复 OSMemory 未定义问题
+          # 强行包含 Dobby 自带的平台定义头文件，而不是手动重写类，彻底避免重定义冲突
+          echo "[*] 正在修复头文件包含逻辑..."
+          sed -i '1i #include "PlatformUnifiedInterface/platform.h"' third_party/dobby/common/os_arch_features.h
 
           # 自动补齐 includes 目录供你的项目使用
           mkdir -p includes
-          if [ ! -f "includes/dobby.h" ]; then
-            cp third_party/dobby/include/dobby.h includes/
-          fi
+          cp third_party/dobby/include/dobby.h includes/
           
           cd third_party/dobby
           mkdir build && cd build
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 禁用不稳定的插件，开启全局 PIC，适配新版 Clang
+          # 禁用 SymbolResolver (这是报错最多的模块，且我们的 Hook 逻辑不需要它)
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
@@ -50,7 +46,8 @@ jobs:
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DDOBBY_GENERATE_SHARED=OFF \
             -DPlugin.SymbolResolver=OFF \
-            -DPlugin.Android.BionicLinkerUtil=OFF
+            -DPlugin.Android.BionicLinkerUtil=OFF \
+            -DDOBBY_DEBUG=OFF
           make -j4
           echo "[+] Dobby 编译完成！"
 
@@ -61,7 +58,7 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译内部 Hook SO
+          # 1. 编译内部 Hook SO (链接刚刚修复成功的 libdobby.a)
           $CXX -O3 -shared -fPIC \
             internal_hook.cc \
             -I. -I./includes -I./third_party/dobby/include \
