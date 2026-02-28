@@ -15,6 +15,21 @@ jobs:
         run: |
           curl -L https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -o stb_image.h
 
+      - name: Auto Setup Dobby Framework
+        run: |
+          echo "[*] 正在全自动拉取并编译 Dobby Hook 框架..."
+          git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
+          cd third_party/dobby
+          mkdir build && cd build
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
+          cmake .. \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_NDK=$NDK_PATH \
+            -DDOBBY_GENERATE_SHARED=OFF
+          make -j4
+          echo "[+] Dobby 编译完成！"
+
       - name: Compile 64bit Dual-End Binary
         run: |
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
@@ -22,12 +37,11 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译纯净版内部 Hook SO (不包含任何 ImGui 逻辑)
-          # 注意：这里需要链接你的 dobby 库
+          # 1. 编译纯净版内部 Hook SO (链接刚刚编译出的 Dobby 静态库)
           $CXX -O3 -shared -fPIC \
             internal_hook.cc \
             -I. -I./includes -I./third_party/dobby/include \
-            -L./third_party/dobby/libs/arm64-v8a -ldobby \
+            ./third_party/dobby/build/libdobby.a \
             -llog \
             -o libJKHook.so
 
@@ -41,7 +55,7 @@ jobs:
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 4. 编译外部 UI 守护进程 (ELF 格式)，它会把上面的 payload 吞进去
+          # 4. 编译外部 UI 守护进程 (ELF 格式)，吞入 payload
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing -Wno-format-security \
