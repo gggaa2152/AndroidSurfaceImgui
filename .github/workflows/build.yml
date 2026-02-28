@@ -20,26 +20,29 @@ jobs:
           echo "[*] 正在全自动拉取并修复 Dobby Hook 框架..."
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【外科手术 1】：解决 OSMemory 未定义问题
-          # 强行在头部插入缺失的系统定义头文件
-          sed -i '1i #include "PlatformUnifiedInterface/platform.h"' third_party/dobby/common/os_arch_features.h
-          
-          # 【外科手术 2】：热修复 ADRP 汇编指令，适配 NDK 27 严苛语法
-          # 移除旧式的 @PAGE 寻址，替换为新版编译器支持的标准语法
-          sed -i 's/@PAGE//g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
-          sed -i 's/@PAGEOFF/:lo12:/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          # 【外科手术修复 1】：修复 ADRP 汇编语法冲突 (关键：必须先处理 PAGEOFF)
+          # 将 symbol@PAGEOFF 替换为 :lo12:symbol
+          # 将 symbol@PAGE 替换为 symbol
+          echo "[*] 正在修复 arm64 汇编语法..."
+          sed -i 's/\([a-zA-Z0-9_]*\)@PAGEOFF/:lo12:\1/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          sed -i 's/\([a-zA-Z0-9_]*\)@PAGE/\1/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
 
-          # 提取头文件供 internal_hook.cc 使用，保持原路径兼容性
+          # 【外科手术修复 2】：解决 OSMemory 未定义问题
+          # 采用最稳健的方案：直接在头文件顶部注入一个简单的兼容层，避免重定义冲突
+          echo "[*] 正在注入 OSMemory 兼容补丁..."
+          sed -i '1i #include <sys/mman.h>\n#define kReadExecute 7\nclass OSMemory { public: static int PageSize() { return 4096; } static bool SetPermission(void* a, size_t s, int p) { return mprotect(a, s, p) == 0; } };' third_party/dobby/common/os_arch_features.h
+
+          # 自动补齐 includes 目录供你的项目使用
           mkdir -p includes
-          cp third_party/dobby/include/dobby.h includes/
+          if [ ! -f "includes/dobby.h" ]; then
+            cp third_party/dobby/include/dobby.h includes/
+          fi
           
           cd third_party/dobby
           mkdir build && cd build
-          
-          # 使用云端最新的 NDK 27
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 开启全局位置无关代码 (PIC)
+          # 禁用不稳定的插件，开启全局 PIC，适配新版 Clang
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
@@ -58,7 +61,7 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译纯净版内部 Hook SO
+          # 1. 编译内部 Hook SO
           $CXX -O3 -shared -fPIC \
             internal_hook.cc \
             -I. -I./includes -I./third_party/dobby/include \
@@ -66,17 +69,17 @@ jobs:
             -llog \
             -o libJKHook.so
 
-          # 2. 将编译好的纯净 SO 转换为十六进制数组 (hook_payload.h)
+          # 2. 将 .so 转换为内嵌数组
           xxd -i libJKHook.so > hook_payload.h
 
-          # 3. 编译 zstd 库 (供 ImGui 使用)
+          # 3. 编译 zstd
           $CC -O3 -fPIC -c \
             -I./third_party/zstd/lib \
             third_party/zstd/lib/common/*.c \
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 4. 编译外部 UI 守护进程 (ELF 格式)，吞入 payload
+          # 4. 编译外部 UI 守护端 (JKHelper_Daemon)
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing -Wno-format-security \
