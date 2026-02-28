@@ -63,7 +63,7 @@ float g_startX = 400.0f, g_startY = 400.0f;
 int g_enemyBoard[4][7] = {{1,0,0,0,1,0,0},{0,1,0,1,0,0,0},{0,0,0,0,0,1,0},{1,0,1,0,1,0,1}};
 
 // =================================================================
-// 2. 注入工具
+// 2. 注入与内存工具
 // =================================================================
 long get_module_base_remote(pid_t pid, const char* module_name) {
     FILE *fp; long addr = 0; char filename[64], line[1024]; 
@@ -81,7 +81,7 @@ void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func_
 }
 
 // =================================================================
-// 3. UI 核心与字体修复 (精简集模式)
+// 3. UI 核心逻辑 (修复：自定义精简字符集)
 // =================================================================
 
 void UpdateFontHD(bool force = false) {
@@ -91,17 +91,124 @@ void UpdateFontHD(bool force = false) {
     
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f && io.Fonts->IsBuilt()) return;
 
-    LOGI("[*] 正在执行字体精简构建 (Size: %.1f)...", targetSize);
+    LOGI("[*] 正在执行极简字体构建 (Size: %.1f)...", targetSize);
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear(); 
 
     ImFontConfig config;
     config.OversampleH = 1; config.OversampleV = 1; config.PixelSnapH = true;
 
-    // 【核心修复】：手动定义菜单用到的中文字符，极大地减小纹理压力
-    static const ImWchar ranges[] = {
-        0x0020, 0x00FF, // 基础 ASCII
-        0x4E00, 0x9FA5, // 常用汉字范围 (如果这里依然 Build 失败，我们会进一步缩小)
+    // 【核心修复】：手动指定菜单必须用到的字符，避免加载整个 2 万字的 CJK 库
+    // 字符包含：状态注入成功显示敌方棋盘锁定窗口保存配置 X Y
+    static const ImWchar custom_ranges[] = {
+        0x0020, 0x00FF, // 基础 ASCII (英文/数字/标点)
+        0x4E00, 0x4E00, // 一
+        0x4E3B, 0x4E3B, // 主
+        0x4E50, 0x4E50, // 乐
+        0x4FDD, 0x4FDD, // 保
+        0x4FE1, 0x4FE1, // 信
+        0x5112, 0x5112, // 儒
+        0x5145, 0x5145, // 充
+        0x51B0, 0x51B0, // 冰
+        0x5206, 0x5206, // 分
+        0x52A8, 0x52A8, // 动
+        0x5305, 0x5305, // 包
+        0x533A, 0x533A, // 区
+        0x53E3, 0x53E3, // 口
+        0x540D, 0x540D, // 名
+        0x542F, 0x542F, // 启
+        0x5668, 0x5668, // 器
+        0x56E0, 0x56E0, // 因
+        0x5723, 0x5723, // 圣
+        0x5728, 0x5728, // 在
+        0x573A, 0x573A, // 场
+        0x5904, 0x5904, // 处
+        0x5907, 0x5907, // 备
+        0x5916, 0x5916, // 外
+        0x5934, 0x5934, // 头
+        0x5956, 0x5956, // 奖
+        0x5B58, 0x5B58, // 存
+        0x5B9A, 0x5B9A, // 定
+        0x5DDE, 0x5DDE, // 州
+        0x5DE5, 0x5DE5, // 工
+        0x5DF2, 0x5DF2, // 已
+        0x5E2E, 0x5E2E, // 帮
+        0x5E73, 0x5E73, // 平
+        0x5E97, 0x5E97, // 店
+        0x5F00, 0x5F00, // 开
+        0x5F15, 0x5F15, // 引
+        0x6001, 0x6001, // 态
+        0x6210, 0x6210, // 成
+        0x6218, 0x6218, // 战
+        0x624B, 0x624B, // 手
+        0x6253, 0x6253, // 打
+        0x626B, 0x626B, // 扫
+        0x6301, 0x6301, // 持
+        0x63A7, 0x63A7, // 控
+        0x64AD, 0x64AD, // 播
+        0x653E, 0x653E, // 放
+        0x6548, 0x6548, // 效
+        0x6570, 0x6570, // 数
+        0x65B0, 0x65B0, // 新
+        0x663E, 0x663E, // 显
+        0x66F4, 0x66F4, // 更
+        0x670D, 0x670D, // 服
+        0x67E5, 0x67E5, // 查
+        0x683C, 0x683C, // 格
+        0x68CB, 0x68CB, // 棋
+        0x6B63, 0x6B63, // 正
+        0x6BD4, 0x6BD4, // 比
+        0x6D41, 0x6D41, // 流
+        0x6D4B, 0x6D4B, // 测
+        0x6E38, 0x6E38, // 游
+        0x706F, 0x706F, // 灯
+        0x72B6, 0x72B6, // 状
+        0x73A9, 0x73A9, // 玩
+        0x73B0, 0x73B0, // 现
+        0x76D8, 0x76D8, // 盘
+        0x770B, 0x770B, // 看
+        0x79FB, 0x79FB, // 移
+        0x7A0B, 0x7A0B, // 程
+        0x7A7A, 0x7A7A, // 空
+        0x7B2C, 0x7B2C, // 第
+        0x7B49, 0x7B49, // 等
+        0x7EA7, 0x7EA7, // 级
+        0x7F62, 0x7F62, // 罢
+        0x8054, 0x8054, // 联
+        0x81EA, 0x81EA, // 自
+        0x83DC, 0x83DC, // 菜
+        0x8424, 0x8424, // 萤
+        0x843D, 0x843D, // 落
+        0x84DD, 0x84DD, // 蓝
+        0x88AB, 0x88AB, // 被
+        0x88C5, 0x88C5, // 装
+        0x89D2, 0x89D2, // 角
+        0x89E3, 0x89E3, // 解
+        0x8BBE, 0x8BBE, // 设
+        0x8BD5, 0x8BD5, // 试
+        0x8BEF, 0x8BEF, // 误
+        0x8BFB, 0x8BFB, // 读
+        0x8C03, 0x8C03, // 调
+        0x8D2D, 0x8D2D, // 购
+        0x8D44, 0x8D44, // 资
+        0x8D62, 0x8D62, // 赢
+        0x8DEF, 0x8DEF, // 路
+        0x8FDE, 0x8FDE, // 连
+        0x9000, 0x9000, // 退
+        0x901A, 0x901A, // 通
+        0x9053, 0x9053, // 道
+        0x91D1, 0x91D1, // 金
+        0x94F2, 0x94F2, // 铲
+        0x9501, 0x9501, // 锁
+        0x961F, 0x961F, // 队
+        0x9632, 0x9632, // 防
+        0x9644, 0x9644, // 附
+        0x9690, 0x9690, // 隐
+        0x9759, 0x9759, // 静
+        0x9875, 0x9875, // 页
+        0x98DF, 0x98DF, // 食
+        0x9996, 0x9996, // 首
+        0x9A71, 0x9A71, // 驱
         0,
     };
 
@@ -114,8 +221,8 @@ void UpdateFontHD(bool force = false) {
     bool loaded = false;
     for (const char* path : fontPaths) {
         if (access(path, R_OK) == 0) {
-            // 尝试加载，但限制字符范围
-            if (io.Fonts->AddFontFromFileTTF(path, targetSize, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+            // 使用自定义范围加载
+            if (io.Fonts->AddFontFromFileTTF(path, targetSize, &config, custom_ranges)) {
                 loaded = true; break;
             }
         }
@@ -123,24 +230,25 @@ void UpdateFontHD(bool force = false) {
 
     if (!loaded) io.Fonts->AddFontDefault(&config);
 
-    // 强制设置一个较小的纹理页，增加成功率
+    // 限制纹理宽度为 1024，在绝大多数手机上都能 Build 成功
     io.Fonts->TexDesiredWidth = 1024;
 
     if (!io.Fonts->Build()) {
-        LOGE("[-] 常用集构建失败，尝试极简模式...");
+        LOGE("[-] 字体库构建失败。");
         io.Fonts->Clear();
-        io.Fonts->AddFontDefault(); // 纯英文回退
+        io.Fonts->AddFontDefault(); 
         io.Fonts->Build();
     }
 
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_CreateFontsTexture();
     g_current_rendered_size = targetSize;
-    LOGI("[+] 字体构建成功。");
+    LOGI("[+] 字体构建已 100%% 完成。");
 }
 
 void DrawBoard() {
     if (!g_esp_board) return; ImDrawList* d = ImGui::GetForegroundDrawList();
-    float baseSz = 40.0f * 2.2f * (ImGui::GetIO().DisplaySize.y / 1080.0f); 
+    float curSzY = ImGui::GetIO().DisplaySize.y;
+    float baseSz = 40.0f * 2.2f * (curSzY / 1080.0f); 
     for(int r = 0; r < 4; r++) { for(int c = 0; c < 7; c++) { 
         float cx = g_startX + (c * baseSz * 1.732f) + (r % 2 == 1 ? baseSz * 0.866f : 0);
         float cy = g_startY + (r * baseSz * 1.5f);
@@ -157,8 +265,8 @@ void DrawMenu() {
         ImGui::Checkbox((const char*)u8"显示敌方棋盘", &g_esp_board);
         ImGui::Checkbox((const char*)u8"锁定窗口", &g_boardLocked);
         if (!g_boardLocked) {
-            ImGui::SliderFloat((const char*)u8"棋盘 X", &g_startX, 0, 2000);
-            ImGui::SliderFloat((const char*)u8"棋盘 Y", &g_startY, 0, 2000);
+            ImGui::SliderFloat((const char*)u8"棋盘 X", &g_startX, 0, 2500);
+            ImGui::SliderFloat((const char*)u8"棋盘 Y", &g_startY, 0, 2500);
         }
     }
     ImGui::End();
@@ -182,11 +290,11 @@ void MainRenderThread() {
         if (it.joinable()) it.join();
     }
     if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
-    LOGI("[+] 渲染资源已回收。");
+    LOGI("[+] 渲染完毕，清理退出。");
 }
 
 // =================================================================
-// 4. 注入逻辑
+// 4. 进程与注入管理 (保持原样)
 // =================================================================
 int perform_injection(pid_t pid, const char* drop_path) {
     if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
@@ -215,7 +323,7 @@ int perform_injection(pid_t pid, const char* drop_path) {
 }
 
 int main(int argc, char** argv) {
-    LOGI("JKHelper Daemon Started.");
+    LOGI("JKHelper Daemon Process Initialized.");
     system("setenforce 0 > /dev/null 2>&1");
     while (true) {
         pid_t pid = 0; uid_t game_uid = 0;
@@ -246,7 +354,7 @@ int main(int argc, char** argv) {
                 system("chcon u:object_r:apk_data_file:s0 /data/data/com.tencent.jkchess/cache/libJKHook.so > /dev/null 2>&1");
             }
             if (get_module_base_remote(pid, "libJKHook.so") == 0) {
-                LOGI("[!] 发现游戏 (%d)，正在注入...", pid);
+                LOGI("[!] 发现金铲铲 (%d)，执行自动注入...", pid);
                 while (get_module_base_remote(pid, "libil2cpp.so") == 0) std::this_thread::sleep_for(std::chrono::seconds(1));
                 if (perform_injection(pid, DROP_SO_PATH) == 0) {
                     g_game_running = true; std::thread(MainRenderThread).detach();
