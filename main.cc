@@ -1789,23 +1789,47 @@ void DrawMenu() {
 }
 
 void MainRenderThread() {
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [1] 进入 MainRenderThread");
     ImGui::CreateContext();
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [2] ImGui 上下文已创建");
+
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [3] AImGui 初始化完成");
     
+    // 增加：轮询等待 EGL 显示上下文，防止游戏黑屏时过早绘制引发无响应
+    int wait_count = 0;
+    while (eglGetCurrentDisplay() == EGL_NO_DISPLAY && wait_count < 30) {
+        __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> 等待游戏 EGL Context 就绪... (%d/30)", wait_count);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        wait_count++;
+    }
+    
+    if (eglGetCurrentDisplay() == EGL_NO_DISPLAY) {
+        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] 获取 EGL Context 超时三十秒！菜单线程终止。");
+        return;
+    }
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [4] EGL 引擎已就绪！");
+
     eglSwapInterval(eglGetCurrentDisplay(), 1); 
     
     LoadConfig(); 
     UpdateFontHD(true);  
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [5] 字体与配置加载完毕，进入绘制主循环！");
     
     static bool running = true; 
     std::thread it([&] { 
         while(running) { 
             imgui.ProcessInputEvent(); 
-            std::this_thread::yield(); 
+            std::this_thread::sleep_for(std::chrono::milliseconds(5)); // 防止吃满 CPU
         } 
     });
 
+    bool first_frame = true;
     while (running) {
+        if (first_frame) {
+            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [6] 正在向游戏提交第一帧绘制指令...");
+        }
+        
         if (g_needUpdateFontSafe) { 
             UpdateFontHD(true); 
             g_needUpdateFontSafe = false; 
@@ -1813,10 +1837,8 @@ void MainRenderThread() {
         
         imgui.BeginFrame(); 
         
-        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
-        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
@@ -1839,7 +1861,13 @@ void MainRenderThread() {
         DrawMenu();
         
         imgui.EndFrame(); 
-        std::this_thread::yield();
+
+        if (first_frame) {
+            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> [7] 第一帧画面成功上屏显示！");
+            first_frame = false;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // 控制帧率，防止卡死
     }
     
     g_HexShader.Cleanup(); 
@@ -1851,39 +1879,53 @@ void MainRenderThread() {
 // 【终极安全包装】：使用 pthread 并强制延时，避免与游戏引擎初始化抢占资源
 // =================================================================
 void* SafeRenderWrapper(void* arg) {
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 渲染包装线程已启动，进入蛰伏期...");
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 渲染派生线程启动，进入 8 秒蛰伏期以躲避安全检测...");
     
-    // 【核心修复】：等待 8 秒钟！
     // 确保游戏完全跳过腾讯 Logo 黑屏和 libil2cpp 初始化，再介入 EGL。
     std::this_thread::sleep_for(std::chrono::seconds(8));
 
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 游戏引擎应已就绪，尝试拉起 ImGui...");
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 蛰伏结束，尝试拉起 MainRenderThread...");
     try {
         MainRenderThread();
+    } catch (const std::exception& e) {
+        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] MainRenderThread 发生标准异常: %s", e.what());
     } catch (...) {
-        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] MainRenderThread 发生未知异常！");
+        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] MainRenderThread 发生未知异常崩溃！");
     }
     return nullptr;
 }
 
 __attribute__((constructor)) void OnModuleLoaded() {
+    __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "========== SO 被系统底层成功加载，触发 constructor ==========");
     char cmd[256] = {0};
     FILE* f = fopen("/proc/self/cmdline", "r");
     if (f) {
         fgets(cmd, sizeof(cmd), f); 
         fclose(f);
+        __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> 当前寄生的进程名: [%s]", cmd);
+        
         // 【核心判断】：确保只在主进程中启动菜单，且过滤掉冒号子进程
         if (strstr(cmd, TARGET_PACKAGE) && !strstr(cmd, ":")) {
-            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] ImGui 载荷已成功注入并确认主进程！");
+            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] 命中目标主进程！准备创建底层渲染线程...");
             
             // 使用更底层的 pthread 创建分离线程，规避 libc++ 的 std::thread 锁冲突
             pthread_t t;
             pthread_attr_t attr;
             pthread_attr_init(&attr);
             pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-            pthread_create(&t, &attr, SafeRenderWrapper, nullptr);
+            int ret = pthread_create(&t, &attr, SafeRenderWrapper, nullptr);
             pthread_attr_destroy(&attr);
+            
+            if (ret == 0) {
+                __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "[+] pthread 线程派生成功！");
+            } else {
+                __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] pthread_create 失败，系统拒绝创建线程，错误码: %d", ret);
+            }
+        } else {
+            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", ">> 发现这是子进程，主动终止后续加载。");
         }
+    } else {
+        __android_log_print(ANDROID_LOG_ERROR, "JKHelper_Universal", "[-] 无法读取 cmdline！");
     }
 }
 
