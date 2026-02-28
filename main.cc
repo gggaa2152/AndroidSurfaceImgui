@@ -34,7 +34,7 @@
 #include <sys/uio.h>
 #include <sys/errno.h>
 
-// 由 build.yml 自动生成的头文件 (包含 internal_hook.cc 编译出的 SO 数组)
+// 由 build.yml 自动生成的头文件
 #include "hook_payload.h"
 
 #ifndef NT_PRSTATUS
@@ -115,7 +115,7 @@ long ptrace_call_target(pid_t pid, uintptr_t func, long *params, int num) {
 }
 
 // =================================================================
-// 3. UI 辅助函数 (修复关键：UpdateFontHD)
+// 3. UI 辅助函数 (强制修复版 UpdateFontHD)
 // =================================================================
 
 void SaveConfig() {
@@ -142,50 +142,62 @@ void LoadConfig() {
     }
 }
 
+// 核心修复函数
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
-    float targetSize = std::clamp(20.0f * (io.DisplaySize.y / 1080.0f), 15.0f, 50.0f);
     
-    // 如果不需要强制刷新且大小变化不大，则返回
+    // 基础分辨率兜底
+    float screenY = io.DisplaySize.y > 100.0f ? io.DisplaySize.y : 1080.0f;
+    float targetSize = std::clamp(20.0f * (screenY / 1080.0f), 15.0f, 50.0f);
+    
     if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f && io.Fonts->IsBuilt()) return;
 
-    LOGI("[*] 正在构建字体库: 大小 %.1f", targetSize);
+    LOGI("[*] 正在执行字体库构建 (Size: %.1f)...", targetSize);
     
-    // 清除旧字体并销毁之前的纹理
+    // 1. 清理旧资源
     ImGui_ImplOpenGL3_DestroyFontsTexture(); 
     io.Fonts->Clear(); 
     
-    bool font_loaded = false;
+    // 2. 尝试加载系统字体 (带指针校验)
     const char* fontPaths[] = {
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/SysSans-Hans-Regular.ttf",
         "/system/fonts/DroidSansFallback.ttf"
     };
 
-    // 尝试从系统中加载中文字体
+    bool loaded = false;
     for (const char* path : fontPaths) {
         if (access(path, R_OK) == 0) {
-            if (io.Fonts->AddFontFromFileTTF(path, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
-                font_loaded = true;
+            ImFont* f = io.Fonts->AddFontFromFileTTF(path, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+            if (f) {
+                LOGI("[+] 成功加载系统字体: %s", path);
+                loaded = true;
                 break;
             }
         }
     }
 
-    // 【核心修复】：如果外部字体加载全部失败，必须添加默认字体
-    if (!font_loaded) {
-        LOGE("[-] 无法加载系统字体，使用 ImGui 默认字体作为回退。");
+    // 3. 强制回退：如果没加载任何字体，必须加一个默认的，否则 Build() 必败
+    if (!loaded || io.Fonts->Fonts.Size == 0) {
+        LOGE("[-] 系统字体载入失败，正在强制加载 ImGui 默认字体...");
         io.Fonts->AddFontDefault();
     }
 
-    // 关键步骤：执行构建并重新创建纹理
-    if (io.Fonts->Build()) {
-        ImGui_ImplOpenGL3_CreateFontsTexture();
-        g_current_rendered_size = targetSize;
-        LOGI("[+] 字体库构建完成。");
-    } else {
-        LOGE("[-] 致命错误：字体库 Build() 失败！");
+    // 4. 执行构建
+    if (!io.Fonts->Build()) {
+        LOGE("[-] 字体库 Build 失败，正在尝试终极恢复模式...");
+        io.Fonts->Clear();
+        io.Fonts->AddFontDefault();
+        if (!io.Fonts->Build()) {
+            LOGE("[-] 致命错误：默认字体也无法 Build！");
+            return; 
+        }
     }
+
+    // 5. 更新 GPU 纹理
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+    g_current_rendered_size = targetSize;
+    LOGI("[+] 字体纹理构建完成并已上传 GPU。");
 }
 
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, float& t_x, float& t_y, float& t_scale, bool& isDragging, bool& isScaling, ImVec2& dragOffset, ImVec2& scaleDragOffset, float h_dx, float h_dy, bool locked) {
@@ -222,7 +234,8 @@ void DrawBoard() {
 
 void DrawMenu() {
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] 辅助已注入成功");
+        ImGui::SetWindowFontScale(g_scale);
+        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] Dobby 静态注入成功");
         ImGui::Checkbox((const char*)u8"敌方棋盘显示", &g_esp_board);
         ImGui::Checkbox((const char*)u8"锁定位置", &g_boardLocked);
         if (ImGui::Button((const char*)u8"保存配置")) SaveConfig();
@@ -238,9 +251,8 @@ void MainRenderThread() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
-    // 初始化配置并构建字体
+    // 初始化配置
     LoadConfig(); 
-    UpdateFontHD(true);  
     
     // 启动输入处理线程
     std::thread it([&] { 
@@ -251,9 +263,13 @@ void MainRenderThread() {
     });
 
     while (g_game_running) {
-        // 渲染前最后的安全检查
+        // 【关键保护】：每一帧渲染前确保字库已构建
         if (!ImGui::GetIO().Fonts->IsBuilt()) {
             UpdateFontHD(true);
+            if (!ImGui::GetIO().Fonts->IsBuilt()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue; // 如果还没构建好，跳过这一帧渲染，防止 BeginFrame 断言
+            }
         }
 
         imgui.BeginFrame(); 
@@ -305,9 +321,16 @@ int perform_injection(pid_t pid, const char* drop_path) {
     return (h == 0) ? -1 : 0;
 }
 
+bool is_process_active(pid_t pid) {
+    char path[128]; snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    FILE* f = fopen(path, "r"); if (!f) return false;
+    char state; fscanf(f, "%*d %*s %c", &state); fclose(f);
+    return (state != 'Z' && state != 'X');
+}
+
 int main(int argc, char** argv) {
     LOGI("=============================================");
-    LOGI("   JKHelper Daemon 断言修复版已启动");
+    LOGI("   JKHelper Daemon 稳定修复版启动成功");
     LOGI("=============================================");
     system("setenforce 0 > /dev/null 2>&1");
     
@@ -334,7 +357,6 @@ int main(int argc, char** argv) {
         }
 
         if (pid > 0) {
-            // 部署 SO 并设置权限 (保持原样...)
             FILE* f = fopen(DROP_SO_PATH, "wb");
             if(f) {
                 fwrite(libJKHook_so, 1, libJKHook_so_len, f); fclose(f);
@@ -350,7 +372,6 @@ int main(int argc, char** argv) {
                     std::thread(MainRenderThread).detach();
                 }
             } else if (!g_game_running) {
-                // 如果已注入但 UI 没跑，拉起 UI
                 g_game_running = true;
                 std::thread(MainRenderThread).detach();
             }
