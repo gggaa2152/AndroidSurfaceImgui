@@ -20,9 +20,25 @@
 #include <algorithm>
 #include <unistd.h>
 
+// --- 注入器所需的底层系统头文件 ---
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <sys/user.h>
+#include <sys/mman.h>
+#include <dlfcn.h>
+#include <dirent.h>
+#include <elf.h>
+#include <sys/uio.h>
+
+#define LOG_TAG "JKHelper"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+
 // =================================================================
 // 1. 全局配置与状态
 // =================================================================
+const char* TARGET_PACKAGE = "com.tencent.jkchess"; // 目标游戏包名
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
 bool g_predict_enemy = false;
@@ -203,7 +219,7 @@ void LoadConfig() {
                 else if (k == "cardPoolCols") g_card_pool_cols = std::stoi(v);
                 else if (k == "cardPoolScaleX") g_cardPoolScaleX = std::stof(v);
                 else if (k == "cardPoolScaleY") g_cardPoolScaleY = std::stof(v);
-                else if (k == "cardPoolScale") { // 兼容老版本配置文件
+                else if (k == "cardPoolScale") { 
                     g_cardPoolScaleX = std::stof(v);
                     g_cardPoolScaleY = std::stof(v);
                 }
@@ -911,6 +927,7 @@ void DrawCardPool() {
     ImDrawList* d = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     
+    // 独立 X和Y 缩放变量
     static float t_x = g_cardPoolX, t_y = g_cardPoolY, t_scaleX = g_cardPoolScaleX, t_scaleY = g_cardPoolScaleY;
     static bool first = true; 
     
@@ -1601,9 +1618,9 @@ void DrawMenu() {
 }
 
 // =================================================================
-// 8. 后台渲染守护线程 (用于 .so 内部注入)
+// 8. 内部注入渲染核心线程 (由 SO 加载后触发)
 // =================================================================
-void MainRenderThread() {
+void MainInternalRenderThread() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
     
@@ -1628,10 +1645,8 @@ void MainRenderThread() {
         
         imgui.BeginFrame(); 
         
-        // 彻底杜绝由于设备缓冲区重用导致的半透明菜单拖动重影残影
         glDisable(GL_SCISSOR_TEST); 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f); 
-        // 增加深度清理，确保 Native Overlay 完全双清
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         if (!g_resLoaded) { 
@@ -1663,10 +1678,77 @@ void MainRenderThread() {
 }
 
 // =================================================================
-// 9. .so 库注入入口点 (Constructor)
-// 当动态库被 dlopen 强行注入加载时，会自动执行此方法。
+// 9. 双重身份识别入口 (二合一技术核心)
 // =================================================================
-void __attribute__((constructor)) OnLibLoaded() {
-    __android_log_print(ANDROID_LOG_INFO, "JKHelper", "ImGui 内部模块 .so 注入成功！正在启动渲染线程...");
-    std::thread(MainRenderThread).detach();
+
+// 【身份 A】：作为 SO 库被游戏进程 dlopen 加载时，自动执行此构造函数
+__attribute__((constructor)) void OnModuleLoaded() {
+    char cmd[256] = {0};
+    FILE* f = fopen("/proc/self/cmdline", "r");
+    if (f) {
+        fgets(cmd, sizeof(cmd), f); 
+        fclose(f);
+        // 关键判断：防止在注入器进程里拉起菜单
+        if (strstr(cmd, TARGET_PACKAGE)) {
+            LOGI("JKHelper 已成功注入金铲铲！正在拉起渲染线程...");
+            std::thread(MainInternalRenderThread).detach();
+        }
+    }
+}
+
+// 【身份 B】：作为 ELF 独立可执行程序运行，充当“自动监控注入守护进程”
+int main(int argc, char** argv) {
+    printf("==================================================\n");
+    printf("   JKHelper Universal All-In-One (监控模式启动)\n");
+    printf("==================================================\n");
+    printf("[*] 正在静默监控游戏进程: %s\n", TARGET_PACKAGE);
+
+    while (true) {
+        DIR* dir = opendir("/proc");
+        if (!dir) continue;
+        struct dirent* ptr;
+        pid_t pid = 0;
+        
+        // 扫描所有进程，寻找游戏包名
+        while ((ptr = readdir(dir)) != NULL) {
+            if (ptr->d_type == DT_DIR && atoi(ptr->d_name) > 0) {
+                char cmdpath[256];
+                snprintf(cmdpath, 256, "/proc/%s/cmdline", ptr->d_name);
+                std::ifstream f(cmdpath);
+                std::string s; std::getline(f, s);
+                if (s.find(TARGET_PACKAGE) != std::string::npos) {
+                    pid = atoi(ptr->d_name);
+                    break;
+                }
+            }
+        }
+        closedir(dir);
+
+        // 如果找到了游戏进程
+        if (pid > 0) {
+            printf("[+] 捕捉到目标进程 PID: %d，准备执行自我注入...\n", pid);
+            // 必须给游戏启动预留足够时间（约 5 秒），过早注入会导致游戏闪退
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            
+            if (perform_self_injection(pid) == 0) {
+                printf("[+] 注入成功！请进入游戏画面查看 ImGui 菜单。\n");
+                
+                // 陷入死循环等待，只要游戏还活着，就不重复注入
+                while (kill(pid, 0) == 0) {
+                    std::this_thread::sleep_for(std::chrono::seconds(3));
+                }
+                printf("[*] 游戏已关闭，重新回到后台监控状态...\n");
+            } else {
+                printf("[-] 注入失败，可能原因：\n");
+                printf("    1. 没有授予 Root 权限 (su)\n");
+                printf("    2. 反作弊检测拦截了 ptrace 调用\n");
+                // 失败后等待较长时间再重试
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+            }
+        }
+        
+        // 没找到游戏时，每秒扫描一次
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return 0;
 }
