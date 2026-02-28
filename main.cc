@@ -42,56 +42,30 @@
 #endif
 
 #define LOG_TAG "JKHelper_Daemon"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) { __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__); printf(__VA_ARGS__); printf("\n"); }
+#define LOGE(...) { __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); }
 
 const char* TARGET_PACKAGE = "com.tencent.jkchess";
-// 修改路径到更开放的 tmp 目录，防止 App 私有目录权限问题
-const char* DROP_SO_PATH = "/data/local/tmp/libJKHook.so";
+// 修改路径到 App 内部目录，这是 dlopen 成功的关键
+const char* DROP_SO_PATH = "/data/data/com.tencent.jkchess/cache/libJKHook.so";
 const char* g_configPath = "/data/jkchess_config.ini"; 
 
 std::atomic<bool> g_game_running(false);
 
 // =================================================================
-// 1. 全局配置与状态变量
+// 1. 全局配置与状态 (保持你原有的逻辑)
 // =================================================================
-bool g_predict_enemy = false;
 bool g_esp_board = true;
-bool g_esp_bench = false; 
-bool g_esp_shop = false;  
 bool g_boardLocked = false; 
-
-float g_scale = 1.0f;            
-float g_autoScale = 1.0f;        
+float g_autoScale = 1.0f;
 float g_current_rendered_size = 0.0f; 
 float g_startX = 400.0f, g_startY = 400.0f;
 float g_menuX = 100.0f, g_menuY = 100.0f, g_menuW = 350.0f, g_menuH = 550.0f;
-float g_benchX = 200.0f, g_benchY = 700.0f;
-float g_shopX = 200.0f, g_shopY = 850.0f;
-bool g_menuCollapsed = false; 
-float g_anim[25] = {0.0f}; 
-
-ImFont* g_mainFont = nullptr;
-int g_enemyBoard[4][7] = {{1,0,0,0,1,0,0},{0,1,0,1,0,0,0},{0,0,0,0,0,1,0},{1,0,1,0,1,0,1}};
-
-// =================================================================
-// 2. 辅助工具
-// =================================================================
-void SaveConfig() { /* 逻辑省略 */ }
-void LoadConfig() { /* 逻辑省略 */ }
-void UpdateFontHD(bool force = false) { /* 逻辑省略 */ }
-
-// =================================================================
-// 3. UI 渲染逻辑 (子函数定义在 MainRenderThread 上方)
-// =================================================================
-void DrawBoard() { /* 绘制代码... */ }
-void DrawBench() { /* 绘制代码... */ }
-void DrawShop() { /* 绘制代码... */ }
 
 void DrawMenu() {
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] 辅助已激活");
-        ImGui::Checkbox((const char*)u8"棋盘透视", &g_esp_board);
+        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] 双端注入模式已激活");
+        ImGui::Checkbox((const char*)u8"显示棋盘透视", &g_esp_board);
     }
     ImGui::End();
 }
@@ -110,7 +84,7 @@ void MainRenderThread() {
 }
 
 // =================================================================
-// 4. 核心注入逻辑 (增强报错版)
+// 4. 核心注入引擎
 // =================================================================
 
 long get_module_base_remote(pid_t pid, const char* module_name) {
@@ -150,40 +124,39 @@ long ptrace_call_target(pid_t pid, uintptr_t func, long *params, int num) {
 }
 
 int perform_injection(pid_t pid, const char* drop_path) {
-    LOGI("[*] 正在尝试附加 (PTRACE_ATTACH) 到进程: %d", pid);
+    LOGI("[*] 准备 ptrace 附加到进程 %d...", pid);
     if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) {
-        LOGE("[-] PTRACE_ATTACH 失败: %s (错误码: %d)", strerror(errno), errno);
+        LOGE("[-] 附加失败: %s", strerror(errno));
         return -1;
     }
     waitpid(pid, NULL, WUNTRACED);
 
     void* r_mmap = get_remote_func_addr(pid, "libc.so", (void*)mmap);
-    if (!r_mmap) { LOGE("[-] 远程定位 mmap 失败"); ptrace(PTRACE_DETACH, pid, NULL, 0); return -1; }
-
     long m_p[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
     long r_mem = ptrace_call_target(pid, (uintptr_t)r_mmap, m_p, 6);
     if (r_mem <= 0 || r_mem == (long)-1) { 
-        LOGE("[-] 远程 mmap 内存申请失败"); 
+        LOGE("[-] 远程 mmap 失败"); 
         ptrace(PTRACE_DETACH, pid, NULL, 0); return -1; 
     }
 
-    LOGI("[+] 远程内存申请成功: 0x%lx", r_mem);
+    LOGI("[+] 远程内存就绪: 0x%lx", r_mem);
     char buf[256] = {0}; strncpy(buf, drop_path, 255);
     for (size_t i = 0; i < sizeof(buf); i += 8) ptrace(PTRACE_POKETEXT, pid, (void*)(r_mem + i), *(long*)(buf + i));
 
+    // 适配 Android 10+ 的 dlopen 寻找逻辑
     void* r_dl = get_remote_func_addr(pid, "libdl.so", (void*)dlopen);
     if (!r_dl) r_dl = get_remote_func_addr(pid, "libc.so", (void*)dlopen);
     
-    LOGI("[*] 正在执行远程 dlopen(\"%s\")", drop_path);
+    LOGI("[*] 正在执行远程载入命令...");
     long d_p[] = {(long)r_mem, RTLD_NOW}; 
     long h = ptrace_call_target(pid, (uintptr_t)r_dl, d_p, 2);
     
     ptrace(PTRACE_DETACH, pid, NULL, 0); 
     if (h == 0) {
-        LOGE("[-] dlopen 失败，请检查 SO 权限或 SELinux。");
+        LOGE("[-] dlopen 注入失败。检查路径: %s", drop_path);
         return -1;
     }
-    LOGI("[+] 注入成功，句柄: 0x%lx", h);
+    LOGI("[+] 恭喜！内部 Hook 已成功注进游戏，句柄: 0x%lx", h);
     return 0;
 }
 
@@ -198,25 +171,16 @@ bool is_process_active(pid_t pid) {
 // 5. 守护入口
 // =================================================================
 int main(int argc, char** argv) {
-    LOGI("=============================================");
-    LOGI("   JKHelper Daemon 调试版已启动");
-    LOGI("=============================================");
+    printf("\n=============================================\n");
+    printf("   JKHelper 终极守护进程 - 注入追踪模式\n");
+    printf("=============================================\n");
 
-    // 尝试关闭 SELinux
-    system("setenforce 0");
-
-    // 释放并设置 SO 权限
-    FILE* f = fopen(DROP_SO_PATH, "wb");
-    if(f) {
-        fwrite(libJKHook_so, 1, libJKHook_so_len, f); fclose(f);
-        chmod(DROP_SO_PATH, 0777); 
-        // 关键：给 SO 文件增加系统的读取标签
-        system("chcon u:object_r:system_file:s0 /data/local/tmp/libJKHook.so");
-        LOGI("[+] 载荷已释放: %s", DROP_SO_PATH);
-    }
+    // 全局权限环境初始化
+    system("setenforce 0 > /dev/null 2>&1");
 
     while (true) {
         pid_t pid = 0;
+        uid_t game_uid = 0;
         DIR* dir = opendir("/proc");
         if (dir) {
             struct dirent* ptr;
@@ -228,7 +192,14 @@ int main(int argc, char** argv) {
                         std::string cmd; std::getline(f_cmd, cmd, '\0'); 
                         if (cmd == TARGET_PACKAGE) {
                             pid_t found_pid = atoi(ptr->d_name);
-                            if (is_process_active(found_pid)) { pid = found_pid; break; }
+                            if (is_process_active(found_pid)) {
+                                pid = found_pid;
+                                // 关键：获取游戏进程的 UID，用于后续修改 SO 权限
+                                struct stat st;
+                                snprintf(path, 256, "/proc/%d", pid);
+                                if (stat(path, &st) == 0) game_uid = st.st_uid;
+                                break;
+                            }
                         }
                     }
                 }
@@ -237,22 +208,32 @@ int main(int argc, char** argv) {
         }
 
         if (pid > 0) {
+            // 每次检测到进程都释放一次 SO，确保路径存在
+            FILE* f = fopen(DROP_SO_PATH, "wb");
+            if(f) {
+                fwrite(libJKHook_so, 1, libJKHook_so_len, f); fclose(f);
+                chmod(DROP_SO_PATH, 0777); 
+                // 关键：将 SO 的拥有者改为游戏进程的 UID
+                if (game_uid > 0) chown(DROP_SO_PATH, game_uid, game_uid);
+                system("chcon u:object_r:apk_data_file:s0 /data/data/com.tencent.jkchess/cache/libJKHook.so > /dev/null 2>&1");
+            }
+
             if (get_module_base_remote(pid, "libJKHook.so") != 0) {
                 if (!g_game_running) {
-                    LOGI("[*] 检测到已注入进程 (%d)，恢复渲染线程", pid);
+                    LOGI("[*] 游戏已在运行且已注入，拉起菜单...");
                     g_game_running = true;
                     std::thread render_thread(MainRenderThread);
                     while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
                     g_game_running = false; if (render_thread.joinable()) render_thread.join();
                 }
             } else {
-                LOGI("[!] 发现新进程 (%d)，正在等待初始化...", pid);
+                LOGI("[!] 发现金铲铲进程 (%d)，等待引擎初始化...", pid);
                 int wait_limit = 0;
-                while (get_module_base_remote(pid, "libil2cpp.so") == 0 && wait_limit < 30) {
+                while (get_module_base_remote(pid, "libil2cpp.so") == 0 && wait_limit < 45) {
                     std::this_thread::sleep_for(std::chrono::seconds(1)); wait_limit++;
                 }
                 
-                if (wait_limit < 30 && perform_injection(pid, DROP_SO_PATH) == 0) {
+                if (wait_limit < 45 && perform_injection(pid, DROP_SO_PATH) == 0) {
                     g_game_running = true;
                     std::thread render_thread(MainRenderThread);
                     while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
