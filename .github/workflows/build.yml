@@ -22,28 +22,29 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译内部 Hook SO (直接链接根目录的 libdobby.a 和 dobby.h)
-          # -I. 表示在根目录寻找头文件
-          $CXX -O3 -shared -fPIC \
+          # 1. 编译内部 Hook SO
+          # 【关键修复】：增加 -static-libstdc++，解决 libc++_shared.so 找不到的问题
+          $CXX -O3 -shared -fPIC -static-libstdc++ \
             internal_hook.cc \
             -I. \
             ./libdobby.a \
             -llog \
             -o libJKHook.so
 
-          # 2. 将 .so 转换为内嵌数组供主程序释放
+          # 2. 将 .so 转换为内嵌数组
           xxd -i libJKHook.so > hook_payload.h
 
-          # 3. 编译 zstd
+          # 3. 编译 zstd 库
           $CC -O3 -fPIC -c \
             -I./third_party/zstd/lib \
             third_party/zstd/lib/common/*.c \
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 4. 编译最终产物 JKHelper_Daemon
+          # 4. 编译最终程序 (JKHelper_Daemon)
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
+            -Wno-error=narrowing -Wno-format-security \
             -I. -I./includes -I./modules -I./third_party \
             -I./third_party/imgui -I./third_party/imgui/backends \
             -I./third_party/zstd/lib \
