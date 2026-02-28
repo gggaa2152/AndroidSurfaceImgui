@@ -54,7 +54,6 @@ std::atomic<bool> g_game_running(false);
 // =================================================================
 // 1. 全局配置与状态变量
 // =================================================================
-bool g_predict_enemy = false;
 bool g_esp_board = true;
 bool g_esp_bench = false; 
 bool g_esp_shop = false;  
@@ -68,8 +67,6 @@ float g_boardScale = 2.2f;
 float g_boardManualScale = 1.0f; 
 float g_startX = 400.0f, g_startY = 400.0f;    
 float g_menuX = 100.0f, g_menuY = 100.0f, g_menuW = 350.0f, g_menuH = 550.0f; 
-float g_benchX = 200.0f, g_benchY = 700.0f, g_benchScale = 1.0f;
-float g_shopX = 200.0f, g_shopY = 850.0f, g_shopScale = 1.0f;
 
 float g_anim[25] = {0.0f}; 
 
@@ -81,7 +78,7 @@ int g_enemyBoard[4][7] = {
 };
 
 // =================================================================
-// 2. 注入工具函数 (必须放在调用者上方)
+// 2. 注入工具函数
 // =================================================================
 
 long get_module_base_remote(pid_t pid, const char* module_name) {
@@ -117,51 +114,8 @@ long ptrace_call_target(pid_t pid, uintptr_t func, long *params, int num) {
     return rv;
 }
 
-void print_remote_dlerror(pid_t pid) {
-    void* r_dlerror = get_remote_func_addr(pid, "libdl.so", (void*)dlerror);
-    if (!r_dlerror) r_dlerror = get_remote_func_addr(pid, "libc.so", (void*)dlerror);
-    if (!r_dlerror) return;
-    long err_ptr = ptrace_call_target(pid, (uintptr_t)r_dlerror, nullptr, 0);
-    if (err_ptr == 0) return;
-    char buf[256] = {0};
-    for (int i = 0; i < 256 / 8; i++) {
-        long data = ptrace(PTRACE_PEEKTEXT, pid, (void*)(err_ptr + i * 8), NULL);
-        memcpy(buf + i * 8, &data, 8);
-    }
-    LOGE("[诊断信息] 游戏内部报错: %s", buf);
-}
-
-int perform_injection(pid_t pid, const char* drop_path) {
-    LOGI("[*] 正在执行 Ptrace 注入流程...");
-    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
-    waitpid(pid, NULL, WUNTRACED);
-
-    void* r_mmap = (void*)get_remote_func_addr(pid, "libc.so", (void*)mmap);
-    long m_p[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
-    long r_mem = ptrace_call_target(pid, (uintptr_t)r_mmap, m_p, 6);
-    if (r_mem <= 0 || r_mem == (long)-1) { ptrace(PTRACE_DETACH, pid, NULL, 0); return -1; }
-
-    char buf[512] = {0}; strncpy(buf, drop_path, 511);
-    for (size_t i = 0; i < sizeof(buf); i += 8) ptrace(PTRACE_POKETEXT, pid, (void*)(r_mem + i), *(long*)(buf + i));
-
-    void* r_dl = (void*)get_remote_func_addr(pid, "libdl.so", (void*)dlopen);
-    if (!r_dl) r_dl = (void*)get_remote_func_addr(pid, "libc.so", (void*)dlopen);
-    
-    long d_p[] = {(long)r_mem, RTLD_NOW}; 
-    long h = ptrace_call_target(pid, (uintptr_t)r_dl, d_p, 2);
-    
-    if (h == 0) {
-        print_remote_dlerror(pid);
-        ptrace(PTRACE_DETACH, pid, NULL, 0);
-        return -1;
-    }
-    ptrace(PTRACE_DETACH, pid, NULL, 0); 
-    LOGI("[+] 注入成功！句柄: 0x%lx", h);
-    return 0;
-}
-
 // =================================================================
-// 3. UI 辅助函数
+// 3. UI 辅助函数 (修复关键：UpdateFontHD)
 // =================================================================
 
 void SaveConfig() {
@@ -191,12 +145,47 @@ void LoadConfig() {
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     float targetSize = std::clamp(20.0f * (io.DisplaySize.y / 1080.0f), 15.0f, 50.0f);
-    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f) return;
-    ImGui_ImplOpenGL3_DestroyFontsTexture(); io.Fonts->Clear(); 
-    const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
-    if (access(fontPath, R_OK) == 0) io.Fonts->AddFontFromFileTTF(fontPath, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    else io.Fonts->AddFontDefault();
-    io.Fonts->Build(); ImGui_ImplOpenGL3_CreateFontsTexture(); g_current_rendered_size = targetSize;
+    
+    // 如果不需要强制刷新且大小变化不大，则返回
+    if (!force && std::abs(targetSize - g_current_rendered_size) < 0.5f && io.Fonts->IsBuilt()) return;
+
+    LOGI("[*] 正在构建字体库: 大小 %.1f", targetSize);
+    
+    // 清除旧字体并销毁之前的纹理
+    ImGui_ImplOpenGL3_DestroyFontsTexture(); 
+    io.Fonts->Clear(); 
+    
+    bool font_loaded = false;
+    const char* fontPaths[] = {
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/SysSans-Hans-Regular.ttf",
+        "/system/fonts/DroidSansFallback.ttf"
+    };
+
+    // 尝试从系统中加载中文字体
+    for (const char* path : fontPaths) {
+        if (access(path, R_OK) == 0) {
+            if (io.Fonts->AddFontFromFileTTF(path, targetSize, NULL, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+                font_loaded = true;
+                break;
+            }
+        }
+    }
+
+    // 【核心修复】：如果外部字体加载全部失败，必须添加默认字体
+    if (!font_loaded) {
+        LOGE("[-] 无法加载系统字体，使用 ImGui 默认字体作为回退。");
+        io.Fonts->AddFontDefault();
+    }
+
+    // 关键步骤：执行构建并重新创建纹理
+    if (io.Fonts->Build()) {
+        ImGui_ImplOpenGL3_CreateFontsTexture();
+        g_current_rendered_size = targetSize;
+        LOGI("[+] 字体库构建完成。");
+    } else {
+        LOGE("[-] 致命错误：字体库 Build() 失败！");
+    }
 }
 
 void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, float& t_x, float& t_y, float& t_scale, bool& isDragging, bool& isScaling, ImVec2& dragOffset, ImVec2& scaleDragOffset, float h_dx, float h_dy, bool locked) {
@@ -208,7 +197,6 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, float& 
             else { isDragging = true; dragOffset = ImVec2(t_x - io.MousePos.x, t_y - io.MousePos.y); }
         }
         if (isScaling && ImGui::IsMouseDown(0)) { 
-            // 修复：使用 sqrtf + ImLengthSqr 替代未定义的 ImLength
             ImVec2 delta = io.MousePos - ImVec2(t_x, t_y);
             t_scale = std::clamp(sqrtf(ImLengthSqr(delta)) / h_dx, 0.5f, 5.0f); 
         }
@@ -223,19 +211,18 @@ void DrawBoard() {
     if (!g_esp_board) return; ImDrawList* d = ImGui::GetForegroundDrawList();
     static float t_x = g_startX, t_y = g_startY, t_scale = g_boardManualScale;
     static bool isDragging = false, isScaling = false; static ImVec2 dragOffset, scaleDragOffset;
-    float baseSz = 40.0f * g_boardScale * g_autoScale; 
+    float baseSz = 40.0f * g_boardScale * (ImGui::GetIO().DisplaySize.y / 1080.0f); 
     HandleGridInteraction(g_startX, g_startY, g_boardManualScale, t_x, t_y, t_scale, isDragging, isScaling, dragOffset, scaleDragOffset, 400.0f, 200.0f, g_boardLocked);
     for(int r = 0; r < 4; r++) { for(int c = 0; c < 7; c++) { 
-        float cx = g_startX + c * baseSz * 1.732f * g_boardManualScale + (r % 2 == 1 ? baseSz * 0.866f * g_boardManualScale : 0);
-        float cy = g_startY + r * baseSz * 1.5f * g_boardManualScale;
+        float cx = g_startX + (c * baseSz * 1.732f * g_boardManualScale) + (r % 2 == 1 ? baseSz * 0.866f * g_boardManualScale : 0);
+        float cy = g_startY + (r * baseSz * 1.5f * g_boardManualScale);
         if(g_enemyBoard[r][c]) d->AddCircleFilled(ImVec2(cx, cy), baseSz * 0.6f * g_boardManualScale, IM_COL32(255, 0, 0, 150));
     } }
 }
 
 void DrawMenu() {
     if (ImGui::Begin((const char*)u8"金铲铲助手", NULL, ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::SetWindowFontScale(g_scale);
-        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] Dobby 静态注入成功");
+        ImGui::TextColored(ImVec4(0.0f, 0.85f, 0.55f, 1.0f), (const char*)u8"[+] 辅助已注入成功");
         ImGui::Checkbox((const char*)u8"敌方棋盘显示", &g_esp_board);
         ImGui::Checkbox((const char*)u8"锁定位置", &g_boardLocked);
         if (ImGui::Button((const char*)u8"保存配置")) SaveConfig();
@@ -250,28 +237,80 @@ void DrawMenu() {
 void MainRenderThread() {
     ImGui::CreateContext();
     android::AImGui imgui({.renderType = android::AImGui::RenderType::RenderNative}); 
-    LoadConfig(); UpdateFontHD(true);  
-    std::thread it([&] { while(g_game_running) { imgui.ProcessInputEvent(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); } });
+    
+    // 初始化配置并构建字体
+    LoadConfig(); 
+    UpdateFontHD(true);  
+    
+    // 启动输入处理线程
+    std::thread it([&] { 
+        while(g_game_running) { 
+            imgui.ProcessInputEvent(); 
+            std::this_thread::sleep_for(std::chrono::milliseconds(5)); 
+        } 
+    });
+
     while (g_game_running) {
-        imgui.BeginFrame(); glClearColor(0.0f, 0.0f, 0.0f, 0.0f); glClear(GL_COLOR_BUFFER_BIT);
-        DrawBoard(); DrawMenu();
-        imgui.EndFrame(); std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        // 渲染前最后的安全检查
+        if (!ImGui::GetIO().Fonts->IsBuilt()) {
+            UpdateFontHD(true);
+        }
+
+        imgui.BeginFrame(); 
+        glDisable(GL_SCISSOR_TEST); glClearColor(0.0f, 0.0f, 0.0f, 0.0f); glClear(GL_COLOR_BUFFER_BIT);
+        
+        DrawBoard(); 
+        DrawMenu();
+        
+        imgui.EndFrame(); 
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
-    if (it.joinable()) it.join(); ImGui::DestroyContext();
+
+    if (it.joinable()) it.join(); 
+    ImGui::DestroyContext();
 }
 
-bool is_process_active(pid_t pid) {
-    char path[128]; snprintf(path, sizeof(path), "/proc/%d/stat", pid);
-    FILE* f = fopen(path, "r"); if (!f) return false;
-    char state; fscanf(f, "%*d %*s %c", &state); fclose(f);
-    return (state != 'Z' && state != 'X');
+int perform_injection(pid_t pid, const char* drop_path) {
+    LOGI("[*] 正在执行 Ptrace 注入流程...");
+    if (ptrace(PTRACE_ATTACH, pid, NULL, 0) < 0) return -1;
+    waitpid(pid, NULL, WUNTRACED);
+
+    void* r_mmap = (void*)get_remote_func_addr(pid, "libc.so", (void*)mmap);
+    long m_p[] = {0, 1024, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0};
+    
+    struct user_pt_regs regs, saved; struct iovec iov = {&regs, sizeof(regs)};
+    ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov); memcpy(&saved, &regs, sizeof(regs));
+    for (int i = 0; i < 6; i++) regs.regs[i] = m_p[i];
+    regs.pc = (uintptr_t)r_mmap; regs.regs[30] = 0;
+    ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    ptrace(PTRACE_CONT, pid, NULL, 0); waitpid(pid, NULL, WUNTRACED);
+    ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    long r_mem = regs.regs[0];
+
+    char buf[256] = {0}; strncpy(buf, drop_path, 255);
+    for (size_t i = 0; i < sizeof(buf); i += 8) ptrace(PTRACE_POKETEXT, pid, (void*)(r_mem + i), *(long*)(buf + i));
+
+    void* r_dl = (void*)get_remote_func_addr(pid, "libdl.so", (void*)dlopen);
+    if (!r_dl) r_dl = (void*)get_remote_func_addr(pid, "libc.so", (void*)dlopen);
+    
+    regs.regs[0] = r_mem; regs.regs[1] = RTLD_NOW;
+    regs.pc = (uintptr_t)r_dl; regs.regs[30] = 0;
+    ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    ptrace(PTRACE_CONT, pid, NULL, 0); waitpid(pid, NULL, WUNTRACED);
+    ptrace(PTRACE_GETREGSET, pid, (void*)NT_PRSTATUS, &iov);
+    long h = regs.regs[0];
+
+    ptrace(PTRACE_SETREGSET, pid, (void*)NT_PRSTATUS, (void*)&saved);
+    ptrace(PTRACE_DETACH, pid, NULL, 0); 
+    return (h == 0) ? -1 : 0;
 }
 
 int main(int argc, char** argv) {
     LOGI("=============================================");
-    LOGI("   JKHelper Daemon 稳定版启动成功");
+    LOGI("   JKHelper Daemon 断言修复版已启动");
     LOGI("=============================================");
     system("setenforce 0 > /dev/null 2>&1");
+    
     while (true) {
         pid_t pid = 0; uid_t game_uid = 0;
         DIR* dir = opendir("/proc");
@@ -293,22 +332,32 @@ int main(int argc, char** argv) {
                 }
             } closedir(dir);
         }
+
         if (pid > 0) {
+            // 部署 SO 并设置权限 (保持原样...)
             FILE* f = fopen(DROP_SO_PATH, "wb");
             if(f) {
                 fwrite(libJKHook_so, 1, libJKHook_so_len, f); fclose(f);
                 chmod(DROP_SO_PATH, 0777); if (game_uid > 0) chown(DROP_SO_PATH, game_uid, game_uid);
                 system("chcon u:object_r:apk_data_file:s0 /data/data/com.tencent.jkchess/cache/libJKHook.so > /dev/null 2>&1");
             }
+            
             if (get_module_base_remote(pid, "libJKHook.so") == 0) {
-                LOGI("[!] 发现游戏 (%d)，正在注入...", pid);
+                LOGI("[!] 发现游戏进程 (%d)，正在注入...", pid);
                 while (get_module_base_remote(pid, "libil2cpp.so") == 0) std::this_thread::sleep_for(std::chrono::seconds(1));
                 if (perform_injection(pid, DROP_SO_PATH) == 0) {
-                    g_game_running = true; std::thread(MainRenderThread).detach();
+                    g_game_running = true; 
+                    std::thread(MainRenderThread).detach();
                 }
+            } else if (!g_game_running) {
+                // 如果已注入但 UI 没跑，拉起 UI
+                g_game_running = true;
+                std::thread(MainRenderThread).detach();
             }
+
             while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
-            g_game_running = false; LOGI("[*] 游戏退出。");
+            g_game_running = false; 
+            LOGI("[*] 游戏已退出。");
         }
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
