@@ -20,17 +20,21 @@ jobs:
           echo "[*] 正在全自动拉取并修复 Dobby Hook 框架..."
           git clone --depth 1 https://github.com/jmpews/Dobby.git third_party/dobby
           
-          # 【精准修复 1】：修复 arm64 汇编语法冲突 (必须先替换 PAGEOFF，再替换 PAGE)
-          echo "[*] 正在修复汇编语法以适配 NDK 27..."
-          sed -i 's/@PAGEOFF/:lo12:/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
-          sed -i 's/@PAGE//g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          # 【精准修复 1】：修正 arm64 汇编语法，适配 NDK 27 (Clang 18)
+          # 使用正则捕获组，确保 :lo12: 前缀出现在符号前面
+          echo "[*] 正在修复汇编语法..."
+          sed -i 's/\([a-zA-Z0-9_]*\)@PAGEOFF/:lo12:\1/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
+          sed -i 's/\([a-zA-Z0-9_]*\)@PAGE/\1/g' third_party/dobby/source/TrampolineBridge/ClosureTrampolineBridge/arm64/*.asm
 
-          # 【精准修复 2】：修复 OSMemory 未定义问题
-          # 强行包含 Dobby 自带的平台定义头文件，而不是手动重写类，彻底避免重定义冲突
-          echo "[*] 正在修复头文件包含逻辑..."
-          sed -i '1i #include "PlatformUnifiedInterface/platform.h"' third_party/dobby/common/os_arch_features.h
+          # 【精准修复 2】：解决 OSMemory 未定义问题
+          # 采用“直接替换法”绕过未定义的类，直接调用系统原生的 mprotect
+          echo "[*] 正在修复内存权限管理源码..."
+          sed -i '1i #include <sys/mman.h>\n#include <unistd.h>' third_party/dobby/common/os_arch_features.h
+          sed -i 's/OSMemory::PageSize()/4096/g' third_party/dobby/common/os_arch_features.h
+          sed -i 's/kReadExecute/7/g' third_party/dobby/common/os_arch_features.h
+          sed -i 's/!OSMemory::SetPermission(page, 4096, 7)/mprotect(page, 4096, 7) != 0/g' third_party/dobby/common/os_arch_features.h
 
-          # 自动补齐 includes 目录供你的项目使用
+          # 自动补齐 includes 目录供你的 internal_hook.cc 使用
           mkdir -p includes
           cp third_party/dobby/include/dobby.h includes/
           
@@ -38,7 +42,7 @@ jobs:
           mkdir build && cd build
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | head -1)
           
-          # 禁用 SymbolResolver (这是报错最多的模块，且我们的 Hook 逻辑不需要它)
+          # 禁用会导致重定义的插件，开启全局 PIC 适配新版 Clang
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
@@ -49,7 +53,7 @@ jobs:
             -DPlugin.Android.BionicLinkerUtil=OFF \
             -DDOBBY_DEBUG=OFF
           make -j4
-          echo "[+] Dobby 编译完成！"
+          echo "[+] Dobby 静态库编译完成！"
 
       - name: Compile 64bit Dual-End Binary
         run: |
@@ -58,7 +62,7 @@ jobs:
           CXX=$BIN/aarch64-linux-android33-clang++
           CC=$BIN/aarch64-linux-android33-clang
 
-          # 1. 编译内部 Hook SO (链接刚刚修复成功的 libdobby.a)
+          # 1. 编译内部 Hook SO (链接刚才修好的 libdobby.a)
           $CXX -O3 -shared -fPIC \
             internal_hook.cc \
             -I. -I./includes -I./third_party/dobby/include \
@@ -66,7 +70,7 @@ jobs:
             -llog \
             -o libJKHook.so
 
-          # 2. 将 .so 转换为内嵌数组
+          # 2. 将 .so 转换为内存数组
           xxd -i libJKHook.so > hook_payload.h
 
           # 3. 编译 zstd
@@ -76,7 +80,7 @@ jobs:
             third_party/zstd/lib/compress/*.c \
             third_party/zstd/lib/decompress/*.c
 
-          # 4. 编译外部 UI 守护端 (JKHelper_Daemon)
+          # 4. 编译外部 UI 守护进程 (JKHelper_Daemon)
           $CXX -O3 -s -std=c++20 -static-libstdc++ \
             -DIMGUI_DEFINE_MATH_OPERATORS \
             -Wno-error=narrowing -Wno-format-security \
