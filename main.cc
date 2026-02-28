@@ -207,7 +207,11 @@ void HandleGridInteraction(float& out_x, float& out_y, float& out_scale, float& 
             if (ImLengthSqr(io.MousePos - p_scale) < 5000.0f) { isScaling = true; scaleDragOffset = io.MousePos - p_scale; }
             else { isDragging = true; dragOffset = ImVec2(t_x - io.MousePos.x, t_y - io.MousePos.y); }
         }
-        if (isScaling && ImGui::IsMouseDown(0)) { t_scale = std::clamp(ImLength(io.MousePos - ImVec2(t_x, t_y)) / h_dx, 0.5f, 5.0f); }
+        if (isScaling && ImGui::IsMouseDown(0)) { 
+            // 修复：使用 sqrtf + ImLengthSqr 替代未定义的 ImLength
+            ImVec2 delta = io.MousePos - ImVec2(t_x, t_y);
+            t_scale = std::clamp(sqrtf(ImLengthSqr(delta)) / h_dx, 0.5f, 5.0f); 
+        }
         else isScaling = false;
         if (isDragging && !isScaling && ImGui::IsMouseDown(0)) { t_x = io.MousePos.x + dragOffset.x; t_y = io.MousePos.y + dragOffset.y; }
         else isDragging = false;
