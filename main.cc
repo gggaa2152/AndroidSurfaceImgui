@@ -107,30 +107,43 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    printf("[*] 正在静默监控游戏进程: %s\n", TARGET_PACKAGE);
+    printf("[*] 正在静默监控游戏主进程...\n");
 
     while (true) {
         DIR* dir = opendir("/proc");
         if (!dir) continue;
         struct dirent* ptr; pid_t pid = 0;
+        
         while ((ptr = readdir(dir)) != NULL) {
             if (ptr->d_type == DT_DIR && atoi(ptr->d_name) > 0) {
                 char path[256]; snprintf(path, 256, "/proc/%s/cmdline", ptr->d_name);
                 std::ifstream f_cmd(path); std::string s; std::getline(f_cmd, s);
-                if (s.find(TARGET_PACKAGE) != std::string::npos) { pid = atoi(ptr->d_name); break; }
+                
+                // 【核心修复】：精准匹配主进程，排除任何带 ":" 的后台服务进程
+                if (s.find(TARGET_PACKAGE) != std::string::npos && s.find(":") == std::string::npos) { 
+                    pid_t temp_pid = atoi(ptr->d_name);
+                    
+                    // 【终极防护】：检测到进程还不够，必须确认 libil2cpp.so (游戏引擎) 已加载完毕！
+                    if (get_module_base_remote(temp_pid, "libil2cpp.so") > 0) {
+                        pid = temp_pid; 
+                        break; 
+                    }
+                }
             }
         }
         closedir(dir);
 
         if (pid > 0) {
-            printf("[+] 发现金铲铲运行中 (PID: %d)，执行注入...\n", pid);
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            printf("[+] 捕捉到游戏引擎完全启动 (PID: %d)，执行精准注入...\n", pid);
+            // 引擎已经加载，只需稍等 1 秒即可注入
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            
             if (perform_injection(pid) == 0) {
                 printf("[+] 注入成功！请进入游戏画面查看 ImGui 菜单。\n");
                 while (kill(pid, 0) == 0) std::this_thread::sleep_for(std::chrono::seconds(2));
                 printf("[*] 游戏已退出，重新进入监控模式...\n");
             } else {
-                printf("[-] 注入失败，重试中...\n");
+                printf("[-] 注入失败，可能反作弊拦截了 ptrace，重试中...\n");
                 std::this_thread::sleep_for(std::chrono::seconds(5));
             }
         }
@@ -1772,15 +1785,15 @@ void MainRenderThread() {
     if (it.joinable()) it.join(); 
 }
 
-// 被注入器加载后执行的真正的插件入口点
 __attribute__((constructor)) void OnModuleLoaded() {
     char cmd[256] = {0};
     FILE* f = fopen("/proc/self/cmdline", "r");
     if (f) {
         fgets(cmd, sizeof(cmd), f); 
         fclose(f);
-        if (strstr(cmd, "com.tencent.jkchess")) {
-            __android_log_print(ANDROID_LOG_INFO, "JKHelper", "ImGui 载荷已成功注入，拉起渲染线程...");
+        // 【核心判断】：确保只在主进程中启动菜单，且过滤掉冒号子进程
+        if (strstr(cmd, TARGET_PACKAGE) && !strstr(cmd, ":")) {
+            __android_log_print(ANDROID_LOG_INFO, "JKHelper_Universal", "ImGui 载荷已成功注入并确认主进程，正在拉起渲染线程...");
             std::thread(MainRenderThread).detach();
         }
     }
