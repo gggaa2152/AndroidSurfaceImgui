@@ -79,71 +79,84 @@ void* get_remote_func_addr(pid_t pid, const char* module_name, void* local_func_
 }
 
 // =================================================================
-// 3. UI 核心 (修复字体加载逻辑)
+// 3. UI 核心 (修复字体加载兼容性逻辑)
 // =================================================================
 
 void UpdateFontHD(bool force = false) {
     ImGuiIO& io = ImGui::GetIO();
     if (!force && io.Fonts->IsBuilt()) return;
 
-    LOG_STEP(7, "正在构建 UI 字体图集 (开启详细诊断)...");
+    LOG_STEP(7, "正在构建 UI 字体图集 (避开 TTC 缺陷版)...");
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_DestroyFontsTexture();
     io.Fonts->Clear(); 
 
     ImFontConfig config;
     config.OversampleH = 1; config.OversampleV = 1; config.PixelSnapH = true;
 
-    LOGI("  [诊断] 1. 加载 ImGui 默认英文字体...");
+    LOGI("  [诊断] 1. 加载 ImGui 默认英文字体作为兜底...");
     io.Fonts->AddFontDefault(&config);
 
-    const char* fontPath = "/system/fonts/NotoSansCJK-Regular.ttc";
-    if (access(fontPath, R_OK) == 0) {
-        LOGI("  [诊断] 2. 找到系统字体文件: %s，尝试解析...", fontPath);
-        // 【真正的终极修复】：精确到字，只有菜单上的 18 个汉字，绝对不会超载
-        static const ImWchar custom_ranges[] = {
-            0x0020, 0x00FF, // ASCII
-            0x4F4D, 0x4F4D, // 位
-            0x5165, 0x5165, // 入
-            0x529F, 0x529F, // 功
-            0x5B9A, 0x5B9A, // 定
-            0x6001, 0x6001, // 态
-            0x6210, 0x6210, // 成
-            0x654C, 0x654C, // 敌
-            0x65B9, 0x65B9, // 方
-            0x663E, 0x663E, // 显
-            0x68CB, 0x68CB, // 棋
-            0x6A21, 0x6A21, // 模
-            0x6CE8, 0x6CE8, // 注
-            0x72B6, 0x72B6, // 状
-            0x76D8, 0x76D8, // 盘
-            0x793A, 0x793A, // 示
-            0x7A33, 0x7A33, // 稳
-            0x7F6E, 0x7F6E, // 置
-            0x9501, 0x9501, // 锁
-            0,
-        };
-        
-        ImFont* cnFont = io.Fonts->AddFontFromFileTTF(fontPath, 20.0f, &config, custom_ranges);
-        if (cnFont == nullptr) {
-            LOGE("  [诊断] 错误: AddFontFromFileTTF 返回 NULL！通常是因为字体格式不兼容。");
-        } else {
-            LOGI("  [诊断] 成功: 汉字解析成功加入队列。");
+    // 【终极修复】：因为 ImGui 对 .ttc 格式解析有 Bug，我们优先加载 .ttf 格式的系统字体
+    const char* fontPaths[] = {
+        "/system/fonts/SysSans-Hans-Regular.ttf", // 小米等现代国产机常用
+        "/system/fonts/DroidSansFallback.ttf",    // 原生安卓及老旧机型通用
+        "/system/fonts/NotoSansCJK-Regular.ttc"   // 最后再尝试兼容性差的 ttc
+    };
+
+    // 提取所有菜单中出现的汉字，精确到 20 个字，绝不溢出显存
+    static const ImWchar custom_ranges[] = {
+        0x0020, 0x00FF, // ASCII
+        0x5165, 0x5165, // 入
+        0x529F, 0x529F, // 功
+        0x52A9, 0x52A9, // 助
+        0x5B9A, 0x5B9A, // 定
+        0x5F0F, 0x5F0F, // 式
+        0x6001, 0x6001, // 态
+        0x6210, 0x6210, // 成
+        0x624B, 0x624B, // 手
+        0x654C, 0x654C, // 敌
+        0x65B9, 0x65B9, // 方
+        0x663E, 0x663E, // 显
+        0x68CB, 0x68CB, // 棋
+        0x6A21, 0x6A21, // 模
+        0x6CE8, 0x6CE8, // 注
+        0x72B6, 0x72B6, // 状
+        0x76D8, 0x76D8, // 盘
+        0x793A, 0x793A, // 示
+        0x7A33, 0x7A33, // 稳
+        0x91D1, 0x91D1, // 金
+        0x94F2, 0x94F2, // 铲
+        0,
+    };
+
+    bool font_success = false;
+    for (const char* path : fontPaths) {
+        if (access(path, R_OK) == 0) {
+            LOGI("  [诊断] 2. 找到系统字体: %s", path);
+            ImFont* cnFont = io.Fonts->AddFontFromFileTTF(path, 20.0f, &config, custom_ranges);
+            if (cnFont != nullptr) {
+                LOGI("  [诊断] 成功: 字体文件加载并解析完毕。");
+                font_success = true;
+                break; // 只要有一个成功了就不再继续找
+            }
         }
-    } else {
-        LOGE("  [诊断] 错误: 无法访问字体文件 (可能是路径不存在)");
     }
 
-    LOGI("  [诊断] 3. 取消纹理限制，开始图集打包 Build()...");
-    io.Fonts->TexDesiredWidth = 0; // 取消强制 512 的限制，让 ImGui 自动算最佳尺寸
+    if (!font_success) {
+        LOGE("  [诊断] 错误: 未能解析任何中文字体文件！");
+    }
+
+    LOGI("  [诊断] 3. 取消纹理限制，开始底层打包 Build()...");
+    io.Fonts->TexDesiredWidth = 0; // 自动计算最佳尺寸
 
     if (!io.Fonts->Build()) {
-        LOGE("  [诊断] 错误: Build() 返回 false！通常是因为字符过多导致图集高度超出了 GPU 限制。");
+        LOGE("  [诊断] 错误: Build() 依然失败！(通常是因为 TTC 格式兼容性问题)");
         io.Fonts->Clear(); io.Fonts->AddFontDefault(); io.Fonts->Build();
     } else {
         unsigned char* tex_pixels = NULL;
         int tex_w, tex_h;
         io.Fonts->GetTexDataAsRGBA32(&tex_pixels, &tex_w, &tex_h);
-        LOGI("  [诊断] 成功: 图集生成完毕！最终尺寸: %d x %d", tex_w, tex_h);
+        LOGI("  [诊断] 成功: 图集生成完毕！最终尺寸: %d x %d (极低内存占用)", tex_w, tex_h);
     }
 
     if (io.BackendRendererUserData != nullptr) ImGui_ImplOpenGL3_CreateFontsTexture();
@@ -201,13 +214,12 @@ void MainRenderThread() {
 }
 
 // =================================================================
-// 4. 强力监测逻辑 (修复瞬间退出的关键)
+// 4. 强力监测逻辑 
 // =================================================================
 
 bool is_process_really_alive(pid_t pid) {
     if (pid <= 0) return false;
     
-    // 关键修复：只有连续检查 5 次失败才认为真的关了 (容错 5 秒)
     static int fail_count = 0;
     
     bool alive = (kill(pid, 0) == 0);
@@ -226,7 +238,7 @@ bool is_process_really_alive(pid_t pid) {
             fail_count = 0;
             return false;
         }
-        return true; // 虽然本次失败，但还没到阈值，先认为活着
+        return true; 
     }
 }
 
@@ -321,8 +333,6 @@ int main(int argc, char** argv) {
                     g_game_running = true; 
                     std::thread(MainRenderThread).detach();
                     
-                    // 【关键修复点】：注入后强制睡眠 3 秒！
-                    // 这 3 秒内主循环不去碰进程，避开 Detach 后的内核抖动期
                     LOGI("[*] 正在进行 3s 稳定性缓冲，请勿操作...");
                     std::this_thread::sleep_for(std::chrono::seconds(3));
                 }
@@ -337,7 +347,7 @@ int main(int argc, char** argv) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
             
-            LOG_STEP(0, "确认游戏已退出，释放资源...");
+            LOG_STEP(0, "确认游戏已退出 (可能是发生崩溃)，释放资源...");
             g_game_running = false; 
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
